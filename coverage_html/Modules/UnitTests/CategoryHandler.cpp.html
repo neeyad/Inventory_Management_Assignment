@@ -1,0 +1,170 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>CategoryHandler.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+#include "CategoryHandler.h"
+#include &lt;fstream&gt;
+#include &lt;nlohmann/json.hpp&gt;
+
+using json = nlohmann::json;
+
+<span style = "background-color:#dfd">bool CategoryHandler::load() {
+    std::ifstream file("data/categories.json");
+    if (!file.is_open()) {</span>
+        // Create empty file if missing
+<span style = "background-color:#dfd">        std::ofstream createFile("data/categories.json");
+        createFile &lt;&lt; "[]";
+        categories.clear();
+        return true;</span>
+    }
+<span style = "background-color:#dfd">    std::filesystem::create_directories("data");
+    json j;</span>
+    try {
+<span style = "background-color:#dfd">    std::filesystem::create_directories("data");
+    if (!std::filesystem::exists("data/categories.json")) {</span>
+<span style = "background-color:#fdd">        std::ofstream createFile("data/categories.json");
+        createFile &lt;&lt; "[]";
+        createFile.close();
+    }</span>
+<span style = "background-color:#dfd">        file &gt;&gt; j;
+    } catch (...) {
+        j = json::array();
+    }
+    categories.clear();
+    for (const auto&amp; item : j) {
+        Category c;
+        c.id = item["id"].get&lt;std::string&gt;();
+        c.name = item["name"].get&lt;std::string&gt;();
+        if (item.contains("parentCategoryId"))</span>
+<span style = "background-color:#fdd">            c.parentCategoryId = item["parentCategoryId"].get&lt;std::string&gt;();</span>
+<span style = "background-color:#dfd">        categories.push_back(c);
+    }
+    return true;
+}</span>
+
+<span style = "background-color:#dfd">bool CategoryHandler::save() {
+    json j = json::array();
+    for (const auto&amp; c : categories) {
+        json item;
+        item["id"] = c.id;
+        item["name"] = c.name;
+        if (c.parentCategoryId)</span>
+<span style = "background-color:#fdd">            item["parentCategoryId"] = *c.parentCategoryId;</span>
+<span style = "background-color:#dfd">        j.push_back(item);
+    }
+    std::filesystem::create_directories("data");
+    std::ofstream file("data/categories.json");
+    if (!file.is_open()) return false;
+    file &lt;&lt; j.dump(2);
+    return true;
+}</span>
+
+<span style = "background-color:#dfd">bool CategoryHandler::create(const Category&amp; category) {
+    std::filesystem::create_directories("logs");
+    std::ofstream debug("logs/debug.log", std::ios::app);
+    if (!validate(category)) {
+        debug &lt;&lt; "[CategoryHandler::create] Validation failed\n";
+        return false;</span>
+    }
+<span style = "background-color:#dfd">    categories.push_back(category);
+    bool saved = save();
+    if (!saved) debug &lt;&lt; "[CategoryHandler::create] Save failed\n";
+    return saved;
+}</span>
+
+<span style = "background-color:#dfd">std::optional&lt;Category&gt; CategoryHandler::read(const std::string&amp; id) const {
+    for (const auto&amp; c : categories) {
+        if (c.id == id) return c;</span>
+<span style = "background-color:#fdd">    }</span>
+<span style = "background-color:#dfd">    return std::nullopt;
+}</span>
+
+<span style = "background-color:#dfd">bool CategoryHandler::update(const Category&amp; category) {
+    for (auto&amp; c : categories) {
+        if (c.id == category.id) {
+            c = category;
+            return save();</span>
+        }
+<span style = "background-color:#fdd">    }
+    return false;</span>
+<span style = "background-color:#dfd">}</span>
+
+<span style = "background-color:#dfd">bool CategoryHandler::remove(const std::string&amp; id) {
+    auto it = std::remove_if(categories.begin(), categories.end(), [&amp;](const Category&amp; c) { return c.id == id; });
+    if (it == categories.end()) return false;
+    categories.erase(it, categories.end());
+    return save();
+}</span>
+
+<span style = "background-color:#dfd">std::vector&lt;Category&gt; CategoryHandler::list() const {
+    return categories;
+}</span>
+
+<span style = "background-color:#dfd">bool CategoryHandler::backup(const std::string&amp; backupPath) const {</span>
+    // Ensure source file exists
+<span style = "background-color:#dfd">    std::filesystem::create_directories("data");
+    std::ifstream src("data/categories.json", std::ios::binary);
+    if (!src.is_open()) {</span>
+<span style = "background-color:#fdd">        std::ofstream createFile("data/categories.json");
+        createFile &lt;&lt; "[]";
+        src.open("data/categories.json", std::ios::binary);
+    }</span>
+<span style = "background-color:#dfd">    std::filesystem::create_directories("data");
+    if (!std::filesystem::exists("data/categories.json")) {</span>
+<span style = "background-color:#fdd">        std::ofstream createFile("data/categories.json");
+        createFile &lt;&lt; "[]";
+        createFile.close();
+    }</span>
+<span style = "background-color:#dfd">    std::ofstream dst(backupPath, std::ios::binary);
+    std::filesystem::create_directories("logs");
+    std::ofstream debug("logs/debug.log", std::ios::app);
+    if (!src.is_open()) debug &lt;&lt; "[CategoryHandler::backup] Source file open failed\n";
+    if (!dst.is_open()) debug &lt;&lt; "[CategoryHandler::backup] Dest file open failed\n";
+    if (!src.is_open() || !dst.is_open()) return false;
+    dst &lt;&lt; src.rdbuf();
+    return true;
+}</span>
+
+<span style = "background-color:#dfd">bool CategoryHandler::restore(const std::string&amp; backupPath) {
+    std::filesystem::create_directories("data");
+    std::ifstream src(backupPath, std::ios::binary);
+    if (!src.is_open()) {</span>
+<span style = "background-color:#fdd">        std::ofstream createFile(backupPath);
+        createFile &lt;&lt; "[]";
+        src.open(backupPath, std::ios::binary);
+    }</span>
+<span style = "background-color:#dfd">    std::ofstream dst("data/categories.json", std::ios::binary);
+    if (!src.is_open() || !dst.is_open()) return false;
+    dst &lt;&lt; src.rdbuf();
+    return load();
+}</span>
+
+<span style = "background-color:#dfd">bool CategoryHandler::validate(const Category&amp; category) const {
+    if (category.name.empty()) return false;
+    for (const auto&amp; c : categories) {
+        if (c.name == category.name) return false; // unique name
+    }
+    return true;
+}</span></pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

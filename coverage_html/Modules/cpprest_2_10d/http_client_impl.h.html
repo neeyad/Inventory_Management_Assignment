@@ -1,0 +1,189 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>http_client_impl.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: Client-side APIs.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#pragma once
+
+#include "cpprest/astreambuf.h"
+#include "cpprest/details/basic_types.h"
+#include "cpprest/http_client.h"
+#include "cpprest/http_msg.h"
+#include &lt;memory&gt;
+#include &lt;stdexcept&gt;
+#include &lt;string&gt;
+
+namespace web
+{
+namespace http
+{
+namespace details
+{
+/// &lt;summary&gt;
+/// Serialize the http_headers into name:value pairs separated by a carriage return and line feed.
+/// &lt;/summary&gt;
+utility::string_t flatten_http_headers(const http_headers&amp; headers);
+/// &lt;summary&gt;
+/// Parses a string containing Http headers.
+/// &lt;/summary&gt;
+void parse_headers_string(_Inout_z_ utility::char_t* headersStr, http_headers&amp; headers);
+} // namespace details
+} // namespace http
+} // namespace web
+
+namespace web
+{
+namespace http
+{
+namespace client
+{
+namespace details
+{
+class _http_client_communicator;
+
+// Request context encapsulating everything necessary for creating and responding to a request.
+class request_context
+{
+public:
+    // Destructor to clean up any held resources.
+<span style = "background-color:#fdd">    virtual ~request_context() {}</span>
+
+    virtual void report_exception(std::exception_ptr exceptionPtr);
+
+    virtual concurrency::streams::streambuf&lt;uint8_t&gt; _get_readbuffer();
+
+    void complete_headers();
+
+    /// &lt;summary&gt;
+    /// Completes this request, setting the underlying task completion event, and cleaning up the handles
+    /// &lt;/summary&gt;
+    void complete_request(utility::size64_t body_size);
+
+    void report_error(unsigned long error_code, const std::string&amp; errorMessage);
+
+#ifdef _WIN32
+    void report_error(unsigned long error_code, const std::wstring&amp; errorMessage);
+#endif
+
+    template&lt;typename _ExceptionType&gt;
+    void report_exception(const _ExceptionType&amp; e)
+<span style = "background-color:#fdd">    {
+        report_exception(std::make_exception_ptr(e));
+    }</span>
+
+    /// &lt;summary&gt;Set m_decompressor based on the response headers, or call report_exception&lt;/summary&gt;
+    /// &lt;returns&gt;false on failure&lt;/returns&gt;
+    bool handle_compression();
+
+    /// &lt;summary&gt;Append an Accept-Encoding header if requested by the http_client settings&lt;/summary&gt;
+    utility::string_t get_compression_header() const;
+
+    concurrency::streams::streambuf&lt;uint8_t&gt; _get_writebuffer();
+
+    // Reference to the http_client implementation.
+    std::shared_ptr&lt;_http_client_communicator&gt; m_http_client;
+
+    // request/response pair.
+    http_request m_request;
+    http_response m_response;
+
+    utility::size64_t m_uploaded;
+    utility::size64_t m_downloaded;
+
+    // task completion event to signal request is completed.
+    pplx::task_completion_event&lt;http_response&gt; m_request_completion;
+
+    // Registration for cancellation notification if enabled.
+    pplx::cancellation_token_registration m_cancellationRegistration;
+
+    std::unique_ptr&lt;web::http::compression::decompress_provider&gt; m_decompressor;
+
+protected:
+    request_context(const std::shared_ptr&lt;_http_client_communicator&gt;&amp; client, const http_request&amp; request);
+
+    virtual void finish();
+};
+
+//
+// Interface used by client implementations. Concrete implementations are responsible for
+// sending HTTP requests and receiving the responses.
+//
+class _http_client_communicator : public http_pipeline_stage
+{
+public:
+<span style = "background-color:#fdd">    virtual ~_http_client_communicator() override = default;</span>
+
+    // Asynchronously send a HTTP request and process the response.
+    void async_send_request(const std::shared_ptr&lt;request_context&gt;&amp; request);
+
+    void finish_request();
+
+    const http_client_config&amp; client_config() const;
+
+    const uri&amp; base_uri() const;
+
+protected:
+    _http_client_communicator(http::uri&amp;&amp; address, http_client_config&amp;&amp; client_config);
+
+    // HTTP client implementations must implement send_request.
+    virtual void send_request(_In_ const std::shared_ptr&lt;request_context&gt;&amp; request) = 0;
+
+    // URI to connect to.
+    const http::uri m_uri;
+
+    pplx::extensibility::critical_section_t m_client_lock;
+
+private:
+    http_client_config m_client_config;
+
+    // Wraps opening the client around sending a request.
+    void async_send_request_impl(const std::shared_ptr&lt;request_context&gt;&amp; request);
+
+    // Queue used to guarantee ordering of requests, when applicable.
+    std::queue&lt;std::shared_ptr&lt;request_context&gt;&gt; m_requests_queue;
+    bool m_outstanding;
+};
+
+/// &lt;summary&gt;
+/// Factory function implemented by the separate platforms to construct their subclasses of _http_client_communicator
+/// &lt;/summary&gt;
+std::shared_ptr&lt;_http_client_communicator&gt; create_platform_final_pipeline_stage(uri&amp;&amp; base_uri,
+                                                                                http_client_config&amp;&amp; client_config);
+
+} // namespace details
+} // namespace client
+} // namespace http
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

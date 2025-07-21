@@ -1,0 +1,1862 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>json.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: JSON parser and writer
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#pragma once
+
+#ifndef CASA_JSON_H
+#define CASA_JSON_H
+
+#include "cpprest/asyncrt_utils.h"
+#include "cpprest/details/basic_types.h"
+#include &lt;cstdint&gt;
+#include &lt;memory&gt;
+#include &lt;sstream&gt;
+#include &lt;string&gt;
+#include &lt;unordered_map&gt;
+#include &lt;vector&gt;
+
+namespace web
+{
+/// Library for parsing and serializing JSON values to and from C++ types.
+namespace json
+{
+// Various forward declarations.
+namespace details
+{
+class _Value;
+class _Number;
+class _Null;
+class _Boolean;
+class _String;
+class _Object;
+class _Array;
+template&lt;typename CharType&gt;
+class JSON_Parser;
+} // namespace details
+
+namespace details
+{
+extern bool g_keep_json_object_unsorted;
+}
+
+/// &lt;summary&gt;
+/// Preserve the order of the name/value pairs when parsing a JSON object.
+/// The default is false, which can yield better performance.
+/// &lt;/summary&gt;
+/// &lt;param name="keep_order"&gt;&lt;c&gt;true&lt;/c&gt; if ordering should be preserved when parsing, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/param&gt;
+/// &lt;remarks&gt;Note this is a global setting and affects all JSON parsing done.&lt;/remarks&gt;
+void _ASYNCRTIMP __cdecl keep_object_element_order(bool keep_order);
+
+#ifdef _WIN32
+#ifdef _DEBUG
+#define ENABLE_JSON_VALUE_VISUALIZER
+#endif
+#endif
+
+class number;
+class array;
+class object;
+
+/// &lt;summary&gt;
+/// A JSON value represented as a C++ class.
+/// &lt;/summary&gt;
+class value
+{
+public:
+    /// &lt;summary&gt;
+    /// This enumeration represents the various kinds of JSON values.
+    /// &lt;/summary&gt;
+    enum value_type
+    {
+        /// Number value
+        Number,
+        /// Boolean value
+        Boolean,
+        /// String value
+        String,
+        /// Object value
+        Object,
+        /// Array value
+        Array,
+        /// Null value
+        Null
+    };
+
+    /// &lt;summary&gt;
+    /// Constructor creating a null value
+    /// &lt;/summary&gt;
+    _ASYNCRTIMP value();
+
+    /// &lt;summary&gt;
+    /// Constructor creating a JSON number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    _ASYNCRTIMP value(int value);
+
+    /// &lt;summary&gt;
+    /// Constructor creating a JSON number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    _ASYNCRTIMP value(unsigned value);
+
+    /// &lt;summary&gt;
+    /// Constructor creating a JSON number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    _ASYNCRTIMP value(long value);
+
+    /// &lt;summary&gt;
+    /// Constructor creating a JSON number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    _ASYNCRTIMP value(unsigned long value);
+
+    /// &lt;summary&gt;
+    /// Constructor creating a JSON number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    _ASYNCRTIMP value(long long value);
+
+    /// &lt;summary&gt;
+    /// Constructor creating a JSON number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    _ASYNCRTIMP value(unsigned long long value);
+
+    /// &lt;summary&gt;
+    /// Constructor creating a JSON number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    _ASYNCRTIMP value(double value);
+
+    /// &lt;summary&gt;
+    /// Constructor creating a JSON Boolean value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    _ASYNCRTIMP explicit value(bool value);
+
+    /// &lt;summary&gt;
+    /// Constructor creating a JSON string value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from, a C++ STL string of the platform-native character
+    /// width&lt;/param&gt; &lt;remarks&gt; This constructor has O(n) performance because it tries to determine if specified string
+    /// has characters that should be properly escaped in JSON. &lt;remarks&gt;
+    _ASYNCRTIMP explicit value(utility::string_t value);
+
+    /// &lt;summary&gt;
+    /// Constructor creating a JSON string value specifying if the string contains characters to escape
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from, a C++ STL string of the platform-native character
+    /// width&lt;/param&gt; &lt;param name="has_escape_chars"&gt;Whether &lt;paramref name="value" /&gt; contains characters that should
+    /// be escaped in JSON value&lt;/param&gt; &lt;remarks&gt; This constructor has O(1) performance.
+    /// &lt;/remarks&gt;
+    _ASYNCRTIMP explicit value(utility::string_t value, bool has_escape_chars);
+
+    /// &lt;summary&gt;
+    /// Constructor creating a JSON string value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from, a C++ STL string of the platform-native character
+    /// width&lt;/param&gt; &lt;remarks&gt; &lt;para&gt; This constructor has O(n) performance because it tries to determine if specified
+    /// string has characters that should be properly escaped in JSON.
+    /// &lt;/para&gt;
+    /// &lt;para&gt;
+    /// This constructor exists in order to avoid string literals matching another constructor,
+    /// as is very likely. For example, conversion to bool does not require a user-defined conversion,
+    /// and will therefore match first, which means that the JSON value turns up as a boolean.
+    /// &lt;/para&gt;
+    /// &lt;/remarks&gt;
+    _ASYNCRTIMP explicit value(const utility::char_t* value);
+
+    /// &lt;summary&gt;
+    /// Constructor creating a JSON string value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from, a C++ STL string of the platform-native character
+    /// width&lt;/param&gt; &lt;param name="has_escape_chars"&gt;Whether &lt;paramref name="value" /&gt; contains characters &lt;remarks&gt;
+    /// &lt;para&gt;
+    /// This overload has O(1) performance.
+    /// &lt;/para&gt;
+    /// &lt;para&gt;
+    /// This constructor exists in order to avoid string literals matching another constructor,
+    /// as is very likely. For example, conversion to bool does not require a user-defined conversion,
+    /// and will therefore match first, which means that the JSON value turns up as a boolean.
+    /// &lt;/para&gt;
+    /// &lt;/remarks&gt;
+    _ASYNCRTIMP explicit value(const utility::char_t* value, bool has_escape_chars);
+
+    /// &lt;summary&gt;
+    /// Copy constructor
+    /// &lt;/summary&gt;
+    _ASYNCRTIMP value(const value&amp;);
+
+    /// &lt;summary&gt;
+    /// Move constructor
+    /// &lt;/summary&gt;
+    _ASYNCRTIMP value(value&amp;&amp;) CPPREST_NOEXCEPT;
+
+    /// &lt;summary&gt;
+    /// Assignment operator.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The JSON value object that contains the result of the assignment.&lt;/returns&gt;
+    _ASYNCRTIMP value&amp; operator=(const value&amp;);
+
+    /// &lt;summary&gt;
+    /// Move assignment operator.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The JSON value object that contains the result of the assignment.&lt;/returns&gt;
+    _ASYNCRTIMP value&amp; operator=(value&amp;&amp;) CPPREST_NOEXCEPT;
+
+    // Static factories
+
+    /// &lt;summary&gt;
+    /// Creates a null value
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A JSON null value&lt;/returns&gt;
+    static _ASYNCRTIMP value __cdecl null();
+
+    /// &lt;summary&gt;
+    /// Creates a number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    /// &lt;returns&gt;A JSON number value&lt;/returns&gt;
+    static _ASYNCRTIMP value __cdecl number(double value);
+
+    /// &lt;summary&gt;
+    /// Creates a number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    /// &lt;returns&gt;A JSON number value&lt;/returns&gt;
+    static _ASYNCRTIMP value __cdecl number(int value);
+
+    /// &lt;summary&gt;
+    /// Creates a number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    /// &lt;returns&gt;A JSON number value&lt;/returns&gt;
+    static _ASYNCRTIMP value __cdecl number(unsigned value);
+
+    /// &lt;summary&gt;
+    /// Creates a number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    /// &lt;returns&gt;A JSON number value&lt;/returns&gt;
+    static _ASYNCRTIMP value __cdecl number(long value);
+
+    /// &lt;summary&gt;
+    /// Creates a number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    /// &lt;returns&gt;A JSON number value&lt;/returns&gt;
+    static _ASYNCRTIMP value __cdecl number(unsigned long value);
+
+    /// &lt;summary&gt;
+    /// Creates a number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    /// &lt;returns&gt;A JSON number value&lt;/returns&gt;
+    static _ASYNCRTIMP value __cdecl number(long long value);
+
+    /// &lt;summary&gt;
+    /// Creates a number value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    /// &lt;returns&gt;A JSON number value&lt;/returns&gt;
+    static _ASYNCRTIMP value __cdecl number(unsigned long long value);
+
+    /// &lt;summary&gt;
+    /// Creates a Boolean value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    /// &lt;returns&gt;A JSON Boolean value&lt;/returns&gt;
+    static _ASYNCRTIMP value __cdecl boolean(bool value);
+
+    /// &lt;summary&gt;
+    /// Creates a string value
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    /// &lt;returns&gt;A JSON string value&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// This overload has O(n) performance because it tries to determine if
+    /// specified string has characters that should be properly escaped in JSON.
+    /// &lt;/remarks&gt;
+    static _ASYNCRTIMP value __cdecl string(utility::string_t value);
+
+    /// &lt;summary&gt;
+    /// Creates a string value specifying if the string contains characters to escape
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from&lt;/param&gt;
+    /// &lt;param name="has_escape_chars"&gt;Whether &lt;paramref name="value" /&gt; contains characters
+    /// that should be escaped in JSON value&lt;/param&gt;
+    /// &lt;returns&gt;A JSON string value&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// This overload has O(1) performance.
+    /// &lt;/remarks&gt;
+    static _ASYNCRTIMP value __cdecl string(utility::string_t value, bool has_escape_chars);
+
+#ifdef _WIN32
+private:
+    // Only used internally by JSON parser.
+    static _ASYNCRTIMP value __cdecl string(const std::string&amp; value);
+
+public:
+#endif
+
+    /// &lt;summary&gt;
+    /// Creates an object value
+    /// &lt;/summary&gt;
+    /// &lt;param name="keep_order"&gt;Whether to preserve the original order of the fields&lt;/param&gt;
+    /// &lt;returns&gt;An empty JSON object value&lt;/returns&gt;
+    static _ASYNCRTIMP json::value __cdecl object(bool keep_order = false);
+
+    /// &lt;summary&gt;
+    /// Creates an object value from a collection of field/values
+    /// &lt;/summary&gt;
+    /// &lt;param name="fields"&gt;Field names associated with JSON values&lt;/param&gt;
+    /// &lt;param name="keep_order"&gt;Whether to preserve the original order of the fields&lt;/param&gt;
+    /// &lt;returns&gt;A non-empty JSON object value&lt;/returns&gt;
+    static _ASYNCRTIMP json::value __cdecl object(std::vector&lt;std::pair&lt;::utility::string_t, value&gt;&gt; fields,
+                                                  bool keep_order = false);
+
+    /// &lt;summary&gt;
+    /// Creates an empty JSON array
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An empty JSON array value&lt;/returns&gt;
+    static _ASYNCRTIMP json::value __cdecl array();
+
+    /// &lt;summary&gt;
+    /// Creates a JSON array
+    /// &lt;/summary&gt;
+    /// &lt;param name="size"&gt;The initial number of elements of the JSON value&lt;/param&gt;
+    /// &lt;returns&gt;A JSON array value&lt;/returns&gt;
+    static _ASYNCRTIMP json::value __cdecl array(size_t size);
+
+    /// &lt;summary&gt;
+    /// Creates a JSON array
+    /// &lt;/summary&gt;
+    /// &lt;param name="elements"&gt;A vector of JSON values&lt;/param&gt;
+    /// &lt;returns&gt;A JSON array value&lt;/returns&gt;
+    static _ASYNCRTIMP json::value __cdecl array(std::vector&lt;value&gt; elements);
+
+    /// &lt;summary&gt;
+    /// Accesses the type of JSON value the current value instance is
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value's type&lt;/returns&gt;
+    _ASYNCRTIMP json::value::value_type type() const;
+
+    /// &lt;summary&gt;
+    /// Is the current value a null value?
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the value is a null value, &lt;c&gt;false&lt;/c&gt; otherwise&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool is_null() const { return type() == Null; };</span>
+
+    /// &lt;summary&gt;
+    /// Is the current value a number value?
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the value is a number value, &lt;c&gt;false&lt;/c&gt; otherwise&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool is_number() const { return type() == Number; }</span>
+
+    /// &lt;summary&gt;
+    /// Is the current value represented as an integer number value?
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;
+    /// Note that if a json value is a number but represented as a double it can still
+    /// be retrieved as a integer using as_integer(), however the value will be truncated.
+    /// &lt;/remarks&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the value is an integer value, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    _ASYNCRTIMP bool is_integer() const;
+
+    /// &lt;summary&gt;
+    /// Is the current value represented as an double number value?
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;
+    /// Note that if a json value is a number but represented as a int it can still
+    /// be retrieved as a double using as_double().
+    /// &lt;/remarks&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the value is an double value, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    _ASYNCRTIMP bool is_double() const;
+
+    /// &lt;summary&gt;
+    /// Is the current value a Boolean value?
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the value is a Boolean value, &lt;c&gt;false&lt;/c&gt; otherwise&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool is_boolean() const { return type() == Boolean; }</span>
+
+    /// &lt;summary&gt;
+    /// Is the current value a string value?
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the value is a string value, &lt;c&gt;false&lt;/c&gt; otherwise&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool is_string() const { return type() == String; }</span>
+
+    /// &lt;summary&gt;
+    /// Is the current value an array?
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the value is an array, &lt;c&gt;false&lt;/c&gt; otherwise&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool is_array() const { return type() == Array; }</span>
+
+    /// &lt;summary&gt;
+    /// Is the current value an object?
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the value is an object, &lt;c&gt;false&lt;/c&gt; otherwise&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool is_object() const { return type() == Object; }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the number of children of the value.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The number of children. 0 for all non-composites.&lt;/returns&gt;
+    size_t size() const;
+
+    /// &lt;summary&gt;
+    /// Parses a string and construct a JSON value.
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from, a C++ STL string of the
+    /// platform-native character width&lt;/param&gt;
+    _ASYNCRTIMP static value __cdecl parse(const utility::string_t&amp; value);
+
+    /// &lt;summary&gt;
+    /// Attempts to parse a string and construct a JSON value.
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from, a C++ STL string of the
+    /// platform-native character width&lt;/param&gt;
+    /// &lt;param name="errorCode"&gt;If parsing fails, the error code is greater than 0&lt;/param&gt;
+    /// &lt;returns&gt;The parsed object. Returns web::json::value::null if failed&lt;/returns&gt;
+    _ASYNCRTIMP static value __cdecl parse(const utility::string_t&amp; value, std::error_code&amp; errorCode);
+
+#ifdef _WIN32
+    /// &lt;summary&gt;
+    /// Parses a string and construct a JSON value.
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from, a C++ STL string in
+    /// UTF8 format&lt;/param&gt;
+    _ASYNCRTIMP static value __cdecl parse(const std::string&amp; value);
+
+    /// &lt;summary&gt;
+    /// Attempts to parse a string and construct a JSON value.
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;The C++ value to create a JSON value from, a C++ STL string in
+    /// UTF8 format&lt;/param&gt;
+    /// &lt;param name="errorCode"&gt;If parsing fails, the error code is greater than 0&lt;/param&gt;
+    /// &lt;returns&gt;The parsed object. Returns web::json::value::null if failed&lt;/returns&gt;
+    _ASYNCRTIMP static value __cdecl parse(const std::string&amp; value, std::error_code&amp; errorCode);
+#endif
+
+    /// &lt;summary&gt;
+    /// Serializes the current JSON value to a C++ string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A string representation of the value&lt;/returns&gt;
+    _ASYNCRTIMP utility::string_t serialize() const;
+
+    /// &lt;summary&gt;
+    /// Serializes the current JSON value to a C++ string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A string representation of the value&lt;/returns&gt;
+    CASABLANCA_DEPRECATED("This API is deprecated and has been renamed to avoid confusion with as_string(), use "
+                          "::web::json::value::serialize() instead.")
+    _ASYNCRTIMP utility::string_t to_string() const;
+
+    /// &lt;summary&gt;
+    /// Parses a JSON value from the contents of an input stream using the native platform character width.
+    /// &lt;/summary&gt;
+    /// &lt;param name="input"&gt;The stream to read the JSON value from&lt;/param&gt;
+    /// &lt;returns&gt;The JSON value object created from the input stream.&lt;/returns&gt;
+    _ASYNCRTIMP static value __cdecl parse(utility::istream_t&amp; input);
+
+    /// &lt;summary&gt;
+    /// Parses a JSON value from the contents of an input stream using the native platform character width.
+    /// &lt;/summary&gt;
+    /// &lt;param name="input"&gt;The stream to read the JSON value from&lt;/param&gt;
+    /// &lt;param name="errorCode"&gt;If parsing fails, the error code is greater than 0&lt;/param&gt;
+    /// &lt;returns&gt;The parsed object. Returns web::json::value::null if failed&lt;/returns&gt;
+    _ASYNCRTIMP static value __cdecl parse(utility::istream_t&amp; input, std::error_code&amp; errorCode);
+
+    /// &lt;summary&gt;
+    /// Writes the current JSON value to a stream with the native platform character width.
+    /// &lt;/summary&gt;
+    /// &lt;param name="stream"&gt;The stream that the JSON string representation should be written to.&lt;/param&gt;
+    _ASYNCRTIMP void serialize(utility::ostream_t&amp; stream) const;
+
+#ifdef _WIN32
+    /// &lt;summary&gt;
+    /// Parses a JSON value from the contents of a single-byte (UTF8) stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="stream"&gt;The stream to read the JSON value from&lt;/param&gt;
+    _ASYNCRTIMP static value __cdecl parse(std::istream&amp; stream);
+
+    /// &lt;summary&gt;
+    /// Parses a JSON value from the contents of a single-byte (UTF8) stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="stream"&gt;The stream to read the JSON value from&lt;/param&gt;
+    /// &lt;param name="errorCode"&gt;If parsing fails, the error code is greater than 0&lt;/param&gt;
+    /// &lt;returns&gt;The parsed object. Returns web::json::value::null if failed&lt;/returns&gt;
+    _ASYNCRTIMP static value __cdecl parse(std::istream&amp; stream, std::error_code&amp; error);
+
+    /// &lt;summary&gt;
+    /// Serializes the content of the value into a single-byte (UTF8) stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="stream"&gt;The stream that the JSON string representation should be written to.&lt;/param&gt;
+    _ASYNCRTIMP void serialize(std::ostream&amp; stream) const;
+#endif
+
+    /// &lt;summary&gt;
+    /// Converts the JSON value to a C++ double, if and only if it is a number value.
+    /// Throws &lt;see cref="json_exception"/&gt;  if the value is not a number
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A double representation of the value&lt;/returns&gt;
+    _ASYNCRTIMP double as_double() const;
+
+    /// &lt;summary&gt;
+    /// Converts the JSON value to a C++ integer, if and only if it is a number value.
+    /// Throws &lt;see cref="json_exception"/&gt; if the value is not a number
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An integer representation of the value&lt;/returns&gt;
+    _ASYNCRTIMP int as_integer() const;
+
+    /// &lt;summary&gt;
+    /// Converts the JSON value to a number class, if and only if it is a number value.
+    /// Throws &lt;see cref="json_exception"/&gt;  if the value is not a number
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An instance of number class&lt;/returns&gt;
+    _ASYNCRTIMP const json::number&amp; as_number() const;
+
+    /// &lt;summary&gt;
+    /// Converts the JSON value to a C++ bool, if and only if it is a Boolean value.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A C++ bool representation of the value&lt;/returns&gt;
+    _ASYNCRTIMP bool as_bool() const;
+
+    /// &lt;summary&gt;
+    /// Converts the JSON value to a json array, if and only if it is an array value.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;The returned &lt;c&gt;json::array&lt;/c&gt; should have the same or shorter lifetime as &lt;c&gt;this&lt;/c&gt;&lt;/remarks&gt;
+    /// &lt;returns&gt;An array representation of the value&lt;/returns&gt;
+    _ASYNCRTIMP json::array&amp; as_array();
+
+    /// &lt;summary&gt;
+    /// Converts the JSON value to a json array, if and only if it is an array value.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;The returned &lt;c&gt;json::array&lt;/c&gt; should have the same or shorter lifetime as &lt;c&gt;this&lt;/c&gt;&lt;/remarks&gt;
+    /// &lt;returns&gt;An array representation of the value&lt;/returns&gt;
+    _ASYNCRTIMP const json::array&amp; as_array() const;
+
+    /// &lt;summary&gt;
+    /// Converts the JSON value to a json object, if and only if it is an object value.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An object representation of the value&lt;/returns&gt;
+    _ASYNCRTIMP json::object&amp; as_object();
+
+    /// &lt;summary&gt;
+    /// Converts the JSON value to a json object, if and only if it is an object value.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An object representation of the value&lt;/returns&gt;
+    _ASYNCRTIMP const json::object&amp; as_object() const;
+
+    /// &lt;summary&gt;
+    /// Converts the JSON value to a C++ STL string, if and only if it is a string value.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A C++ STL string representation of the value&lt;/returns&gt;
+    _ASYNCRTIMP const utility::string_t&amp; as_string() const;
+
+    /// &lt;summary&gt;
+    /// Compares two JSON values for equality.
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;The JSON value to compare with.&lt;/param&gt;
+    /// &lt;returns&gt;True if the values are equal.&lt;/returns&gt;
+    _ASYNCRTIMP bool operator==(const value&amp; other) const;
+
+    /// &lt;summary&gt;
+    /// Compares two JSON values for inequality.
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;The JSON value to compare with.&lt;/param&gt;
+    /// &lt;returns&gt;True if the values are unequal.&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool operator!=(const value&amp; other) const { return !((*this) == other); }</span>
+
+    /// &lt;summary&gt;
+    /// Tests for the presence of a field.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The name of the field&lt;/param&gt;
+    /// &lt;returns&gt;True if the field exists, false otherwise.&lt;/returns&gt;
+    bool has_field(const utility::string_t&amp; key) const;
+
+    /// &lt;summary&gt;
+    /// Tests for the presence of a number field
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The name of the field&lt;/param&gt;
+    /// &lt;returns&gt;True if the field exists, false otherwise.&lt;/returns&gt;
+    _ASYNCRTIMP bool has_number_field(const utility::string_t&amp; key) const;
+
+    /// &lt;summary&gt;
+    /// Tests for the presence of an integer field
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The name of the field&lt;/param&gt;
+    /// &lt;returns&gt;True if the field exists, false otherwise.&lt;/returns&gt;
+    _ASYNCRTIMP bool has_integer_field(const utility::string_t&amp; key) const;
+
+    /// &lt;summary&gt;
+    /// Tests for the presence of a double field
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The name of the field&lt;/param&gt;
+    /// &lt;returns&gt;True if the field exists, false otherwise.&lt;/returns&gt;
+    _ASYNCRTIMP bool has_double_field(const utility::string_t&amp; key) const;
+
+    /// &lt;summary&gt;
+    /// Tests for the presence of a boolean field
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The name of the field&lt;/param&gt;
+    /// &lt;returns&gt;True if the field exists, false otherwise.&lt;/returns&gt;
+    _ASYNCRTIMP bool has_boolean_field(const utility::string_t&amp; key) const;
+
+    /// &lt;summary&gt;
+    /// Tests for the presence of a string field
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The name of the field&lt;/param&gt;
+    /// &lt;returns&gt;True if the field exists, false otherwise.&lt;/returns&gt;
+    _ASYNCRTIMP bool has_string_field(const utility::string_t&amp; key) const;
+
+    /// &lt;summary&gt;
+    /// Tests for the presence of an array field
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The name of the field&lt;/param&gt;
+    /// &lt;returns&gt;True if the field exists, false otherwise.&lt;/returns&gt;
+    _ASYNCRTIMP bool has_array_field(const utility::string_t&amp; key) const;
+
+    /// &lt;summary&gt;
+    /// Tests for the presence of an object field
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The name of the field&lt;/param&gt;
+    /// &lt;returns&gt;True if the field exists, false otherwise.&lt;/returns&gt;
+    _ASYNCRTIMP bool has_object_field(const utility::string_t&amp; key) const;
+
+    /// &lt;summary&gt;
+    /// Accesses a field of a JSON object.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The name of the field&lt;/param&gt;
+    /// &lt;returns&gt;The value kept in the field; null if the field does not exist&lt;/returns&gt;
+    CASABLANCA_DEPRECATED(
+        "This API is deprecated and will be removed in a future release, use json::value::at() instead.")
+    value get(const utility::string_t&amp; key) const;
+
+    /// &lt;summary&gt;
+    /// Erases an element of a JSON array. Throws if index is out of bounds.
+    /// &lt;/summary&gt;
+    /// &lt;param name="index"&gt;The index of the element to erase in the JSON array.&lt;/param&gt;
+    _ASYNCRTIMP void erase(size_t index);
+
+    /// &lt;summary&gt;
+    /// Erases an element of a JSON object. Throws if the key doesn't exist.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The key of the element to erase in the JSON object.&lt;/param&gt;
+    _ASYNCRTIMP void erase(const utility::string_t&amp; key);
+
+    /// &lt;summary&gt;
+    /// Accesses an element of a JSON array. Throws when index out of bounds.
+    /// &lt;/summary&gt;
+    /// &lt;param name="index"&gt;The index of an element in the JSON array.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to the value.&lt;/returns&gt;
+    _ASYNCRTIMP json::value&amp; at(size_t index);
+
+    /// &lt;summary&gt;
+    /// Accesses an element of a JSON array. Throws when index out of bounds.
+    /// &lt;/summary&gt;
+    /// &lt;param name="index"&gt;The index of an element in the JSON array.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to the value.&lt;/returns&gt;
+    _ASYNCRTIMP const json::value&amp; at(size_t index) const;
+
+    /// &lt;summary&gt;
+    /// Accesses an element of a JSON object. If the key doesn't exist, this method throws.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The key of an element in the JSON object.&lt;/param&gt;
+    /// &lt;returns&gt;If the key exists, a reference to the value.&lt;/returns&gt;
+    _ASYNCRTIMP json::value&amp; at(const utility::string_t&amp; key);
+
+    /// &lt;summary&gt;
+    /// Accesses an element of a JSON object. If the key doesn't exist, this method throws.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The key of an element in the JSON object.&lt;/param&gt;
+    /// &lt;returns&gt;If the key exists, a reference to the value.&lt;/returns&gt;
+    _ASYNCRTIMP const json::value&amp; at(const utility::string_t&amp; key) const;
+
+    /// &lt;summary&gt;
+    /// Accesses a field of a JSON object.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The name of the field&lt;/param&gt;
+    /// &lt;returns&gt;A reference to the value kept in the field.&lt;/returns&gt;
+    _ASYNCRTIMP value&amp; operator[](const utility::string_t&amp; key);
+
+#ifdef _WIN32
+private:
+    // Only used internally by JSON parser
+    _ASYNCRTIMP value&amp; operator[](const std::string&amp; key)
+<span style = "background-color:#fdd">    {</span>
+        // JSON object stores its field map as a unordered_map of string_t, so this conversion is hard to avoid
+<span style = "background-color:#fdd">        return operator[](utility::conversions::to_string_t(key));
+    }</span>
+
+public:
+#endif
+
+    /// &lt;summary&gt;
+    /// Accesses an element of a JSON array.
+    /// &lt;/summary&gt;
+    /// &lt;param name="index"&gt;The index of an element in the JSON array&lt;/param&gt;
+    /// &lt;returns&gt;The value kept at the array index; null if outside the boundaries of the array&lt;/returns&gt;
+    CASABLANCA_DEPRECATED(
+        "This API is deprecated and will be removed in a future release, use json::value::at() instead.")
+    value get(size_t index) const;
+
+    /// &lt;summary&gt;
+    /// Accesses an element of a JSON array.
+    /// &lt;/summary&gt;
+    /// &lt;param name="index"&gt;The index of an element in the JSON array.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to the value kept in the field.&lt;/returns&gt;
+    _ASYNCRTIMP value&amp; operator[](size_t index);
+
+private:
+    friend class web::json::details::_Object;
+    friend class web::json::details::_Array;
+    template&lt;typename CharType&gt;
+    friend class web::json::details::JSON_Parser;
+
+#ifdef _WIN32
+    /// &lt;summary&gt;
+    /// Writes the current JSON value as a double-byte string to a string instance.
+    /// &lt;/summary&gt;
+    /// &lt;param name="string"&gt;The string that the JSON representation should be written to.&lt;/param&gt;
+    _ASYNCRTIMP void format(std::basic_string&lt;utf16char&gt;&amp; string) const;
+#endif
+    /// &lt;summary&gt;
+    /// Serializes the content of the value into a string instance in UTF8 format
+    /// &lt;/summary&gt;
+    /// &lt;param name="string"&gt;The string that the JSON representation should be written to&lt;/param&gt;
+    _ASYNCRTIMP void format(std::basic_string&lt;char&gt;&amp; string) const;
+
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    explicit value(std::unique_ptr&lt;details::_Value&gt; v, value_type kind) : m_value(std::move(v)), m_kind(kind)</span>
+#else
+    explicit value(std::unique_ptr&lt;details::_Value&gt; v) : m_value(std::move(v))
+#endif
+<span style = "background-color:#fdd">    {
+    }</span>
+
+    std::unique_ptr&lt;details::_Value&gt; m_value;
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+    value_type m_kind;
+#endif
+};
+
+/// &lt;summary&gt;
+/// A single exception type to represent errors in parsing, converting, and accessing
+/// elements of JSON values.
+/// &lt;/summary&gt;
+class json_exception : public std::exception
+{
+private:
+    std::string _message;
+
+public:
+<span style = "background-color:#fdd">    json_exception(const char* const message) : _message(message) {}</span>
+#ifdef _UTF16_STRINGS
+    json_exception(const wchar_t* const message) : _message(utility::conversions::utf16_to_utf8(message)) {}
+#endif // _UTF16_STRINGS
+<span style = "background-color:#fdd">    json_exception(std::string&amp;&amp; message) : _message(std::move(message)) {}</span>
+
+    // Must be narrow string because it derives from std::exception
+<span style = "background-color:#fdd">    const char* what() const CPPREST_NOEXCEPT { return _message.c_str(); }</span>
+};
+
+namespace details
+{
+enum json_error
+{
+    left_over_character_in_stream = 1,
+    malformed_array_literal,
+    malformed_comment,
+    malformed_literal,
+    malformed_object_literal,
+    malformed_numeric_literal,
+    malformed_string_literal,
+    malformed_token,
+    mismatched_brances,
+    nesting,
+    unexpected_token
+};
+
+class json_error_category_impl : public std::error_category
+{
+public:
+<span style = "background-color:#fdd">    virtual const char* name() const CPPREST_NOEXCEPT override { return "json"; }</span>
+
+    virtual std::string message(int ev) const override
+<span style = "background-color:#fdd">    {
+        switch (ev)</span>
+        {
+            case json_error::left_over_character_in_stream:
+<span style = "background-color:#fdd">                return "Left-over characters in stream after parsing a JSON value";
+            case json_error::malformed_array_literal: return "Malformed array literal";
+            case json_error::malformed_comment: return "Malformed comment";
+            case json_error::malformed_literal: return "Malformed literal";
+            case json_error::malformed_object_literal: return "Malformed object literal";
+            case json_error::malformed_numeric_literal: return "Malformed numeric literal";
+            case json_error::malformed_string_literal: return "Malformed string literal";
+            case json_error::malformed_token: return "Malformed token";
+            case json_error::mismatched_brances: return "Mismatched braces";
+            case json_error::nesting: return "Nesting too deep";
+            case json_error::unexpected_token: return "Unexpected token";
+            default: return "Unknown json error";</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+};
+
+const json_error_category_impl&amp; json_error_category();
+} // namespace details
+
+/// &lt;summary&gt;
+/// A JSON array represented as a C++ class.
+/// &lt;/summary&gt;
+class array
+{
+    typedef std::vector&lt;json::value&gt; storage_type;
+
+public:
+    typedef storage_type::iterator iterator;
+    typedef storage_type::const_iterator const_iterator;
+    typedef storage_type::reverse_iterator reverse_iterator;
+    typedef storage_type::const_reverse_iterator const_reverse_iterator;
+    typedef storage_type::size_type size_type;
+
+private:
+<span style = "background-color:#fdd">    array() : m_elements() {}
+    array(size_type size) : m_elements(size) {}
+    array(storage_type elements) : m_elements(std::move(elements)) {}</span>
+
+public:
+    /// &lt;summary&gt;
+    /// Gets the beginning iterator element of the array
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An &lt;c&gt;iterator&lt;/c&gt; to the beginning of the JSON array.&lt;/returns&gt;
+    iterator begin() { return m_elements.begin(); }
+
+    /// &lt;summary&gt;
+    /// Gets the beginning const iterator element of the array.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;const_iterator&lt;/c&gt; to the beginning of the JSON array.&lt;/returns&gt;
+    const_iterator begin() const { return m_elements.cbegin(); }
+
+    /// &lt;summary&gt;
+    /// Gets the end iterator element of the array
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An &lt;c&gt;iterator&lt;/c&gt; to the end of the JSON array.&lt;/returns&gt;
+    iterator end() { return m_elements.end(); }
+
+    /// &lt;summary&gt;
+    /// Gets the end const iterator element of the array.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;const_iterator&lt;/c&gt; to the end of the JSON array.&lt;/returns&gt;
+    const_iterator end() const { return m_elements.cend(); }
+
+    /// &lt;summary&gt;
+    /// Gets the beginning reverse iterator element of the array
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An &lt;c&gt;reverse_iterator&lt;/c&gt; to the beginning of the JSON array.&lt;/returns&gt;
+    reverse_iterator rbegin() { return m_elements.rbegin(); }
+
+    /// &lt;summary&gt;
+    /// Gets the beginning const reverse iterator element of the array
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An &lt;c&gt;const_reverse_iterator&lt;/c&gt; to the beginning of the JSON array.&lt;/returns&gt;
+    const_reverse_iterator rbegin() const { return m_elements.rbegin(); }
+
+    /// &lt;summary&gt;
+    /// Gets the end reverse iterator element of the array
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An &lt;c&gt;reverse_iterator&lt;/c&gt; to the end of the JSON array.&lt;/returns&gt;
+    reverse_iterator rend() { return m_elements.rend(); }
+
+    /// &lt;summary&gt;
+    /// Gets the end const reverse iterator element of the array
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An &lt;c&gt;const_reverse_iterator&lt;/c&gt; to the end of the JSON array.&lt;/returns&gt;
+    const_reverse_iterator rend() const { return m_elements.crend(); }
+
+    /// &lt;summary&gt;
+    /// Gets the beginning const iterator element of the array.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;const_iterator&lt;/c&gt; to the beginning of the JSON array.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const_iterator cbegin() const { return m_elements.cbegin(); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the end const iterator element of the array.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;const_iterator&lt;/c&gt; to the end of the JSON array.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const_iterator cend() const { return m_elements.cend(); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the beginning const reverse iterator element of the array.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;const_reverse_iterator&lt;/c&gt; to the beginning of the JSON array.&lt;/returns&gt;
+    const_reverse_iterator crbegin() const { return m_elements.crbegin(); }
+
+    /// &lt;summary&gt;
+    /// Gets the end const reverse iterator element of the array.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;const_reverse_iterator&lt;/c&gt; to the end of the JSON array.&lt;/returns&gt;
+    const_reverse_iterator crend() const { return m_elements.crend(); }
+
+    /// &lt;summary&gt;
+    /// Deletes an element of the JSON array.
+    /// &lt;/summary&gt;
+    /// &lt;param name="position"&gt;A const_iterator to the element to delete.&lt;/param&gt;
+    /// &lt;returns&gt;Iterator to the new location of the element following the erased element.&lt;/returns&gt;
+    /// &lt;remarks&gt;GCC doesn't support erase with const_iterator on vector yet. In the future this should be
+    /// changed.&lt;/remarks&gt;
+    iterator erase(iterator position) { return m_elements.erase(position); }
+
+    /// &lt;summary&gt;
+    /// Deletes the element at an index of the JSON array.
+    /// &lt;/summary&gt;
+    /// &lt;param name="index"&gt;The index of the element to delete.&lt;/param&gt;
+    void erase(size_type index)
+<span style = "background-color:#fdd">    {
+        if (index &gt;= m_elements.size())</span>
+        {
+<span style = "background-color:#fdd">            throw json_exception("index out of bounds");</span>
+        }
+<span style = "background-color:#fdd">        m_elements.erase(m_elements.begin() + index);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Accesses an element of a JSON array. Throws when index out of bounds.
+    /// &lt;/summary&gt;
+    /// &lt;param name="index"&gt;The index of an element in the JSON array.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to the value kept in the field.&lt;/returns&gt;
+    json::value&amp; at(size_type index)
+<span style = "background-color:#fdd">    {
+        if (index &gt;= m_elements.size()) throw json_exception("index out of bounds");</span>
+
+<span style = "background-color:#fdd">        return m_elements[index];
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Accesses an element of a JSON array. Throws when index out of bounds.
+    /// &lt;/summary&gt;
+    /// &lt;param name="index"&gt;The index of an element in the JSON array.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to the value kept in the field.&lt;/returns&gt;
+    const json::value&amp; at(size_type index) const
+<span style = "background-color:#fdd">    {
+        if (index &gt;= m_elements.size()) throw json_exception("index out of bounds");</span>
+
+<span style = "background-color:#fdd">        return m_elements[index];
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Accesses an element of a JSON array.
+    /// &lt;/summary&gt;
+    /// &lt;param name="index"&gt;The index of an element in the JSON array.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to the value kept in the field.&lt;/returns&gt;
+    json::value&amp; operator[](size_type index)
+<span style = "background-color:#fdd">    {
+        msl::safeint3::SafeInt&lt;size_type&gt; nMinSize(index);
+        nMinSize += 1;
+        msl::safeint3::SafeInt&lt;size_type&gt; nlastSize(m_elements.size());
+        if (nlastSize &lt; nMinSize) m_elements.resize((size_type)nMinSize);</span>
+
+<span style = "background-color:#fdd">        return m_elements[index];
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the number of elements of the array.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The number of elements.&lt;/returns&gt;
+<span style = "background-color:#fdd">    size_type size() const { return m_elements.size(); }</span>
+
+private:
+    storage_type m_elements;
+
+    friend class details::_Array;
+    template&lt;typename CharType&gt;
+    friend class json::details::JSON_Parser;
+};
+
+/// &lt;summary&gt;
+/// A JSON object represented as a C++ class.
+/// &lt;/summary&gt;
+class object
+{
+    typedef std::vector&lt;std::pair&lt;utility::string_t, json::value&gt;&gt; storage_type;
+
+public:
+    typedef storage_type::iterator iterator;
+    typedef storage_type::const_iterator const_iterator;
+    typedef storage_type::reverse_iterator reverse_iterator;
+    typedef storage_type::const_reverse_iterator const_reverse_iterator;
+    typedef storage_type::size_type size_type;
+
+private:
+<span style = "background-color:#fdd">    object(bool keep_order = false) : m_elements(), m_keep_order(keep_order) {}
+    object(storage_type elements, bool keep_order = false) : m_elements(std::move(elements)), m_keep_order(keep_order)
+    {
+        if (!keep_order)</span>
+        {
+<span style = "background-color:#fdd">            sort(m_elements.begin(), m_elements.end(), compare_pairs);</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+public:
+    /// &lt;summary&gt;
+    /// Gets the beginning iterator element of the object
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An &lt;c&gt;iterator&lt;/c&gt; to the beginning of the JSON object.&lt;/returns&gt;
+    iterator begin() { return m_elements.begin(); }
+
+    /// &lt;summary&gt;
+    /// Gets the beginning const iterator element of the object.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;const_iterator&lt;/c&gt; to the beginning of the JSON object.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const_iterator begin() const { return m_elements.cbegin(); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the end iterator element of the object
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An &lt;c&gt;iterator&lt;/c&gt; to the end of the JSON object.&lt;/returns&gt;
+    iterator end() { return m_elements.end(); }
+
+    /// &lt;summary&gt;
+    /// Gets the end const iterator element of the object.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;const_iterator&lt;/c&gt; to the end of the JSON object.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const_iterator end() const { return m_elements.cend(); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the beginning reverse iterator element of the object
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An &lt;c&gt;reverse_iterator&lt;/c&gt; to the beginning of the JSON object.&lt;/returns&gt;
+    reverse_iterator rbegin() { return m_elements.rbegin(); }
+
+    /// &lt;summary&gt;
+    /// Gets the beginning const reverse iterator element of the object
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An &lt;c&gt;const_reverse_iterator&lt;/c&gt; to the beginning of the JSON object.&lt;/returns&gt;
+    const_reverse_iterator rbegin() const { return m_elements.rbegin(); }
+
+    /// &lt;summary&gt;
+    /// Gets the end reverse iterator element of the object
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An &lt;c&gt;reverse_iterator&lt;/c&gt; to the end of the JSON object.&lt;/returns&gt;
+    reverse_iterator rend() { return m_elements.rend(); }
+
+    /// &lt;summary&gt;
+    /// Gets the end const reverse iterator element of the object
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An &lt;c&gt;const_reverse_iterator&lt;/c&gt; to the end of the JSON object.&lt;/returns&gt;
+    const_reverse_iterator rend() const { return m_elements.crend(); }
+
+    /// &lt;summary&gt;
+    /// Gets the beginning const iterator element of the object.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;const_iterator&lt;/c&gt; to the beginning of the JSON object.&lt;/returns&gt;
+    const_iterator cbegin() const { return m_elements.cbegin(); }
+
+    /// &lt;summary&gt;
+    /// Gets the end const iterator element of the object.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;const_iterator&lt;/c&gt; to the end of the JSON object.&lt;/returns&gt;
+    const_iterator cend() const { return m_elements.cend(); }
+
+    /// &lt;summary&gt;
+    /// Gets the beginning const reverse iterator element of the object.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;const_reverse_iterator&lt;/c&gt; to the beginning of the JSON object.&lt;/returns&gt;
+    const_reverse_iterator crbegin() const { return m_elements.crbegin(); }
+
+    /// &lt;summary&gt;
+    /// Gets the end const reverse iterator element of the object.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;const_reverse_iterator&lt;/c&gt; to the end of the JSON object.&lt;/returns&gt;
+    const_reverse_iterator crend() const { return m_elements.crend(); }
+
+    /// &lt;summary&gt;
+    /// Deletes an element of the JSON object.
+    /// &lt;/summary&gt;
+    /// &lt;param name="position"&gt;A const_iterator to the element to delete.&lt;/param&gt;
+    /// &lt;returns&gt;Iterator to the new location of the element following the erased element.&lt;/returns&gt;
+    /// &lt;remarks&gt;GCC doesn't support erase with const_iterator on vector yet. In the future this should be
+    /// changed.&lt;/remarks&gt;
+    iterator erase(iterator position) { return m_elements.erase(position); }
+
+    /// &lt;summary&gt;
+    /// Deletes an element of the JSON object. If the key doesn't exist, this method throws.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The key of an element in the JSON object.&lt;/param&gt;
+    void erase(const utility::string_t&amp; key)
+<span style = "background-color:#fdd">    {
+        auto iter = find_by_key(key);
+        if (iter == m_elements.end())</span>
+        {
+<span style = "background-color:#fdd">            throw web::json::json_exception("Key not found");</span>
+        }
+
+<span style = "background-color:#fdd">        m_elements.erase(iter);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Accesses an element of a JSON object. If the key doesn't exist, this method throws.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The key of an element in the JSON object.&lt;/param&gt;
+    /// &lt;returns&gt;If the key exists, a reference to the value kept in the field.&lt;/returns&gt;
+    json::value&amp; at(const utility::string_t&amp; key)
+<span style = "background-color:#fdd">    {
+        auto iter = find_by_key(key);
+        if (iter == m_elements.end())</span>
+        {
+<span style = "background-color:#fdd">            throw web::json::json_exception("Key not found");</span>
+        }
+
+<span style = "background-color:#fdd">        return iter-&gt;second;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Accesses an element of a JSON object. If the key doesn't exist, this method throws.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The key of an element in the JSON object.&lt;/param&gt;
+    /// &lt;returns&gt;If the key exists, a reference to the value kept in the field.&lt;/returns&gt;
+    const json::value&amp; at(const utility::string_t&amp; key) const
+<span style = "background-color:#fdd">    {
+        auto iter = find_by_key(key);
+        if (iter == m_elements.end())</span>
+        {
+<span style = "background-color:#fdd">            throw web::json::json_exception("Key not found");</span>
+        }
+
+<span style = "background-color:#fdd">        return iter-&gt;second;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Accesses an element of a JSON object.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The key of an element in the JSON object.&lt;/param&gt;
+    /// &lt;returns&gt;If the key exists, a reference to the value kept in the field, otherwise a newly created null value
+    /// that will be stored for the given key.&lt;/returns&gt;
+    json::value&amp; operator[](const utility::string_t&amp; key)
+<span style = "background-color:#fdd">    {
+        auto iter = find_insert_location(key);</span>
+
+<span style = "background-color:#fdd">        if (iter == m_elements.end() || key != iter-&gt;first)</span>
+        {
+<span style = "background-color:#fdd">            return m_elements.insert(iter, std::pair&lt;utility::string_t, value&gt;(key, value()))-&gt;second;</span>
+        }
+
+<span style = "background-color:#fdd">        return iter-&gt;second;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Gets an iterator to an element of a JSON object.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;The key of an element in the JSON object.&lt;/param&gt;
+    /// &lt;returns&gt;A const iterator to the value kept in the field.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const_iterator find(const utility::string_t&amp; key) const { return find_by_key(key); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the number of elements of the object.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The number of elements.&lt;/returns&gt;
+<span style = "background-color:#fdd">    size_type size() const { return m_elements.size(); }</span>
+
+    /// &lt;summary&gt;
+    /// Checks if there are any elements in the JSON object.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;True if empty.&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool empty() const { return m_elements.empty(); }</span>
+
+private:
+    static bool compare_pairs(const std::pair&lt;utility::string_t, value&gt;&amp; p1,
+                              const std::pair&lt;utility::string_t, value&gt;&amp; p2)
+<span style = "background-color:#fdd">    {
+        return p1.first &lt; p2.first;
+    }</span>
+    static bool compare_with_key(const std::pair&lt;utility::string_t, value&gt;&amp; p1, const utility::string_t&amp; key)
+<span style = "background-color:#fdd">    {
+        return p1.first &lt; key;
+    }</span>
+
+    storage_type::iterator find_insert_location(const utility::string_t&amp; key)
+<span style = "background-color:#fdd">    {
+        if (m_keep_order)</span>
+        {
+<span style = "background-color:#fdd">            return std::find_if(m_elements.begin(),</span>
+                                m_elements.end(),
+<span style = "background-color:#fdd">                                [&amp;key](const std::pair&lt;utility::string_t, value&gt;&amp; p) { return p.first == key; });
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            return std::lower_bound(m_elements.begin(), m_elements.end(), key, compare_with_key);</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    storage_type::const_iterator find_by_key(const utility::string_t&amp; key) const
+<span style = "background-color:#fdd">    {
+        if (m_keep_order)</span>
+        {
+<span style = "background-color:#fdd">            return std::find_if(m_elements.begin(),</span>
+                                m_elements.end(),
+<span style = "background-color:#fdd">                                [&amp;key](const std::pair&lt;utility::string_t, value&gt;&amp; p) { return p.first == key; });
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            auto iter = std::lower_bound(m_elements.begin(), m_elements.end(), key, compare_with_key);
+            if (iter != m_elements.end() &amp;&amp; key != iter-&gt;first)</span>
+            {
+<span style = "background-color:#fdd">                return m_elements.end();</span>
+            }
+<span style = "background-color:#fdd">            return iter;</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    storage_type::iterator find_by_key(const utility::string_t&amp; key)
+<span style = "background-color:#fdd">    {
+        auto iter = find_insert_location(key);
+        if (iter != m_elements.end() &amp;&amp; key != iter-&gt;first)</span>
+        {
+<span style = "background-color:#fdd">            return m_elements.end();</span>
+        }
+<span style = "background-color:#fdd">        return iter;
+    }</span>
+
+    storage_type m_elements;
+    bool m_keep_order;
+    friend class details::_Object;
+
+    template&lt;typename CharType&gt;
+    friend class json::details::JSON_Parser;
+};
+
+/// &lt;summary&gt;
+/// A JSON number represented as a C++ class.
+/// &lt;/summary&gt;
+class number
+{
+    // Note that these constructors make sure that only negative integers are stored as signed int64 (while others
+    // convert to unsigned int64). This helps handling number objects e.g. comparing two numbers.
+
+<span style = "background-color:#fdd">    number(double value) : m_value(value), m_type(double_type) {}
+    number(int value) : m_intval(value), m_type(value &lt; 0 ? signed_type : unsigned_type) {}
+    number(unsigned value) : m_intval(value), m_type(unsigned_type) {}
+    number(long value) : m_intval(value), m_type(value &lt; 0 ? signed_type : unsigned_type) {}
+    number(unsigned long value) : m_uintval(value), m_type(unsigned_type) {}
+    number(long long value) : m_intval(value), m_type(value &lt; 0 ? signed_type : unsigned_type) {}
+    number(unsigned long long value) : m_uintval(value), m_type(unsigned_type) {}</span>
+
+public:
+    /// &lt;summary&gt;
+    /// Does the number fit into int32?
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the number fits into int32, &lt;c&gt;false&lt;/c&gt; otherwise&lt;/returns&gt;
+    _ASYNCRTIMP bool is_int32() const;
+
+    /// &lt;summary&gt;
+    /// Does the number fit into unsigned int32?
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the number fits into unsigned int32, &lt;c&gt;false&lt;/c&gt; otherwise&lt;/returns&gt;
+    _ASYNCRTIMP bool is_uint32() const;
+
+    /// &lt;summary&gt;
+    /// Does the number fit into int64?
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the number fits into int64, &lt;c&gt;false&lt;/c&gt; otherwise&lt;/returns&gt;
+    _ASYNCRTIMP bool is_int64() const;
+
+    /// &lt;summary&gt;
+    /// Does the number fit into unsigned int64?
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the number fits into unsigned int64, &lt;c&gt;false&lt;/c&gt; otherwise&lt;/returns&gt;
+    bool is_uint64() const
+    {
+        switch (m_type)
+        {
+            case signed_type: return m_intval &gt;= 0;
+            case unsigned_type: return true;
+            case double_type:
+            default: return false;
+        }
+    }
+
+    /// &lt;summary&gt;
+    /// Converts the JSON number to a C++ double.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A double representation of the number&lt;/returns&gt;
+    double to_double() const
+<span style = "background-color:#fdd">    {
+        switch (m_type)</span>
+        {
+<span style = "background-color:#fdd">            case double_type: return m_value;
+            case signed_type: return static_cast&lt;double&gt;(m_intval);
+            case unsigned_type: return static_cast&lt;double&gt;(m_uintval);
+            default: return false;</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    /// &lt;summary&gt;
+    /// Converts the JSON number to int32.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An int32 representation of the number&lt;/returns&gt;
+    int32_t to_int32() const
+<span style = "background-color:#fdd">    {
+        if (m_type == double_type)
+            return static_cast&lt;int32_t&gt;(m_value);</span>
+        else
+<span style = "background-color:#fdd">            return static_cast&lt;int32_t&gt;(m_intval);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Converts the JSON number to unsigned int32.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An unsigned int32 representation of the number&lt;/returns&gt;
+    uint32_t to_uint32() const
+    {
+        if (m_type == double_type)
+            return static_cast&lt;uint32_t&gt;(m_value);
+        else
+            return static_cast&lt;uint32_t&gt;(m_intval);
+    }
+
+    /// &lt;summary&gt;
+    /// Converts the JSON number to int64.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An int64 representation of the number&lt;/returns&gt;
+    int64_t to_int64() const
+<span style = "background-color:#fdd">    {
+        if (m_type == double_type)
+            return static_cast&lt;int64_t&gt;(m_value);</span>
+        else
+<span style = "background-color:#fdd">            return static_cast&lt;int64_t&gt;(m_intval);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Converts the JSON number to unsigned int64.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An unsigned int64 representation of the number&lt;/returns&gt;
+    uint64_t to_uint64() const
+    {
+        if (m_type == double_type)
+            return static_cast&lt;uint64_t&gt;(m_value);
+        else
+            return static_cast&lt;uint64_t&gt;(m_intval);
+    }
+
+    /// &lt;summary&gt;
+    /// Is the number represented internally as an integral type?
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the number is represented as an integral type, &lt;c&gt;false&lt;/c&gt; otherwise&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool is_integral() const { return m_type != double_type; }</span>
+
+    /// &lt;summary&gt;
+    /// Compares two JSON numbers for equality.
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;The JSON number to compare with.&lt;/param&gt;
+    /// &lt;returns&gt;True if the numbers are equal.&lt;/returns&gt;
+    bool operator==(const number&amp; other) const
+<span style = "background-color:#fdd">    {
+        if (m_type != other.m_type) return false;</span>
+
+<span style = "background-color:#fdd">        switch (m_type)</span>
+        {
+<span style = "background-color:#fdd">            case json::number::type::signed_type: return m_intval == other.m_intval;
+            case json::number::type::unsigned_type: return m_uintval == other.m_uintval;
+            case json::number::type::double_type: return m_value == other.m_value;</span>
+        }
+        __assume(0);
+        // Absence of this return statement provokes a warning from Intel
+        // compiler, but its presence results in a warning from MSVC, so
+        // we have to resort to conditional compilation to keep both happy.
+#ifdef __INTEL_COMPILER
+        return false;
+#endif
+<span style = "background-color:#fdd">    }</span>
+
+private:
+    union {
+        int64_t m_intval;
+        uint64_t m_uintval;
+        double m_value;
+    };
+
+    enum type
+    {
+        signed_type = 0,
+        unsigned_type,
+        double_type
+    } m_type;
+
+    friend class details::_Number;
+};
+
+namespace details
+{
+class _Value
+{
+public:
+    virtual std::unique_ptr&lt;_Value&gt; _copy_value() = 0;
+
+<span style = "background-color:#fdd">    virtual bool has_field(const utility::string_t&amp;) const { return false; }
+    virtual value get_field(const utility::string_t&amp;) const { throw json_exception("not an object"); }
+    virtual value get_element(array::size_type) const { throw json_exception("not an array"); }</span>
+
+<span style = "background-color:#fdd">    virtual value&amp; index(const utility::string_t&amp;) { throw json_exception("not an object"); }
+    virtual value&amp; index(array::size_type) { throw json_exception("not an array"); }</span>
+
+<span style = "background-color:#fdd">    virtual const value&amp; cnst_index(const utility::string_t&amp;) const { throw json_exception("not an object"); }
+    virtual const value&amp; cnst_index(array::size_type) const { throw json_exception("not an array"); }</span>
+
+    // Common function used for serialization to strings and streams.
+<span style = "background-color:#fdd">    virtual void serialize_impl(std::string&amp; str) const { format(str); }</span>
+#ifdef _WIN32
+<span style = "background-color:#fdd">    virtual void serialize_impl(std::wstring&amp; str) const { format(str); }</span>
+#endif
+
+    virtual utility::string_t to_string() const
+<span style = "background-color:#fdd">    {
+        utility::string_t str;
+        serialize_impl(str);
+        return str;
+    }</span>
+
+<span style = "background-color:#fdd">    virtual json::value::value_type type() const { return json::value::Null; }</span>
+
+<span style = "background-color:#fdd">    virtual bool is_integer() const { throw json_exception("not a number"); }
+    virtual bool is_double() const { throw json_exception("not a number"); }</span>
+
+<span style = "background-color:#fdd">    virtual const json::number&amp; as_number() { throw json_exception("not a number"); }
+    virtual double as_double() const { throw json_exception("not a number"); }
+    virtual int as_integer() const { throw json_exception("not a number"); }
+    virtual bool as_bool() const { throw json_exception("not a boolean"); }
+    virtual json::array&amp; as_array() { throw json_exception("not an array"); }
+    virtual const json::array&amp; as_array() const { throw json_exception("not an array"); }
+    virtual json::object&amp; as_object() { throw json_exception("not an object"); }
+    virtual const json::object&amp; as_object() const { throw json_exception("not an object"); }
+    virtual const utility::string_t&amp; as_string() const { throw json_exception("not a string"); }</span>
+
+<span style = "background-color:#fdd">    virtual size_t size() const { return 0; }</span>
+
+<span style = "background-color:#fdd">    virtual ~_Value() {}</span>
+
+protected:
+<span style = "background-color:#fdd">    _Value() {}</span>
+
+<span style = "background-color:#fdd">    virtual void format(std::basic_string&lt;char&gt;&amp; stream) const { stream.append("null"); }</span>
+#ifdef _WIN32
+<span style = "background-color:#fdd">    virtual void format(std::basic_string&lt;wchar_t&gt;&amp; stream) const { stream.append(L"null"); }</span>
+#endif
+private:
+    friend class web::json::value;
+};
+
+class _Null : public _Value
+{
+public:
+<span style = "background-color:#fdd">    virtual std::unique_ptr&lt;_Value&gt; _copy_value() { return utility::details::make_unique&lt;_Null&gt;(); }
+    virtual json::value::value_type type() const { return json::value::Null; }</span>
+};
+
+class _Number : public _Value
+{
+public:
+<span style = "background-color:#fdd">    _Number(double value) : m_number(value) {}
+    _Number(int value) : m_number(value) {}
+    _Number(unsigned value) : m_number(value) {}
+    _Number(long value) : m_number(value) {}
+    _Number(unsigned long value) : m_number(value) {}
+    _Number(long long value) : m_number(value) {}
+    _Number(unsigned long long value) : m_number(value) {}</span>
+
+<span style = "background-color:#fdd">    virtual std::unique_ptr&lt;_Value&gt; _copy_value() { return utility::details::make_unique&lt;_Number&gt;(*this); }</span>
+
+<span style = "background-color:#fdd">    virtual json::value::value_type type() const { return json::value::Number; }</span>
+
+<span style = "background-color:#fdd">    virtual bool is_integer() const { return m_number.is_integral(); }
+    virtual bool is_double() const { return !m_number.is_integral(); }</span>
+
+<span style = "background-color:#fdd">    virtual double as_double() const { return m_number.to_double(); }</span>
+
+<span style = "background-color:#fdd">    virtual int as_integer() const { return m_number.to_int32(); }</span>
+
+<span style = "background-color:#fdd">    virtual const number&amp; as_number() { return m_number; }</span>
+
+protected:
+    virtual void format(std::basic_string&lt;char&gt;&amp; stream) const;
+#ifdef _WIN32
+    virtual void format(std::basic_string&lt;wchar_t&gt;&amp; stream) const;
+#endif
+private:
+    template&lt;typename CharType&gt;
+    friend class json::details::JSON_Parser;
+
+    json::number m_number;
+};
+
+class _Boolean : public _Value
+{
+public:
+<span style = "background-color:#fdd">    _Boolean(bool value) : m_value(value) {}</span>
+
+<span style = "background-color:#fdd">    virtual std::unique_ptr&lt;_Value&gt; _copy_value() { return utility::details::make_unique&lt;_Boolean&gt;(*this); }</span>
+
+<span style = "background-color:#fdd">    virtual json::value::value_type type() const { return json::value::Boolean; }</span>
+
+<span style = "background-color:#fdd">    virtual bool as_bool() const { return m_value; }</span>
+
+protected:
+<span style = "background-color:#fdd">    virtual void format(std::basic_string&lt;char&gt;&amp; stream) const { stream.append(m_value ? "true" : "false"); }</span>
+
+#ifdef _WIN32
+<span style = "background-color:#fdd">    virtual void format(std::basic_string&lt;wchar_t&gt;&amp; stream) const { stream.append(m_value ? L"true" : L"false"); }</span>
+#endif
+private:
+    template&lt;typename CharType&gt;
+    friend class json::details::JSON_Parser;
+    bool m_value;
+};
+
+class _String : public _Value
+{
+public:
+<span style = "background-color:#fdd">    _String(utility::string_t value) : m_string(std::move(value)) { m_has_escape_char = has_escape_chars(*this); }
+    _String(utility::string_t value, bool escaped_chars) : m_string(std::move(value)), m_has_escape_char(escaped_chars)
+    {
+    }</span>
+
+#ifdef _WIN32
+    _String(std::string&amp;&amp; value) : m_string(utility::conversions::to_utf16string(std::move(value)))
+    {
+        m_has_escape_char = has_escape_chars(*this);
+    }
+    _String(std::string&amp;&amp; value, bool escape_chars)
+<span style = "background-color:#fdd">        : m_string(utility::conversions::to_utf16string(std::move(value))), m_has_escape_char(escape_chars)
+    {
+    }</span>
+#endif
+
+<span style = "background-color:#fdd">    virtual std::unique_ptr&lt;_Value&gt; _copy_value() { return utility::details::make_unique&lt;_String&gt;(*this); }</span>
+
+<span style = "background-color:#fdd">    virtual json::value::value_type type() const { return json::value::String; }</span>
+
+    virtual const utility::string_t&amp; as_string() const;
+
+<span style = "background-color:#fdd">    virtual void serialize_impl(std::string&amp; str) const { serialize_impl_char_type(str); }</span>
+#ifdef _WIN32
+<span style = "background-color:#fdd">    virtual void serialize_impl(std::wstring&amp; str) const { serialize_impl_char_type(str); }</span>
+#endif
+
+protected:
+    virtual void format(std::basic_string&lt;char&gt;&amp; str) const;
+#ifdef _WIN32
+    virtual void format(std::basic_string&lt;wchar_t&gt;&amp; str) const;
+#endif
+
+private:
+    friend class _Object;
+    friend class _Array;
+
+<span style = "background-color:#fdd">    size_t get_reserve_size() const { return m_string.size() + 2; }</span>
+
+    template&lt;typename CharType&gt;
+    void serialize_impl_char_type(std::basic_string&lt;CharType&gt;&amp; str) const
+<span style = "background-color:#fdd">    {</span>
+        // To avoid repeated allocations reserve some space all up front.
+        // size of string + 2 for quotes
+<span style = "background-color:#fdd">        str.reserve(get_reserve_size());
+        format(str);
+    }</span>
+
+    std::string as_utf8_string() const;
+    utf16string as_utf16_string() const;
+
+    utility::string_t m_string;
+
+    // There are significant performance gains that can be made by knowing whether
+    // or not a character that requires escaping is present.
+    bool m_has_escape_char;
+    static bool has_escape_chars(const _String&amp; str);
+};
+
+template&lt;typename CharType&gt;
+_ASYNCRTIMP void append_escape_string(std::basic_string&lt;CharType&gt;&amp; str, const std::basic_string&lt;CharType&gt;&amp; escaped);
+
+void format_string(const utility::string_t&amp; key, utility::string_t&amp; str);
+
+#ifdef _WIN32
+void format_string(const utility::string_t&amp; key, std::string&amp; str);
+#endif
+
+class _Object : public _Value
+{
+public:
+<span style = "background-color:#fdd">    _Object(bool keep_order) : m_object(keep_order) {}
+    _Object(object::storage_type fields, bool keep_order) : m_object(std::move(fields), keep_order) {}</span>
+
+<span style = "background-color:#fdd">    virtual std::unique_ptr&lt;_Value&gt; _copy_value() { return utility::details::make_unique&lt;_Object&gt;(*this); }</span>
+
+<span style = "background-color:#fdd">    virtual json::object&amp; as_object() { return m_object; }</span>
+
+<span style = "background-color:#fdd">    virtual const json::object&amp; as_object() const { return m_object; }</span>
+
+<span style = "background-color:#fdd">    virtual json::value::value_type type() const { return json::value::Object; }</span>
+
+    virtual bool has_field(const utility::string_t&amp;) const;
+
+    virtual json::value&amp; index(const utility::string_t&amp; key);
+
+    bool is_equal(const _Object* other) const
+<span style = "background-color:#fdd">    {
+        if (m_object.size() != other-&gt;m_object.size()) return false;</span>
+
+<span style = "background-color:#fdd">        return std::equal(std::begin(m_object), std::end(m_object), std::begin(other-&gt;m_object));
+    }</span>
+
+    virtual void serialize_impl(std::string&amp; str) const
+<span style = "background-color:#fdd">    {</span>
+        // To avoid repeated allocations reserve some space all up front.
+<span style = "background-color:#fdd">        str.reserve(get_reserve_size());
+        format(str);
+    }</span>
+#ifdef _WIN32
+    virtual void serialize_impl(std::wstring&amp; str) const
+<span style = "background-color:#fdd">    {</span>
+        // To avoid repeated allocations reserve some space all up front.
+<span style = "background-color:#fdd">        str.reserve(get_reserve_size());
+        format(str);
+    }</span>
+#endif
+<span style = "background-color:#fdd">    size_t size() const { return m_object.size(); }</span>
+
+protected:
+<span style = "background-color:#fdd">    virtual void format(std::basic_string&lt;char&gt;&amp; str) const { format_impl(str); }</span>
+#ifdef _WIN32
+<span style = "background-color:#fdd">    virtual void format(std::basic_string&lt;wchar_t&gt;&amp; str) const { format_impl(str); }</span>
+#endif
+
+private:
+    json::object m_object;
+
+    template&lt;typename CharType&gt;
+    friend class json::details::JSON_Parser;
+
+    template&lt;typename CharType&gt;
+    void format_impl(std::basic_string&lt;CharType&gt;&amp; str) const
+<span style = "background-color:#fdd">    {
+        str.push_back('{');
+        if (!m_object.empty())</span>
+        {
+<span style = "background-color:#fdd">            auto lastElement = m_object.end() - 1;
+            for (auto iter = m_object.begin(); iter != lastElement; ++iter)</span>
+            {
+<span style = "background-color:#fdd">                format_string(iter-&gt;first, str);
+                str.push_back(':');
+                iter-&gt;second.format(str);
+                str.push_back(',');
+            }
+            format_string(lastElement-&gt;first, str);
+            str.push_back(':');
+            lastElement-&gt;second.format(str);
+        }
+        str.push_back('}');
+    }</span>
+
+    size_t get_reserve_size() const
+<span style = "background-color:#fdd">    {</span>
+        // This is a heuristic we can tune more in the future:
+        // Basically size of string plus
+        // sum size of value if an object, array, or string.
+<span style = "background-color:#fdd">        size_t reserveSize = 2; // For brackets {}
+        for (auto iter = m_object.begin(); iter != m_object.end(); ++iter)</span>
+        {
+<span style = "background-color:#fdd">            reserveSize += iter-&gt;first.length() + 2;     // 2 for quotes
+            size_t valueSize = iter-&gt;second.size() * 20; // Multiply by each object/array element
+            if (valueSize == 0)</span>
+            {
+<span style = "background-color:#fdd">                if (iter-&gt;second.type() == json::value::String)</span>
+                {
+<span style = "background-color:#fdd">                    valueSize = static_cast&lt;_String*&gt;(iter-&gt;second.m_value.get())-&gt;get_reserve_size();
+                }</span>
+                else
+                {
+<span style = "background-color:#fdd">                    valueSize = 5; // true, false, or null</span>
+                }
+            }
+<span style = "background-color:#fdd">            reserveSize += valueSize;
+        }
+        return reserveSize;
+    }</span>
+};
+
+class _Array : public _Value
+{
+public:
+<span style = "background-color:#fdd">    _Array() {}
+    _Array(array::size_type size) : m_array(size) {}
+    _Array(array::storage_type elements) : m_array(std::move(elements)) {}</span>
+
+<span style = "background-color:#fdd">    virtual std::unique_ptr&lt;_Value&gt; _copy_value() { return utility::details::make_unique&lt;_Array&gt;(*this); }</span>
+
+<span style = "background-color:#fdd">    virtual json::value::value_type type() const { return json::value::Array; }</span>
+
+<span style = "background-color:#fdd">    virtual json::array&amp; as_array() { return m_array; }
+    virtual const json::array&amp; as_array() const { return m_array; }</span>
+
+<span style = "background-color:#fdd">    virtual json::value&amp; index(json::array::size_type index) { return m_array[index]; }</span>
+
+    bool is_equal(const _Array* other) const
+<span style = "background-color:#fdd">    {
+        if (m_array.size() != other-&gt;m_array.size()) return false;</span>
+
+<span style = "background-color:#fdd">        auto iterT = m_array.cbegin();
+        auto iterO = other-&gt;m_array.cbegin();
+        auto iterTe = m_array.cend();
+        auto iterOe = other-&gt;m_array.cend();</span>
+
+<span style = "background-color:#fdd">        for (; iterT != iterTe &amp;&amp; iterO != iterOe; ++iterT, ++iterO)</span>
+        {
+<span style = "background-color:#fdd">            if (*iterT != *iterO) return false;
+        }</span>
+
+<span style = "background-color:#fdd">        return true;
+    }</span>
+
+    virtual void serialize_impl(std::string&amp; str) const
+<span style = "background-color:#fdd">    {</span>
+        // To avoid repeated allocations reserve some space all up front.
+<span style = "background-color:#fdd">        str.reserve(get_reserve_size());
+        format(str);
+    }</span>
+#ifdef _WIN32
+    virtual void serialize_impl(std::wstring&amp; str) const
+<span style = "background-color:#fdd">    {</span>
+        // To avoid repeated allocations reserve some space all up front.
+<span style = "background-color:#fdd">        str.reserve(get_reserve_size());
+        format(str);
+    }</span>
+#endif
+<span style = "background-color:#fdd">    size_t size() const { return m_array.size(); }</span>
+
+protected:
+<span style = "background-color:#fdd">    virtual void format(std::basic_string&lt;char&gt;&amp; str) const { format_impl(str); }</span>
+#ifdef _WIN32
+<span style = "background-color:#fdd">    virtual void format(std::basic_string&lt;wchar_t&gt;&amp; str) const { format_impl(str); }</span>
+#endif
+private:
+    json::array m_array;
+
+    template&lt;typename CharType&gt;
+    friend class json::details::JSON_Parser;
+
+    template&lt;typename CharType&gt;
+    void format_impl(std::basic_string&lt;CharType&gt;&amp; str) const
+<span style = "background-color:#fdd">    {
+        str.push_back('[');
+        if (!m_array.m_elements.empty())</span>
+        {
+<span style = "background-color:#fdd">            auto lastElement = m_array.m_elements.end() - 1;
+            for (auto iter = m_array.m_elements.begin(); iter != lastElement; ++iter)</span>
+            {
+<span style = "background-color:#fdd">                iter-&gt;format(str);
+                str.push_back(',');
+            }
+            lastElement-&gt;format(str);
+        }
+        str.push_back(']');
+    }</span>
+
+    size_t get_reserve_size() const
+<span style = "background-color:#fdd">    {</span>
+        // This is a heuristic we can tune more in the future:
+        // Basically sum size of each value if an object, array, or string by a multiplier.
+<span style = "background-color:#fdd">        size_t reserveSize = 2; // For brackets []
+        for (auto iter = m_array.cbegin(); iter != m_array.cend(); ++iter)</span>
+        {
+<span style = "background-color:#fdd">            size_t valueSize = iter-&gt;size() * 20; // Per each nested array/object</span>
+
+<span style = "background-color:#fdd">            if (valueSize == 0) valueSize = 5; // true, false, or null</span>
+
+<span style = "background-color:#fdd">            reserveSize += valueSize;
+        }
+        return reserveSize;
+    }</span>
+};
+} // namespace details
+
+/// &lt;summary&gt;
+/// Gets the number of children of the value.
+/// &lt;/summary&gt;
+/// &lt;returns&gt;The number of children. 0 for all non-composites.&lt;/returns&gt;
+<span style = "background-color:#fdd">inline size_t json::value::size() const { return m_value-&gt;size(); }</span>
+
+/// &lt;summary&gt;
+/// Test for the presence of a field.
+/// &lt;/summary&gt;
+/// &lt;param name="key"&gt;The name of the field&lt;/param&gt;
+/// &lt;returns&gt;True if the field exists, false otherwise.&lt;/returns&gt;
+<span style = "background-color:#fdd">inline bool json::value::has_field(const utility::string_t&amp; key) const { return m_value-&gt;has_field(key); }</span>
+
+/// &lt;summary&gt;
+/// Access a field of a JSON object.
+/// &lt;/summary&gt;
+/// &lt;param name="key"&gt;The name of the field&lt;/param&gt;
+/// &lt;returns&gt;The value kept in the field; null if the field does not exist&lt;/returns&gt;
+inline json::value json::value::get(const utility::string_t&amp; key) const { return m_value-&gt;get_field(key); }
+
+/// &lt;summary&gt;
+/// Access an element of a JSON array.
+/// &lt;/summary&gt;
+/// &lt;param name="index"&gt;The index of an element in the JSON array&lt;/param&gt;
+/// &lt;returns&gt;The value kept at the array index; null if outside the boundaries of the array&lt;/returns&gt;
+inline json::value json::value::get(size_t index) const { return m_value-&gt;get_element(index); }
+
+/// &lt;summary&gt;
+/// A standard &lt;c&gt;std::ostream&lt;/c&gt; operator to facilitate writing JSON values to streams.
+/// &lt;/summary&gt;
+/// &lt;param name="os"&gt;The output stream to write the JSON value to.&lt;/param&gt;
+/// &lt;param name="val"&gt;The JSON value to be written to the stream.&lt;/param&gt;
+/// &lt;returns&gt;The output stream object&lt;/returns&gt;
+_ASYNCRTIMP utility::ostream_t&amp; __cdecl operator&lt;&lt;(utility::ostream_t&amp; os, const json::value&amp; val);
+
+/// &lt;summary&gt;
+/// A standard &lt;c&gt;std::istream&lt;/c&gt; operator to facilitate reading JSON values from streams.
+/// &lt;/summary&gt;
+/// &lt;param name="is"&gt;The input stream to read the JSON value from.&lt;/param&gt;
+/// &lt;param name="val"&gt;The JSON value object read from the stream.&lt;/param&gt;
+/// &lt;returns&gt;The input stream object.&lt;/returns&gt;
+_ASYNCRTIMP utility::istream_t&amp; __cdecl operator&gt;&gt;(utility::istream_t&amp; is, json::value&amp; val);
+} // namespace json
+} // namespace web
+
+#endif</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

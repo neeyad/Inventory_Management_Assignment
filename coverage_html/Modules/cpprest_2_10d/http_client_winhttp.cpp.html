@@ -1,0 +1,2630 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>http_client_winhttp.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: Client-side APIs.
+ *
+ * This file contains the implementation for Windows Desktop, based on WinHTTP.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#include "stdafx.h"
+
+#include "../common/x509_cert_utilities.h"
+#include "../common/internal_http_helpers.h"
+#include "cpprest/http_headers.h"
+#include "http_client_impl.h"
+#ifdef WIN32
+#include &lt;Wincrypt.h&gt;
+#endif
+#if defined(CPPREST_FORCE_HTTP_CLIENT_WINHTTPPAL)
+#include "winhttppal.h"
+#endif
+#include &lt;atomic&gt;
+
+#if _WIN32_WINNT &amp;&amp; (_WIN32_WINNT &gt;= _WIN32_WINNT_VISTA)
+#include &lt;VersionHelpers.h&gt;
+#endif
+
+namespace
+{
+struct security_failure_message
+{
+    std::uint32_t flag;
+    const char* text;
+};
+
+CPPREST_CONSTEXPR security_failure_message g_security_failure_messages[] = {
+    {WINHTTP_CALLBACK_STATUS_FLAG_CERT_REV_FAILED,
+     "WINHTTP_CALLBACK_STATUS_FLAG_CERT_REV_FAILED failed to check revocation status."},
+    {WINHTTP_CALLBACK_STATUS_FLAG_INVALID_CERT,
+     "WINHTTP_CALLBACK_STATUS_FLAG_INVALID_CERT SSL certificate is invalid."},
+    {WINHTTP_CALLBACK_STATUS_FLAG_CERT_REVOKED,
+     "WINHTTP_CALLBACK_STATUS_FLAG_CERT_REVOKED SSL certificate was revoked."},
+    {WINHTTP_CALLBACK_STATUS_FLAG_INVALID_CA, "WINHTTP_CALLBACK_STATUS_FLAG_INVALID_CA SSL invalid CA."},
+    {WINHTTP_CALLBACK_STATUS_FLAG_CERT_CN_INVALID,
+     "WINHTTP_CALLBACK_STATUS_FLAG_CERT_CN_INVALID SSL common name does not match."},
+    {WINHTTP_CALLBACK_STATUS_FLAG_CERT_DATE_INVALID,
+     "WINHTTP_CALLBACK_STATUS_FLAG_CERT_DATE_INVALID SLL certificate is expired."},
+    {WINHTTP_CALLBACK_STATUS_FLAG_SECURITY_CHANNEL_ERROR,
+     "WINHTTP_CALLBACK_STATUS_FLAG_SECURITY_CHANNEL_ERROR internal error."},
+};
+
+std::string generate_security_failure_message(std::uint32_t flags)
+<span style = "background-color:#fdd">{
+    std::string result("SSL Error:");
+    for (const auto&amp; message : g_security_failure_messages)</span>
+    {
+<span style = "background-color:#fdd">        if (flags &amp; message.flag)</span>
+        {
+<span style = "background-color:#fdd">            result.push_back(' ');
+            result.append(message.text);</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    return result;
+}</span>
+
+} // unnamed namespace
+namespace web
+{
+namespace http
+{
+namespace client
+{
+namespace details
+{
+// Helper function to query for the size of header values.
+static void query_header_length(HINTERNET request_handle, DWORD header, DWORD&amp; length)
+<span style = "background-color:#fdd">{
+    WinHttpQueryHeaders(request_handle,</span>
+                        header,
+                        WINHTTP_HEADER_NAME_BY_INDEX,
+                        WINHTTP_NO_OUTPUT_BUFFER,
+                        &amp;length,
+                        WINHTTP_NO_HEADER_INDEX);
+<span style = "background-color:#fdd">}</span>
+
+// Helper function to get the status code from a WinHTTP response.
+static http::status_code parse_status_code(HINTERNET request_handle)
+<span style = "background-color:#fdd">{
+    DWORD length = 0;
+    query_header_length(request_handle, WINHTTP_QUERY_STATUS_CODE, length);
+    utility::string_t buffer;
+    buffer.resize(length);
+    WinHttpQueryHeaders(request_handle,</span>
+                        WINHTTP_QUERY_STATUS_CODE,
+                        WINHTTP_HEADER_NAME_BY_INDEX,
+                        &amp;buffer[0],
+                        &amp;length,
+                        WINHTTP_NO_HEADER_INDEX);
+<span style = "background-color:#fdd">    return (unsigned short)stoi(buffer);
+}</span>
+
+// Helper function to get the reason phrase from a WinHTTP response.
+static utility::string_t parse_reason_phrase(HINTERNET request_handle)
+<span style = "background-color:#fdd">{
+    utility::string_t phrase;
+    DWORD length = 0;</span>
+
+<span style = "background-color:#fdd">    query_header_length(request_handle, WINHTTP_QUERY_STATUS_TEXT, length);
+    phrase.resize(length);
+    WinHttpQueryHeaders(request_handle,</span>
+                        WINHTTP_QUERY_STATUS_TEXT,
+                        WINHTTP_HEADER_NAME_BY_INDEX,
+                        &amp;phrase[0],
+                        &amp;length,
+                        WINHTTP_NO_HEADER_INDEX);
+    // WinHTTP reports back the wrong length, trim any null characters.
+<span style = "background-color:#fdd">    ::web::http::details::trim_nulls(phrase);
+    return phrase;
+}</span>
+
+/// &lt;summary&gt;
+/// Parses a string containing HTTP headers.
+/// &lt;/summary&gt;
+static void parse_winhttp_headers(HINTERNET request_handle, _In_z_ utility::char_t* headersStr, http_response&amp; response)
+<span style = "background-color:#fdd">{</span>
+    // Clear the header map for each new response; otherwise, the header values will be combined.
+<span style = "background-color:#fdd">    response.headers().clear();</span>
+
+    // Status code and reason phrase.
+<span style = "background-color:#fdd">    response.set_status_code(parse_status_code(request_handle));
+    response.set_reason_phrase(parse_reason_phrase(request_handle));</span>
+
+<span style = "background-color:#fdd">    web::http::details::parse_headers_string(headersStr, response.headers());
+}</span>
+
+// Helper function to build error messages.
+static std::string build_error_msg(unsigned long code, const std::string&amp; location)
+<span style = "background-color:#fdd">{
+    std::string msg(location);
+    msg.append(": ");
+    msg.append(std::to_string(code));
+    msg.append(": ");
+    msg.append(utility::details::platform_category().message(static_cast&lt;int&gt;(code)));
+    return msg;
+}</span>
+
+// Helper function to build an error message from a WinHTTP async result.
+static std::string build_error_msg(_In_ WINHTTP_ASYNC_RESULT* error_result)
+<span style = "background-color:#fdd">{
+    switch (error_result-&gt;dwResult)</span>
+    {
+<span style = "background-color:#fdd">        case API_RECEIVE_RESPONSE: return build_error_msg(error_result-&gt;dwError, "WinHttpReceiveResponse");
+        case API_QUERY_DATA_AVAILABLE: return build_error_msg(error_result-&gt;dwError, "WinHttpQueryDataAvaliable");
+        case API_READ_DATA: return build_error_msg(error_result-&gt;dwError, "WinHttpReadData");
+        case API_WRITE_DATA: return build_error_msg(error_result-&gt;dwError, "WinHttpWriteData");
+        case API_SEND_REQUEST: return build_error_msg(error_result-&gt;dwError, "WinHttpSendRequest");
+        default: return build_error_msg(error_result-&gt;dwError, "Unknown WinHTTP Function");</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+
+class memory_holder
+{
+    uint8_t* m_externalData;
+    std::vector&lt;uint8_t&gt; m_internalData;
+    size_t m_size;
+
+public:
+<span style = "background-color:#fdd">    memory_holder() : m_externalData(nullptr), m_size(0) {}</span>
+
+    void allocate_space(size_t length)
+<span style = "background-color:#fdd">    {
+        if (length &gt; m_internalData.size())</span>
+        {
+<span style = "background-color:#fdd">            m_internalData.resize(length);</span>
+        }
+<span style = "background-color:#fdd">        m_externalData = nullptr;
+    }</span>
+
+    inline void reassign_to(_In_opt_ uint8_t* block, size_t length)
+<span style = "background-color:#fdd">    {
+        assert(block != nullptr);
+        m_externalData = block;
+        m_size = length;
+    }</span>
+
+<span style = "background-color:#fdd">    inline bool is_internally_allocated() const { return m_externalData == nullptr; }</span>
+
+<span style = "background-color:#fdd">    inline uint8_t* get() { return is_internally_allocated() ? &amp;m_internalData[0] : m_externalData; }</span>
+
+<span style = "background-color:#fdd">    inline size_t size() const { return is_internally_allocated() ? m_internalData.size() : m_size; }</span>
+};
+
+// Possible ways a message body can be sent/received.
+enum msg_body_type
+{
+    no_body,
+    content_length_chunked,
+    transfer_encoding_chunked
+};
+
+static DWORD WinHttpDefaultProxyConstant() CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">{</span>
+#if _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+#if _WIN32_WINNT &lt; _WIN32_WINNT_WINBLUE
+<span style = "background-color:#fdd">    if (!IsWindows8Point1OrGreater())</span>
+    {
+        // Not Windows 8.1 or later, use the default proxy setting
+<span style = "background-color:#fdd">        return WINHTTP_ACCESS_TYPE_DEFAULT_PROXY;</span>
+    }
+#endif // _WIN32_WINNT &lt; _WIN32_WINNT_WINBLUE
+
+    // Windows 8.1 or later, use the automatic proxy setting
+<span style = "background-color:#fdd">    return WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY;</span>
+#else  // ^^^ _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA ^^^ // vvv _WIN32_WINNT &lt; _WIN32_WINNT_VISTA vvv
+    return WINHTTP_ACCESS_TYPE_DEFAULT_PROXY;
+#endif // _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+<span style = "background-color:#fdd">}</span>
+
+// Additional information necessary to track a WinHTTP request.
+class winhttp_request_context final : public request_context
+{
+public:
+    // Factory function to create requests on the heap.
+    static std::shared_ptr&lt;request_context&gt; create_request_context(
+        const std::shared_ptr&lt;_http_client_communicator&gt;&amp; client, const http_request&amp; request)
+<span style = "background-color:#fdd">    {
+        std::shared_ptr&lt;winhttp_request_context&gt; ret(new winhttp_request_context(client, request));
+        ret-&gt;m_self_reference = ret;
+        return std::move(ret);
+    }</span>
+
+<span style = "background-color:#fdd">    ~winhttp_request_context() { cleanup(); }</span>
+
+    void allocate_request_space(_In_opt_ uint8_t* block, size_t length)
+<span style = "background-color:#fdd">    {
+        if (block == nullptr)
+            m_body_data.allocate_space(length);</span>
+        else
+<span style = "background-color:#fdd">            m_body_data.reassign_to(block, length);
+    }</span>
+
+    void allocate_reply_space(_In_opt_ uint8_t* block, size_t length)
+<span style = "background-color:#fdd">    {
+        if (block == nullptr)
+            m_body_data.allocate_space(length);</span>
+        else
+<span style = "background-color:#fdd">            m_body_data.reassign_to(block, length);
+    }</span>
+
+<span style = "background-color:#fdd">    bool is_externally_allocated() const { return !m_body_data.is_internally_allocated(); }</span>
+
+    HINTERNET m_request_handle;
+    std::weak_ptr&lt;winhttp_request_context&gt;*
+        m_request_handle_context; // owned by m_request_handle to be deleted by WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING
+
+    bool m_proxy_authentication_tried;
+    bool m_server_authentication_tried;
+
+    size_t m_remaining_redirects;
+
+    msg_body_type m_bodyType;
+
+    utility::size64_t m_remaining_to_write;
+
+    std::char_traits&lt;uint8_t&gt;::pos_type m_startingPosition;
+
+    // If the user specified that to guarantee data buffering of request data, in case of challenged authentication
+    // requests, etc... Then if the request stream buffer doesn't support seeking we need to copy the body chunks as it
+    // is sent.
+    concurrency::streams::istream m_readStream;
+    std::unique_ptr&lt;concurrency::streams::container_buffer&lt;std::vector&lt;uint8_t&gt;&gt;&gt; m_readBufferCopy;
+<span style = "background-color:#fdd">    virtual concurrency::streams::streambuf&lt;uint8_t&gt; _get_readbuffer() { return m_readStream.streambuf(); }</span>
+
+    // This self reference will keep us alive until finish() is called.
+    std::shared_ptr&lt;winhttp_request_context&gt; m_self_reference;
+    memory_holder m_body_data;
+
+    // Compress/decompress-related processing state lives here
+    class compression_state
+    {
+    public:
+        compression_state()
+<span style = "background-color:#fdd">            : m_acquired(nullptr)
+            , m_bytes_read(0)
+            , m_bytes_processed(0)
+            , m_needs_flush(false)
+            , m_started(false)
+            , m_done(false)
+            , m_chunked(false)
+        {
+        }</span>
+
+#if (defined(_MSC_VER) &amp;&amp; _MSC_VER &lt; 1900) || defined(CPPREST_FORCE_HTTP_CLIENT_WINHTTPPAL)
+        compression_state(const compression_state&amp;) = delete;
+        compression_state(compression_state&amp;&amp; other)
+            : m_buffer(std::move(other.m_buffer))
+            , m_acquired(other.m_acquired)
+            , m_bytes_read(other.m_bytes_read)
+            , m_bytes_processed(other.m_bytes_processed)
+            , m_needs_flush(other.m_needs_flush)
+            , m_started(other.m_started)
+            , m_done(other.m_done)
+            , m_chunked(other.m_chunked)
+            , m_chunk_bytes(other.m_chunk_bytes)
+            , m_chunk(std::move(other.m_chunk))
+        {
+        }
+        compression_state&amp; operator=(const compression_state&amp;) = delete;
+        compression_state&amp; operator=(compression_state&amp;&amp; other)
+        {
+            m_buffer = std::move(other.m_buffer);
+            m_acquired = other.m_acquired;
+            m_bytes_read = other.m_bytes_read;
+            m_bytes_processed = other.m_bytes_processed;
+            m_needs_flush = other.m_needs_flush;
+            m_started = other.m_started;
+            m_done = other.m_done;
+            m_chunked = other.m_chunked;
+            m_chunk_bytes = other.m_chunk_bytes;
+            m_chunk = std::move(other.m_chunk);
+            return *this;
+        }
+#endif // defined(_MSC_VER) &amp;&amp; _MSC_VER &lt; 1900
+
+        // Minimal state for on-the-fly decoding of "chunked" encoded data
+        class _chunk_helper
+        {
+        public:
+            _chunk_helper()
+<span style = "background-color:#fdd">                : m_bytes_remaining(0)
+                , m_chunk_size(true)
+                , m_chunk_delim(false)
+                , m_expect_linefeed(false)
+                , m_ignore(false)
+                , m_trailer(false)
+            {
+            }</span>
+
+            // Returns true if the end of chunked data has been reached, specifically whether the 0-length
+            // chunk and its trailing delimiter has been processed.  Otherwise, offset and length bound the
+            // portion of buffer that represents a contiguous (and possibly partial) chunk of consumable
+            // data; offset+length is the total number of bytes processed from the buffer on this pass.
+            bool process_buffer(uint8_t* buffer, size_t buffer_size, size_t&amp; offset, size_t&amp; length)
+<span style = "background-color:#fdd">            {
+                bool done = false;
+                size_t n = 0;
+                size_t l = 0;</span>
+
+<span style = "background-color:#fdd">                while (n &lt; buffer_size)</span>
+                {
+<span style = "background-color:#fdd">                    if (m_ignore)</span>
+                    {
+<span style = "background-color:#fdd">                        if (m_expect_linefeed)</span>
+                        {
+<span style = "background-color:#fdd">                            _ASSERTE(m_chunk_delim &amp;&amp; m_trailer);
+                            if (buffer[n] != '\n')</span>
+                            {
+                                // The data stream does not conform to "chunked" encoding
+<span style = "background-color:#fdd">                                throw http_exception(status_codes::BadRequest, "Transfer-Encoding malformed trailer");</span>
+                            }
+
+                            // Look for further trailer fields or the end of the stream
+<span style = "background-color:#fdd">                            m_expect_linefeed = false;
+                            m_trailer = false;
+                        }
+                        else if (buffer[n] == '\r')</span>
+                        {
+<span style = "background-color:#fdd">                            if (!m_trailer)</span>
+                            {
+                                // We're at the end of the data we need to ignore
+<span style = "background-color:#fdd">                                _ASSERTE(m_chunk_size || m_chunk_delim);
+                                m_ignore = false;
+                                m_chunk_delim = false; // this is only set if we're at the end of the message</span>
+                            }                          // else we're at the end of a trailer field
+<span style = "background-color:#fdd">                            m_expect_linefeed = true;
+                        }
+                        else if (m_chunk_delim)</span>
+                        {
+                            // We're processing (and ignoring) a trailer field
+<span style = "background-color:#fdd">                            m_trailer = true;</span>
+                        }
+<span style = "background-color:#fdd">                    }
+                    else if (m_expect_linefeed)</span>
+                    {
+                        // We've already seen a carriage return; confirm the linefeed
+<span style = "background-color:#fdd">                        if (buffer[n] != '\n')</span>
+                        {
+                            // The data stream does not conform to "chunked" encoding
+<span style = "background-color:#fdd">                            throw http_exception(status_codes::BadRequest, "Transfer-Encoding malformed delimiter");</span>
+                        }
+<span style = "background-color:#fdd">                        if (m_chunk_size)</span>
+                        {
+<span style = "background-color:#fdd">                            if (!m_bytes_remaining)</span>
+                            {
+                                // We're processing the terminating "empty" chunk; there's
+                                // no data, we just need to confirm the final chunk delimiter,
+                                // possibly ignoring a trailer part along the way
+<span style = "background-color:#fdd">                                m_ignore = true;
+                                m_chunk_delim = true;</span>
+                            } // else we move on to the chunk data itself
+<span style = "background-color:#fdd">                            m_chunk_size = false;
+                        }</span>
+                        else
+                        {
+                            // Now we move on to the next chunk size
+<span style = "background-color:#fdd">                            _ASSERTE(!m_bytes_remaining);
+                            if (m_chunk_delim)</span>
+                            {
+                                // We expect a chunk size next
+<span style = "background-color:#fdd">                                m_chunk_size = true;
+                            }</span>
+                            else
+                            {
+                                // We just processed the end-of-input delimiter
+<span style = "background-color:#fdd">                                done = true;</span>
+                            }
+<span style = "background-color:#fdd">                            m_chunk_delim = false;</span>
+                        }
+<span style = "background-color:#fdd">                        m_expect_linefeed = false;
+                    }
+                    else if (m_chunk_delim)</span>
+                    {
+                        // We're processing a post-chunk delimiter
+<span style = "background-color:#fdd">                        if (buffer[n] != '\r')</span>
+                        {
+                            // The data stream does not conform to "chunked" encoding
+<span style = "background-color:#fdd">                            throw http_exception(status_codes::BadRequest,</span>
+                                                 "Transfer-Encoding malformed chunk delimiter");
+                        }
+
+                        // We found the carriage return; look for the linefeed
+<span style = "background-color:#fdd">                        m_expect_linefeed = true;
+                    }
+                    else if (m_chunk_size)</span>
+                    {
+                        // We're processing an ASCII hexadecimal chunk size
+<span style = "background-color:#fdd">                        if (buffer[n] &gt;= 'a' &amp;&amp; buffer[n] &lt;= 'f')</span>
+                        {
+<span style = "background-color:#fdd">                            m_bytes_remaining *= 16;
+                            m_bytes_remaining += 10 + buffer[n] - 'a';
+                        }
+                        else if (buffer[n] &gt;= 'A' &amp;&amp; buffer[n] &lt;= 'F')</span>
+                        {
+<span style = "background-color:#fdd">                            m_bytes_remaining *= 16;
+                            m_bytes_remaining += 10 + buffer[n] - 'A';
+                        }
+                        else if (buffer[n] &gt;= '0' &amp;&amp; buffer[n] &lt;= '9')</span>
+                        {
+<span style = "background-color:#fdd">                            m_bytes_remaining *= 16;
+                            m_bytes_remaining += buffer[n] - '0';
+                        }
+                        else if (buffer[n] == '\r')</span>
+                        {
+                            // We've reached the end of the size, and there's no chunk extension
+<span style = "background-color:#fdd">                            m_expect_linefeed = true;
+                        }
+                        else if (buffer[n] == ';')</span>
+                        {
+                            // We've reached the end of the size, and there's a chunk extension;
+                            // we don't support extensions, so we ignore them per RFC
+<span style = "background-color:#fdd">                            m_ignore = true;
+                        }</span>
+                        else
+                        {
+                            // The data stream does not conform to "chunked" encoding
+<span style = "background-color:#fdd">                            throw http_exception(status_codes::BadRequest,</span>
+                                                 "Transfer-Encoding malformed chunk size or extension");
+                        }
+<span style = "background-color:#fdd">                    }</span>
+                    else
+                    {
+<span style = "background-color:#fdd">                        if (m_bytes_remaining)</span>
+                        {
+                            // We're at the offset of a chunk of consumable data; let the caller process it
+<span style = "background-color:#fdd">                            l = (std::min)(m_bytes_remaining, buffer_size - n);
+                            m_bytes_remaining -= l;
+                            if (!m_bytes_remaining)</span>
+                            {
+                                // We're moving on to the post-chunk delimiter
+<span style = "background-color:#fdd">                                m_chunk_delim = true;</span>
+                            }
+<span style = "background-color:#fdd">                        }</span>
+                        else
+                        {
+                            // We've previously processed the terminating empty chunk and its
+                            // trailing delimiter; skip the entire buffer, and inform the caller
+<span style = "background-color:#fdd">                            n = buffer_size;
+                            done = true;</span>
+                        }
+
+                        // Let the caller process the result
+<span style = "background-color:#fdd">                        break;</span>
+                    }
+
+                    // Move on to the next byte
+<span style = "background-color:#fdd">                    n++;
+                }</span>
+
+<span style = "background-color:#fdd">                offset = n;
+                length = l;
+                return buffer_size ? done : (!m_bytes_remaining &amp;&amp; !m_chunk_size &amp;&amp; !m_chunk_delim);
+            }</span>
+
+        private:
+            size_t m_bytes_remaining; // the number of bytes remaining in the chunk we're currently processing
+            bool m_chunk_size;        // if true, we're processing a chunk size or its trailing delimiter
+            bool m_chunk_delim;       // if true, we're processing a delimiter between a chunk and the next chunk's size
+            bool m_expect_linefeed; // if true, we're processing a delimiter, and we've already seen its carriage return
+            bool m_ignore;          // if true, we're processing a chunk extension or trailer, which we don't support
+            bool m_trailer;         // if true, we're processing (and ignoring) a trailer field; m_ignore is also true
+        };
+
+        std::vector&lt;uint8_t&gt; m_buffer; // we read data from the stream into this before compressing
+        uint8_t* m_acquired; // we use this in place of m_buffer if the stream has directly-accessible data available
+        size_t m_bytes_read; // we most recently read this many bytes, which may be less than m_buffer.size()
+        size_t m_bytes_processed; // we've compressed this many bytes of m_bytes_read so far
+        bool m_needs_flush;   // we've read and compressed all bytes, but the compressor still has compressed bytes to
+                              // give us
+        bool m_started;       // we've sent at least some number of bytes to m_decompressor
+        bool m_done;          // we've read, compressed, and consumed all bytes
+        bool m_chunked;       // if true, we need to decode and decompress a transfer-encoded message
+        size_t m_chunk_bytes; // un-decompressed bytes remaining in the most-recently-obtained data from m_chunk
+        std::unique_ptr&lt;_chunk_helper&gt; m_chunk;
+    } m_compression_state;
+
+    void cleanup()
+<span style = "background-color:#fdd">    {
+        if (m_compression_state.m_acquired != nullptr)</span>
+        {
+            // We may still hold a piece of the buffer if we encountered an exception; release it here
+<span style = "background-color:#fdd">            if (m_decompressor)</span>
+            {
+<span style = "background-color:#fdd">                _get_writebuffer().commit(0);
+            }</span>
+            else
+            {
+<span style = "background-color:#fdd">                _get_readbuffer().release(m_compression_state.m_acquired, m_compression_state.m_bytes_processed);</span>
+            }
+<span style = "background-color:#fdd">            m_compression_state.m_acquired = nullptr;</span>
+        }
+
+<span style = "background-color:#fdd">        if (m_request_handle != nullptr)</span>
+        {
+<span style = "background-color:#fdd">            WinHttpCloseHandle(m_request_handle);</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    void install_custom_cn_check(const utility::string_t&amp; customHost)
+<span style = "background-color:#fdd">    {
+        m_customCnCheck = customHost;
+        utility::details::inplace_tolower(m_customCnCheck);
+    }</span>
+
+    void on_send_request_validate_cn()
+<span style = "background-color:#fdd">    {</span>
+#if defined(CPPREST_FORCE_HTTP_CLIENT_WINHTTPPAL)
+        // we do the validation inside curl
+        return;
+#else
+<span style = "background-color:#fdd">        if (m_customCnCheck.empty())</span>
+        {
+            // no custom validation selected; either we've delegated that to winhttp or
+            // certificate checking is completely disabled
+<span style = "background-color:#fdd">            return;</span>
+        }
+
+<span style = "background-color:#fdd">        winhttp_cert_context certContext;
+        DWORD bufferSize = sizeof(certContext.raw);
+        if (!WinHttpQueryOption(m_request_handle, WINHTTP_OPTION_SERVER_CERT_CONTEXT, &amp;certContext.raw, &amp;bufferSize))</span>
+        {
+<span style = "background-color:#fdd">            auto errorCode = GetLastError();
+            if (errorCode == HRESULT_CODE(WININET_E_INCORRECT_HANDLE_STATE))</span>
+            {
+                // typically happens when given a custom host with an initially HTTP connection
+<span style = "background-color:#fdd">                return;</span>
+            }
+
+<span style = "background-color:#fdd">            report_error(errorCode,</span>
+                         build_error_msg(errorCode, "WinHttpQueryOption WINHTTP_OPTION_SERVER_CERT_CONTEXT"));
+<span style = "background-color:#fdd">            cleanup();
+            return;</span>
+        }
+
+<span style = "background-color:#fdd">        const auto encodedFirst = certContext.raw-&gt;pbCertEncoded;
+        const auto encodedLast = encodedFirst + certContext.raw-&gt;cbCertEncoded;
+        if (certContext.raw-&gt;cbCertEncoded == m_cachedEncodedCert.size() &amp;&amp;</span>
+            std::equal(encodedFirst, encodedLast, m_cachedEncodedCert.begin()))
+        {
+            // already validated OK
+<span style = "background-color:#fdd">            return;</span>
+        }
+
+<span style = "background-color:#fdd">        char oidPkixKpServerAuth[] = szOID_PKIX_KP_SERVER_AUTH;
+        char oidServerGatedCrypto[] = szOID_SERVER_GATED_CRYPTO;
+        char oidSgcNetscape[] = szOID_SGC_NETSCAPE;</span>
+        char* chainUses[] = {
+<span style = "background-color:#fdd">            oidPkixKpServerAuth,
+            oidServerGatedCrypto,
+            oidSgcNetscape,</span>
+        };
+
+<span style = "background-color:#fdd">        winhttp_cert_chain_context chainContext;
+        CERT_CHAIN_PARA chainPara = {sizeof(chainPara)};
+        chainPara.RequestedUsage.dwType = USAGE_MATCH_TYPE_OR;
+        chainPara.RequestedUsage.Usage.cUsageIdentifier = sizeof(chainUses) / sizeof(char*);
+        chainPara.RequestedUsage.Usage.rgpszUsageIdentifier = chainUses;</span>
+
+        // note that the following chain only checks the end certificate; we
+        // assume WinHTTP already validated everything but the common name.
+<span style = "background-color:#fdd">        if (!CertGetCertificateChain(NULL,</span>
+                                     certContext.raw,
+                                     nullptr,
+                                     certContext.raw-&gt;hCertStore,
+                                     &amp;chainPara,
+                                     CERT_CHAIN_CACHE_END_CERT,
+                                     NULL,
+                                     &amp;chainContext.raw))
+        {
+<span style = "background-color:#fdd">            auto errorCode = GetLastError();
+            report_error(errorCode, build_error_msg(errorCode, "CertGetCertificateChain"));
+            cleanup();
+            return;</span>
+        }
+
+        HTTPSPolicyCallbackData policyData = {
+<span style = "background-color:#fdd">            {sizeof(policyData)},
+            AUTHTYPE_SERVER,</span>
+            // we assume WinHTTP already checked these:
+            0x00000080       /* SECURITY_FLAG_IGNORE_REVOCATION */
+                | 0x00000100 /* SECURITY_FLAG_IGNORE_UNKNOWN_CA */
+                | 0x00000200 /* SECURITY_FLAG_IGNORE_WRONG_USAGE */
+<span style = "background-color:#fdd">                | 0x00002000 /* SECURITY_FLAG_IGNORE_CERT_DATE_INVALID */,
+            &amp;m_customCnCheck[0],</span>
+        };
+<span style = "background-color:#fdd">        CERT_CHAIN_POLICY_PARA policyPara = {sizeof(policyPara)};
+        policyPara.pvExtraPolicyPara = &amp;policyData;</span>
+
+<span style = "background-color:#fdd">        CERT_CHAIN_POLICY_STATUS policyStatus = {sizeof(policyStatus)};
+        if (!CertVerifyCertificateChainPolicy(CERT_CHAIN_POLICY_SSL, chainContext.raw, &amp;policyPara, &amp;policyStatus))</span>
+        {
+<span style = "background-color:#fdd">            auto errorCode = GetLastError();
+            report_error(errorCode, build_error_msg(errorCode, "CertVerifyCertificateChainPolicy"));
+            cleanup();
+            return;</span>
+        }
+
+<span style = "background-color:#fdd">        if (policyStatus.dwError)</span>
+        {
+<span style = "background-color:#fdd">            report_error(policyStatus.dwError, build_error_msg(policyStatus.dwError, "Incorrect common name"));
+            cleanup();
+            return;</span>
+        }
+
+<span style = "background-color:#fdd">        m_cachedEncodedCert.assign(encodedFirst, encodedLast);</span>
+#endif
+<span style = "background-color:#fdd">    }</span>
+
+protected:
+    virtual void finish() override
+<span style = "background-color:#fdd">    {
+        request_context::finish();
+        assert(m_self_reference != nullptr);
+        auto dereference_self = std::move(m_self_reference);</span>
+        // As the stack frame cleans up, this will be deleted if no other references exist.
+<span style = "background-color:#fdd">    }</span>
+
+private:
+    utility::string_t m_customCnCheck;
+    std::vector&lt;unsigned char&gt; m_cachedEncodedCert;
+
+    // Can only create on the heap using factory function.
+    winhttp_request_context(const std::shared_ptr&lt;_http_client_communicator&gt;&amp; client, const http_request&amp; request)
+<span style = "background-color:#fdd">        : request_context(client, request)
+        , m_request_handle(nullptr)
+        , m_proxy_authentication_tried(false)
+        , m_server_authentication_tried(false)
+        , m_remaining_redirects(0)
+        , m_bodyType(no_body)
+        , m_remaining_to_write(0)
+        , m_startingPosition(std::char_traits&lt;uint8_t&gt;::eof())
+        , m_readStream(request.body())
+        , m_body_data()
+    {
+    }</span>
+};
+
+static DWORD ChooseAuthScheme(DWORD dwSupportedSchemes)
+<span style = "background-color:#fdd">{</span>
+    //  It is the server's responsibility only to accept
+    //  authentication schemes that provide a sufficient
+    //  level of security to protect the servers resources.
+    //
+    //  The client is also obligated only to use an authentication
+    //  scheme that adequately protects its username and password.
+    //
+<span style = "background-color:#fdd">    if (dwSupportedSchemes &amp; WINHTTP_AUTH_SCHEME_NEGOTIATE)
+        return WINHTTP_AUTH_SCHEME_NEGOTIATE;
+    else if (dwSupportedSchemes &amp; WINHTTP_AUTH_SCHEME_NTLM)
+        return WINHTTP_AUTH_SCHEME_NTLM;
+    else if (dwSupportedSchemes &amp; WINHTTP_AUTH_SCHEME_PASSPORT)
+        return WINHTTP_AUTH_SCHEME_PASSPORT;
+    else if (dwSupportedSchemes &amp; WINHTTP_AUTH_SCHEME_DIGEST)
+        return WINHTTP_AUTH_SCHEME_DIGEST;
+    else if (dwSupportedSchemes &amp; WINHTTP_AUTH_SCHEME_BASIC)
+        return WINHTTP_AUTH_SCHEME_BASIC;</span>
+    else
+<span style = "background-color:#fdd">        return 0;
+}</span>
+
+// Small RAII helper to ensure that the fields of this struct are always
+// properly freed.
+struct proxy_info : WINHTTP_PROXY_INFO
+{
+<span style = "background-color:#fdd">    proxy_info() { memset(this, 0, sizeof(WINHTTP_PROXY_INFO)); }</span>
+
+    ~proxy_info()
+<span style = "background-color:#fdd">    {
+        if (lpszProxy) ::GlobalFree(lpszProxy);
+        if (lpszProxyBypass) ::GlobalFree(lpszProxyBypass);
+    }</span>
+};
+
+struct ie_proxy_config : WINHTTP_CURRENT_USER_IE_PROXY_CONFIG
+{
+<span style = "background-color:#fdd">    ie_proxy_config() { memset(this, 0, sizeof(WINHTTP_CURRENT_USER_IE_PROXY_CONFIG)); }</span>
+
+    ~ie_proxy_config()
+<span style = "background-color:#fdd">    {
+        if (lpszAutoConfigUrl) ::GlobalFree(lpszAutoConfigUrl);
+        if (lpszProxy) ::GlobalFree(lpszProxy);
+        if (lpszProxyBypass) ::GlobalFree(lpszProxyBypass);
+    }</span>
+};
+
+// WinHTTP client.
+class winhttp_client final : public _http_client_communicator
+{
+public:
+    winhttp_client(http::uri address, http_client_config client_config)
+<span style = "background-color:#fdd">        : _http_client_communicator(std::move(address), std::move(client_config))
+        , m_opened(false)
+        , m_hSession(nullptr)
+        , m_hConnection(nullptr)
+        , m_secure(m_uri.scheme() == _XPLATSTR("https"))
+    {
+    }</span>
+
+    winhttp_client(const winhttp_client&amp;) = delete;
+    winhttp_client&amp; operator=(const winhttp_client&amp;) = delete;
+
+    // Closes session.
+    ~winhttp_client()
+<span style = "background-color:#fdd">    {
+        if (m_hConnection != nullptr)</span>
+        {
+<span style = "background-color:#fdd">            WinHttpCloseHandle(m_hConnection);</span>
+        }
+
+<span style = "background-color:#fdd">        if (m_hSession != nullptr)</span>
+        {
+            // Unregister the callback.
+<span style = "background-color:#fdd">            WinHttpSetStatusCallback(m_hSession, nullptr, WINHTTP_CALLBACK_FLAG_ALL_NOTIFICATIONS, 0);</span>
+
+<span style = "background-color:#fdd">            WinHttpCloseHandle(m_hSession);</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    virtual pplx::task&lt;http_response&gt; propagate(http_request request) override
+<span style = "background-color:#fdd">    {
+        auto self = std::static_pointer_cast&lt;_http_client_communicator&gt;(shared_from_this());
+        auto context = details::winhttp_request_context::create_request_context(self, request);</span>
+
+        // Use a task to externally signal the final result and completion of the task.
+<span style = "background-color:#fdd">        auto result_task = pplx::create_task(context-&gt;m_request_completion);</span>
+
+        // Asynchronously send the response with the HTTP client implementation.
+<span style = "background-color:#fdd">        this-&gt;async_send_request(context);</span>
+
+<span style = "background-color:#fdd">        return result_task;
+    }</span>
+
+protected:
+    // Open session and connection with the server.
+    unsigned long open()
+<span style = "background-color:#fdd">    {
+        if (m_opened)</span>
+        {
+<span style = "background-color:#fdd">            return 0;</span>
+        }
+
+<span style = "background-color:#fdd">        pplx::extensibility::scoped_critical_section_t l(m_client_lock);
+        if (m_opened)</span>
+        {
+<span style = "background-color:#fdd">            return 0;</span>
+        }
+
+        // This object have lifetime greater than proxy_name and proxy_bypass
+        // which may point to its elements.
+<span style = "background-color:#fdd">        ie_proxy_config proxyIE;</span>
+
+        DWORD access_type;
+<span style = "background-color:#fdd">        LPCTSTR proxy_name = WINHTTP_NO_PROXY_NAME;
+        LPCTSTR proxy_bypass = WINHTTP_NO_PROXY_BYPASS;
+        m_proxy_auto_config = false;
+        utility::string_t proxy_str;
+        http::uri uri;</span>
+
+<span style = "background-color:#fdd">        const auto&amp; config = client_config();
+        const auto&amp; proxy = config.proxy();
+        if (proxy.is_default())</span>
+        {
+<span style = "background-color:#fdd">            access_type = WinHttpDefaultProxyConstant();
+        }
+        else if (proxy.is_disabled())</span>
+        {
+<span style = "background-color:#fdd">            access_type = WINHTTP_ACCESS_TYPE_NO_PROXY;
+        }
+        else if (proxy.is_auto_discovery())</span>
+        {
+<span style = "background-color:#fdd">            access_type = WinHttpDefaultProxyConstant();
+            if (access_type != WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY)</span>
+            {
+                // Windows 8 or earlier, do proxy autodetection ourselves
+<span style = "background-color:#fdd">                m_proxy_auto_config = true;</span>
+
+<span style = "background-color:#fdd">                proxy_info proxyDefault;
+                if (!WinHttpGetDefaultProxyConfiguration(&amp;proxyDefault) ||</span>
+                    proxyDefault.dwAccessType == WINHTTP_ACCESS_TYPE_NO_PROXY)
+                {
+                    // ... then try to fall back on the default WinINET proxy, as
+                    // recommended for the desktop applications (if we're not
+                    // running under a user account, the function below will just
+                    // fail, so there is no real need to check for this explicitly)
+<span style = "background-color:#fdd">                    if (WinHttpGetIEProxyConfigForCurrentUser(&amp;proxyIE))</span>
+                    {
+<span style = "background-color:#fdd">                        if (proxyIE.fAutoDetect)</span>
+                        {
+<span style = "background-color:#fdd">                            m_proxy_auto_config = true;
+                        }
+                        else if (proxyIE.lpszAutoConfigUrl)</span>
+                        {
+<span style = "background-color:#fdd">                            m_proxy_auto_config = true;
+                            m_proxy_auto_config_url = proxyIE.lpszAutoConfigUrl;
+                        }
+                        else if (proxyIE.lpszProxy)</span>
+                        {
+<span style = "background-color:#fdd">                            access_type = WINHTTP_ACCESS_TYPE_NAMED_PROXY;
+                            proxy_name = proxyIE.lpszProxy;</span>
+
+<span style = "background-color:#fdd">                            if (proxyIE.lpszProxyBypass)</span>
+                            {
+<span style = "background-color:#fdd">                                proxy_bypass = proxyIE.lpszProxyBypass;</span>
+                            }
+                        }
+                    }
+                }
+<span style = "background-color:#fdd">            }
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            _ASSERTE(config.proxy().is_specified());
+            access_type = WINHTTP_ACCESS_TYPE_NAMED_PROXY;</span>
+            // WinHttpOpen cannot handle trailing slash in the name, so here is some string gymnastics to keep
+            // WinHttpOpen happy proxy_str is intentionally declared at the function level to avoid pointing to the
+            // string in the destructed object
+<span style = "background-color:#fdd">            uri = config.proxy().address();
+            if (uri.is_port_default())</span>
+            {
+<span style = "background-color:#fdd">                proxy_name = uri.host().c_str();
+            }</span>
+            else
+            {
+<span style = "background-color:#fdd">                proxy_str = uri.host();
+                if (uri.port() &gt; 0)</span>
+                {
+<span style = "background-color:#fdd">                    proxy_str.push_back(_XPLATSTR(':'));
+                    proxy_str.append(::utility::conversions::details::to_string_t(uri.port()));</span>
+                }
+
+<span style = "background-color:#fdd">                proxy_name = proxy_str.c_str();</span>
+            }
+        }
+
+        // Open session.
+<span style = "background-color:#fdd">        m_hSession = WinHttpOpen(NULL, access_type, proxy_name, proxy_bypass, WINHTTP_FLAG_ASYNC);
+        if (!m_hSession)</span>
+        {
+<span style = "background-color:#fdd">            return GetLastError();</span>
+        }
+
+        {
+            // Set timeouts.
+<span style = "background-color:#fdd">            const int milliseconds =</span>
+                (std::max)(static_cast&lt;int&gt;(config.timeout&lt;std::chrono::milliseconds&gt;().count()), 1);
+<span style = "background-color:#fdd">            if (!WinHttpSetTimeouts(m_hSession, milliseconds, milliseconds, milliseconds, milliseconds))</span>
+            {
+<span style = "background-color:#fdd">                return GetLastError();</span>
+            }
+        }
+
+<span style = "background-color:#fdd">        if (config.guarantee_order())</span>
+        {
+            // Set max connection to use per server to 1.
+<span style = "background-color:#fdd">            DWORD maxConnections = 1;
+            if (!WinHttpSetOption(</span>
+                    m_hSession, WINHTTP_OPTION_MAX_CONNS_PER_SERVER, &amp;maxConnections, sizeof(maxConnections)))
+            {
+<span style = "background-color:#fdd">                return GetLastError();</span>
+            }
+        }
+
+        {
+            // Enable TLS 1.1 and 1.2
+#if (_WIN32_WINNT &gt;= _WIN32_WINNT_VISTA) || defined(CPPREST_FORCE_HTTP_CLIENT_WINHTTPPAL)
+<span style = "background-color:#fdd">            DWORD secure_protocols(WINHTTP_FLAG_SECURE_PROTOCOL_SSL3 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1 |</span>
+                                   WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_1 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2);
+<span style = "background-color:#fdd">            if (!WinHttpSetOption(</span>
+                m_hSession, WINHTTP_OPTION_SECURE_PROTOCOLS, &amp;secure_protocols, sizeof(secure_protocols)))
+            {
+<span style = "background-color:#fdd">                return GetLastError();</span>
+            }
+#endif
+        }
+
+<span style = "background-color:#fdd">        config._invoke_nativesessionhandle_options(m_hSession);</span>
+
+        // Register asynchronous callback.
+<span style = "background-color:#fdd">        if (WINHTTP_INVALID_STATUS_CALLBACK ==</span>
+            WinHttpSetStatusCallback(m_hSession,
+                                     &amp;winhttp_client::completion_callback,
+                                     WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_HANDLES |
+                                         WINHTTP_CALLBACK_FLAG_SECURE_FAILURE | WINHTTP_CALLBACK_FLAG_SEND_REQUEST |
+                                         WINHTTP_CALLBACK_STATUS_REDIRECT,
+                                     0))
+        {
+<span style = "background-color:#fdd">            return GetLastError();</span>
+        }
+
+        // Open connection.
+<span style = "background-color:#fdd">        unsigned int port = m_uri.is_port_default()</span>
+                                ? (m_secure ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT)
+                                : m_uri.port();
+<span style = "background-color:#fdd">        m_hConnection = WinHttpConnect(m_hSession, m_uri.host().c_str(), (INTERNET_PORT)port, 0);</span>
+
+<span style = "background-color:#fdd">        if (m_hConnection == nullptr)</span>
+        {
+<span style = "background-color:#fdd">            return GetLastError();</span>
+        }
+
+<span style = "background-color:#fdd">        m_opened = true;
+        return S_OK;
+    }</span>
+
+    // Start sending request.
+    void send_request(_In_ const std::shared_ptr&lt;request_context&gt;&amp; request)
+<span style = "background-color:#fdd">    {</span>
+        // First see if we need to be opened.
+<span style = "background-color:#fdd">        unsigned long error = open();
+        if (error != 0)</span>
+        {
+            // DO NOT TOUCH the this pointer after completing the request
+            // This object could be freed along with the request as it could
+            // be the last reference to this object
+<span style = "background-color:#fdd">            request-&gt;report_error(error, _XPLATSTR("Open failed"));
+            return;</span>
+        }
+
+<span style = "background-color:#fdd">        http_request&amp; msg = request-&gt;m_request;
+        http_headers&amp; headers = msg.headers();
+        std::shared_ptr&lt;winhttp_request_context&gt; winhttp_context =</span>
+            std::static_pointer_cast&lt;winhttp_request_context&gt;(request);
+<span style = "background-color:#fdd">        std::weak_ptr&lt;winhttp_request_context&gt; weak_winhttp_context = winhttp_context;</span>
+
+<span style = "background-color:#fdd">        proxy_info info;
+        bool proxy_info_required = false;</span>
+
+<span style = "background-color:#fdd">        const auto&amp; method = msg.method();</span>
+
+        // stop injection of headers via method
+        // resource should be ok, since it's been encoded
+        // and host won't resolve
+<span style = "background-color:#fdd">        if (!::web::http::details::validate_method(method))</span>
+        {
+<span style = "background-color:#fdd">            request-&gt;report_exception(http_exception("The method string is invalid."));
+            return;</span>
+        }
+
+<span style = "background-color:#fdd">        if (m_proxy_auto_config)</span>
+        {
+<span style = "background-color:#fdd">            WINHTTP_AUTOPROXY_OPTIONS autoproxy_options {};
+            if (m_proxy_auto_config_url.empty())</span>
+            {
+<span style = "background-color:#fdd">                autoproxy_options.dwFlags = WINHTTP_AUTOPROXY_AUTO_DETECT;
+                autoproxy_options.dwAutoDetectFlags = WINHTTP_AUTO_DETECT_TYPE_DHCP | WINHTTP_AUTO_DETECT_TYPE_DNS_A;
+            }</span>
+            else
+            {
+<span style = "background-color:#fdd">                autoproxy_options.dwFlags = WINHTTP_AUTOPROXY_CONFIG_URL;
+                autoproxy_options.lpszAutoConfigUrl = m_proxy_auto_config_url.c_str();</span>
+            }
+
+<span style = "background-color:#fdd">            autoproxy_options.fAutoLogonIfChallenged = TRUE;</span>
+
+<span style = "background-color:#fdd">            auto result = WinHttpGetProxyForUrl(m_hSession, m_uri.to_string().c_str(), &amp;autoproxy_options, &amp;info);
+            if (result)</span>
+            {
+<span style = "background-color:#fdd">                proxy_info_required = true;</span>
+            }
+            else
+            {
+                // Failure to download the auto-configuration script is not fatal. Fall back to the default proxy.
+            }
+        }
+
+        // Need to form uri path, query, and fragment for this request.
+        // Make sure to keep any path that was specified with the uri when the http_client was created.
+<span style = "background-color:#fdd">        const utility::string_t encoded_resource =</span>
+            http::uri_builder(m_uri).append(msg.relative_uri()).to_uri().resource().to_string();
+
+        // Open the request.
+<span style = "background-color:#fdd">        winhttp_context-&gt;m_request_handle_context = new std::weak_ptr&lt;winhttp_request_context&gt;(winhttp_context);</span>
+
+<span style = "background-color:#fdd">        winhttp_context-&gt;m_request_handle =</span>
+            WinHttpOpenRequest(m_hConnection,
+                               msg.method().c_str(),
+                               encoded_resource.c_str(),
+                               nullptr,
+                               WINHTTP_NO_REFERER,
+                               WINHTTP_DEFAULT_ACCEPT_TYPES,
+                               WINHTTP_FLAG_ESCAPE_DISABLE | (m_secure ? WINHTTP_FLAG_SECURE : 0));
+<span style = "background-color:#fdd">        if (winhttp_context-&gt;m_request_handle == nullptr)</span>
+        {
+<span style = "background-color:#fdd">            auto errorCode = GetLastError();
+            delete winhttp_context-&gt;m_request_handle_context;
+            winhttp_context-&gt;m_request_handle_context = 0;
+            request-&gt;report_error(errorCode, build_error_msg(errorCode, "WinHttpOpenRequest"));
+            return;</span>
+        }
+
+<span style = "background-color:#fdd">        if (!WinHttpSetOption(winhttp_context-&gt;m_request_handle,</span>
+                              WINHTTP_OPTION_CONTEXT_VALUE,
+                              &amp;winhttp_context-&gt;m_request_handle_context,
+                              sizeof(void*)))
+        {
+<span style = "background-color:#fdd">            auto errorCode = GetLastError();
+            delete winhttp_context-&gt;m_request_handle_context;
+            winhttp_context-&gt;m_request_handle_context = 0;
+            request-&gt;report_error(errorCode, build_error_msg(errorCode, "WinHttpSetOption request context"));
+            return;</span>
+        }
+
+<span style = "background-color:#fdd">        if (proxy_info_required)</span>
+        {
+<span style = "background-color:#fdd">            auto result = WinHttpSetOption(</span>
+                winhttp_context-&gt;m_request_handle, WINHTTP_OPTION_PROXY, &amp;info, sizeof(WINHTTP_PROXY_INFO));
+<span style = "background-color:#fdd">            if (!result)</span>
+            {
+<span style = "background-color:#fdd">                auto errorCode = GetLastError();
+                request-&gt;report_error(errorCode, build_error_msg(errorCode, "Setting proxy options"));
+                return;</span>
+            }
+        }
+
+        // If credentials are specified, use autologon policy: WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH
+        //    =&gt; default credentials are not used.
+        // Else, the default autologon policy WINHTTP_AUTOLOGON_SECURITY_LEVEL_MEDIUM will be used.
+<span style = "background-color:#fdd">        if (client_config().credentials().is_set())</span>
+        {
+<span style = "background-color:#fdd">            DWORD data = WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH;</span>
+
+<span style = "background-color:#fdd">            auto result = WinHttpSetOption(</span>
+                winhttp_context-&gt;m_request_handle, WINHTTP_OPTION_AUTOLOGON_POLICY, &amp;data, sizeof(data));
+<span style = "background-color:#fdd">            if (!result)</span>
+            {
+<span style = "background-color:#fdd">                auto errorCode = GetLastError();
+                request-&gt;report_error(</span>
+                    errorCode,
+                    build_error_msg(errorCode, "Setting autologon policy to WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH"));
+<span style = "background-color:#fdd">                return;</span>
+            }
+        }
+
+        // Check to turn off server certificate verification.
+<span style = "background-color:#fdd">        DWORD ignoredCertificateValidationSteps = 0;
+        if (client_config().validate_certificates())</span>
+        {
+            // if we are validating certificates, also turn on revocation checking
+<span style = "background-color:#fdd">            DWORD dwEnableSSLRevocationOpt = WINHTTP_ENABLE_SSL_REVOCATION;
+            if (!WinHttpSetOption(winhttp_context-&gt;m_request_handle,</span>
+                                  WINHTTP_OPTION_ENABLE_FEATURE,
+                                  &amp;dwEnableSSLRevocationOpt,
+                                  sizeof(dwEnableSSLRevocationOpt)))
+            {
+<span style = "background-color:#fdd">                auto errorCode = GetLastError();
+                request-&gt;report_error(errorCode, build_error_msg(errorCode, "Error enabling SSL revocation check"));
+                return;</span>
+            }
+
+            // check if the user has overridden the desired Common Name with the host header
+<span style = "background-color:#fdd">            const auto hostHeader = headers.find(_XPLATSTR("Host"));
+            if (hostHeader != headers.end())</span>
+            {
+<span style = "background-color:#fdd">                const auto&amp; requestHost = hostHeader-&gt;second;
+                if (!utility::details::str_iequal(requestHost, m_uri.host()))</span>
+                {
+<span style = "background-color:#fdd">                    winhttp_context-&gt;install_custom_cn_check(requestHost);
+                    ignoredCertificateValidationSteps = SECURITY_FLAG_IGNORE_CERT_CN_INVALID;</span>
+                }
+            }
+<span style = "background-color:#fdd">        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            ignoredCertificateValidationSteps =</span>
+                SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        }
+
+<span style = "background-color:#fdd">        if (ignoredCertificateValidationSteps &amp;&amp; !WinHttpSetOption(winhttp_context-&gt;m_request_handle,</span>
+                                                                   WINHTTP_OPTION_SECURITY_FLAGS,
+                                                                   &amp;ignoredCertificateValidationSteps,
+                                                                   sizeof(ignoredCertificateValidationSteps)))
+        {
+<span style = "background-color:#fdd">            auto errorCode = GetLastError();
+            request-&gt;report_error(errorCode,</span>
+                                  build_error_msg(errorCode, "Setting ignore server certificate verification"));
+<span style = "background-color:#fdd">            return;</span>
+        }
+
+// WinHttpPAL does not currently provide these options
+// See https://github.com/microsoft/WinHttpPAL/issues/1
+#if !defined(CPPREST_FORCE_HTTP_CLIENT_WINHTTPPAL)
+<span style = "background-color:#fdd">        if (client_config().max_redirects() == 0)</span>
+        {
+            // Disable auto redirects.
+<span style = "background-color:#fdd">            DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+            if (!WinHttpSetOption(winhttp_context-&gt;m_request_handle,</span>
+                                  WINHTTP_OPTION_REDIRECT_POLICY,
+                                  &amp;redirectPolicy,
+                                  sizeof(redirectPolicy)))
+            {
+<span style = "background-color:#fdd">                auto errorCode = GetLastError();
+                request-&gt;report_error(errorCode, build_error_msg(errorCode, "Setting redirect policy"));
+                return;</span>
+            }
+            // Note, using WINHTTP_OPTION_DISABLE_FEATURE with WINHTTP_DISABLE_REDIRECTS here doesn't seem to work.
+<span style = "background-color:#fdd">        }</span>
+        else
+        {
+            // Set max auto redirects.
+
+            // Add 1 to config value because WinHttp option counts the original request.
+            // And another 1 to enable the response (headers) of the rejected automatic redirect to be returned
+            // rather than reporting an error "WinHttpReceiveResponse: 12156: The HTTP redirect request failed".
+<span style = "background-color:#fdd">            DWORD maxRedirects = client_config().max_redirects() &lt; MAXDWORD - 2</span>
+                ? static_cast&lt;DWORD&gt;(client_config().max_redirects() + 2)
+                : MAXDWORD;
+            // Therefore, effective max redirects
+<span style = "background-color:#fdd">            winhttp_context-&gt;m_remaining_redirects = maxRedirects - 2;</span>
+
+<span style = "background-color:#fdd">            if (!WinHttpSetOption(winhttp_context-&gt;m_request_handle,</span>
+                                  WINHTTP_OPTION_MAX_HTTP_AUTOMATIC_REDIRECTS,
+                                  &amp;maxRedirects,
+                                  sizeof(maxRedirects)))
+            {
+<span style = "background-color:#fdd">                auto errorCode = GetLastError();
+                request-&gt;report_error(errorCode, build_error_msg(errorCode, "Setting max automatic redirects"));
+                return;</span>
+            }
+
+            // (Dis)allow HTTPS to HTTP redirects.
+<span style = "background-color:#fdd">            DWORD redirectPolicy = client_config().https_to_http_redirects()</span>
+                ? WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS
+                : WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
+<span style = "background-color:#fdd">            if (!WinHttpSetOption(winhttp_context-&gt;m_request_handle,</span>
+                                  WINHTTP_OPTION_REDIRECT_POLICY,
+                                  &amp;redirectPolicy,
+                                  sizeof(redirectPolicy)))
+            {
+<span style = "background-color:#fdd">                auto errorCode = GetLastError();
+                request-&gt;report_error(errorCode, build_error_msg(errorCode, "Setting redirect policy"));
+                return;</span>
+            }
+        }
+#endif
+
+        size_t content_length;
+        try
+        {
+<span style = "background-color:#fdd">            content_length = msg._get_impl()-&gt;_get_content_length_and_set_compression();</span>
+        }
+        catch (...)
+<span style = "background-color:#fdd">        {
+            request-&gt;report_exception(std::current_exception());
+            return;
+        }
+        if (content_length &gt; 0)</span>
+        {
+<span style = "background-color:#fdd">            if (msg.method() == http::methods::GET || msg.method() == http::methods::HEAD)</span>
+            {
+<span style = "background-color:#fdd">                request-&gt;report_exception(http_exception(get_with_body_err_msg));
+                return;</span>
+            }
+
+            // There is a request body that needs to be transferred.
+<span style = "background-color:#fdd">            if (content_length == (std::numeric_limits&lt;size_t&gt;::max)())</span>
+            {
+                // The content length is not set and the application set a stream. This is an
+                // indication that we will use transfer encoding chunked.  We still want to
+                // know that stream's effective length if possible for memory efficiency.
+<span style = "background-color:#fdd">                winhttp_context-&gt;m_bodyType = transfer_encoding_chunked;
+                winhttp_context-&gt;m_remaining_to_write = msg._get_impl()-&gt;_get_stream_length();
+            }</span>
+            else
+            {
+                // While we won't be transfer-encoding the data, we will write it in portions.
+<span style = "background-color:#fdd">                winhttp_context-&gt;m_bodyType = content_length_chunked;
+                winhttp_context-&gt;m_remaining_to_write = content_length;</span>
+            }
+        }
+
+<span style = "background-color:#fdd">        utility::string_t flattened_headers = web::http::details::flatten_http_headers(headers);
+        if (winhttp_context-&gt;m_request.method() == http::methods::GET)</span>
+        {
+            // Prepare to request a compressed response from the server if necessary.
+<span style = "background-color:#fdd">            flattened_headers += winhttp_context-&gt;get_compression_header();</span>
+        }
+
+        // Add headers.
+<span style = "background-color:#fdd">        if (!flattened_headers.empty())</span>
+        {
+<span style = "background-color:#fdd">            if (!WinHttpAddRequestHeaders(winhttp_context-&gt;m_request_handle,</span>
+                                          flattened_headers.c_str(),
+                                          static_cast&lt;DWORD&gt;(flattened_headers.length()),
+                                          WINHTTP_ADDREQ_FLAG_ADD))
+            {
+<span style = "background-color:#fdd">                auto errorCode = GetLastError();
+                request-&gt;report_error(errorCode, build_error_msg(errorCode, "WinHttpAddRequestHeaders"));
+                return;</span>
+            }
+        }
+
+        // Register for notification on cancellation to abort this request.
+<span style = "background-color:#fdd">        if (msg._cancellation_token() != pplx::cancellation_token::none())</span>
+        {
+            // cancellation callback is unregistered when request is completed.
+<span style = "background-color:#fdd">            winhttp_context-&gt;m_cancellationRegistration =
+                msg._cancellation_token().register_callback([weak_winhttp_context]() {</span>
+                    // Call the WinHttpSendRequest API after WinHttpCloseHandle will give invalid handle error and we
+                    // throw this exception. Call the cleanup to make the m_request_handle as nullptr, otherwise,
+                    // Application Verifier will give AV exception on m_request_handle.
+<span style = "background-color:#fdd">                    auto lock = weak_winhttp_context.lock();
+                    if (!lock) return;
+                    lock-&gt;cleanup();
+                });</span>
+        }
+
+        // Call the callback function of user customized options.
+        try
+        {
+<span style = "background-color:#fdd">            client_config().invoke_nativehandle_options(winhttp_context-&gt;m_request_handle);</span>
+        }
+        catch (...)
+<span style = "background-color:#fdd">        {
+            request-&gt;report_exception(std::current_exception());
+            return;
+        }</span>
+
+        // Only need to cache the request body if user specified and the request stream doesn't support seeking.
+<span style = "background-color:#fdd">        if (winhttp_context-&gt;m_bodyType != no_body &amp;&amp; client_config().buffer_request() &amp;&amp;</span>
+            !winhttp_context-&gt;_get_readbuffer().can_seek())
+        {
+<span style = "background-color:#fdd">            winhttp_context-&gt;m_readBufferCopy =</span>
+                ::utility::details::make_unique&lt;::concurrency::streams::container_buffer&lt;std::vector&lt;uint8_t&gt;&gt;&gt;();
+        }
+
+<span style = "background-color:#fdd">        _start_request_send(winhttp_context, content_length);</span>
+
+<span style = "background-color:#fdd">        return;
+    }</span>
+
+private:
+    void _start_request_send(const std::shared_ptr&lt;winhttp_request_context&gt;&amp; winhttp_context, size_t content_length)
+<span style = "background-color:#fdd">    {</span>
+        DWORD totalLength;
+<span style = "background-color:#fdd">        if (winhttp_context-&gt;m_bodyType == no_body)</span>
+        {
+<span style = "background-color:#fdd">            totalLength = 0;
+        }</span>
+        else
+        {
+            // Capture the current read position of the stream.
+<span style = "background-color:#fdd">            auto rbuf = winhttp_context-&gt;_get_readbuffer();</span>
+
+            // Record starting position in case request is challenged for authorization
+            // and needs to seek back to where reading is started from.
+<span style = "background-color:#fdd">            winhttp_context-&gt;m_startingPosition = rbuf.getpos(std::ios_base::in);</span>
+
+            // If we find ourselves here, we either don't know how large the message
+<span style = "background-color:#fdd">            totalLength = winhttp_context-&gt;m_bodyType == content_length_chunked ? (DWORD)content_length</span>
+                                                                                : WINHTTP_IGNORE_REQUEST_TOTAL_LENGTH;
+<span style = "background-color:#fdd">        }</span>
+
+<span style = "background-color:#fdd">        const auto requestSuccess = WinHttpSendRequest(winhttp_context-&gt;m_request_handle,</span>
+                                                       WINHTTP_NO_ADDITIONAL_HEADERS,
+                                                       0,
+                                                       nullptr,
+                                                       0,
+                                                       totalLength,
+                                                       (DWORD_PTR)winhttp_context-&gt;m_request_handle_context);
+<span style = "background-color:#fdd">        if (!requestSuccess)</span>
+        {
+<span style = "background-color:#fdd">            auto errorCode = GetLastError();
+            winhttp_context-&gt;report_error(errorCode, build_error_msg(errorCode, "WinHttpSendRequest"));</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    // Helper function to query/read next part of response data from winhttp.
+    static void read_next_response_chunk(winhttp_request_context* pContext, DWORD bytesRead, bool firstRead = false)
+<span style = "background-color:#fdd">    {
+        const bool defaultChunkSize = pContext-&gt;m_http_client-&gt;client_config().is_default_chunksize();</span>
+
+        // If user specified a chunk size then read in chunks instead of using query data available.
+<span style = "background-color:#fdd">        if (defaultChunkSize)</span>
+        {
+<span style = "background-color:#fdd">            if (!WinHttpQueryDataAvailable(pContext-&gt;m_request_handle, nullptr))</span>
+            {
+<span style = "background-color:#fdd">                auto errorCode = GetLastError();
+                pContext-&gt;report_error(errorCode, build_error_msg(errorCode, "WinHttpQueryDataAvaliable"));</span>
+            }
+<span style = "background-color:#fdd">        }</span>
+        else
+        {
+            // If bytes read is less than the chunk size this request is done.
+            // Is it really, though?  The WinHttpReadData docs suggest that less can be returned regardless...
+<span style = "background-color:#fdd">            const size_t chunkSize = pContext-&gt;m_http_client-&gt;client_config().chunksize();
+            std::unique_ptr&lt;compression::decompress_provider&gt;&amp; decompressor = pContext-&gt;m_decompressor;
+            if (!decompressor &amp;&amp; bytesRead &lt; chunkSize &amp;&amp; !firstRead)</span>
+            {
+<span style = "background-color:#fdd">                pContext-&gt;complete_request(pContext-&gt;m_downloaded);
+            }</span>
+            else
+            {
+                uint8_t* buffer;
+
+<span style = "background-color:#fdd">                if (decompressor)</span>
+                {
+                    // m_buffer holds the compressed data; we'll decompress into the caller's buffer later
+<span style = "background-color:#fdd">                    if (pContext-&gt;m_compression_state.m_buffer.capacity() &lt; chunkSize)</span>
+                    {
+<span style = "background-color:#fdd">                        pContext-&gt;m_compression_state.m_buffer.reserve(chunkSize);</span>
+                    }
+<span style = "background-color:#fdd">                    buffer = pContext-&gt;m_compression_state.m_buffer.data();
+                }</span>
+                else
+                {
+<span style = "background-color:#fdd">                    auto writebuf = pContext-&gt;_get_writebuffer();
+                    pContext-&gt;allocate_reply_space(writebuf.alloc(chunkSize), chunkSize);
+                    buffer = pContext-&gt;m_body_data.get();
+                }</span>
+
+<span style = "background-color:#fdd">                if (!WinHttpReadData(pContext-&gt;m_request_handle, buffer, static_cast&lt;DWORD&gt;(chunkSize), nullptr))</span>
+                {
+<span style = "background-color:#fdd">                    auto errorCode = GetLastError();
+                    pContext-&gt;report_error(errorCode, build_error_msg(errorCode, "WinHttpReadData"));</span>
+                }
+            }
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    static void _transfer_encoding_chunked_write_data(_In_ winhttp_request_context* p_request_context)
+<span style = "background-color:#fdd">    {</span>
+        size_t chunk_size;
+<span style = "background-color:#fdd">        std::unique_ptr&lt;compression::compress_provider&gt;&amp; compressor = p_request_context-&gt;m_request.compressor();</span>
+
+        // Set the chunk size up front; we need it before the lambda functions come into scope
+<span style = "background-color:#fdd">        if (compressor)</span>
+        {
+            // We could allocate less than a chunk for the compressed data here, though that
+            // would result in more trips through this path for not-so-compressible data...
+<span style = "background-color:#fdd">            if (p_request_context-&gt;m_body_data.size() &gt; http::details::chunked_encoding::additional_encoding_space)</span>
+            {
+                // If we've previously allocated space for the compressed data, don't reduce it
+<span style = "background-color:#fdd">                chunk_size =</span>
+                    p_request_context-&gt;m_body_data.size() - http::details::chunked_encoding::additional_encoding_space;
+<span style = "background-color:#fdd">            }
+            else if (p_request_context-&gt;m_remaining_to_write != (std::numeric_limits&lt;size_t&gt;::max)())</span>
+            {
+                // Choose a semi-intelligent size based on how much total data is left to compress
+<span style = "background-color:#fdd">                chunk_size = (std::min)(static_cast&lt;size_t&gt;(p_request_context-&gt;m_remaining_to_write) + 128,</span>
+                                        p_request_context-&gt;m_http_client-&gt;client_config().chunksize());
+<span style = "background-color:#fdd">            }</span>
+            else
+            {
+                // Just base our allocation on the chunk size, since we don't have any other data available
+<span style = "background-color:#fdd">                chunk_size = p_request_context-&gt;m_http_client-&gt;client_config().chunksize();</span>
+            }
+<span style = "background-color:#fdd">        }</span>
+        else
+        {
+            // We're not compressing; use the smaller of the remaining data (if known) and the configured (or default)
+            // chunk size
+<span style = "background-color:#fdd">            chunk_size = (std::min)(static_cast&lt;size_t&gt;(p_request_context-&gt;m_remaining_to_write),</span>
+                                    p_request_context-&gt;m_http_client-&gt;client_config().chunksize());
+        }
+<span style = "background-color:#fdd">        p_request_context-&gt;allocate_request_space(</span>
+            nullptr, chunk_size + http::details::chunked_encoding::additional_encoding_space);
+
+<span style = "background-color:#fdd">        auto after_read = [p_request_context, chunk_size, &amp;compressor](pplx::task&lt;size_t&gt; op) {</span>
+            size_t bytes_read;
+            try
+            {
+<span style = "background-color:#fdd">                bytes_read = op.get();</span>
+                // If the read buffer for copying exists then write to it.
+<span style = "background-color:#fdd">                if (p_request_context-&gt;m_readBufferCopy)</span>
+                {
+                    // We have raw memory here writing to a memory stream so it is safe to wait
+                    // since it will always be non-blocking.
+<span style = "background-color:#fdd">                    if (!compressor)</span>
+                    {
+<span style = "background-color:#fdd">                        p_request_context-&gt;m_readBufferCopy</span>
+                            -&gt;putn_nocopy(
+                                &amp;p_request_context-&gt;m_body_data.get()[http::details::chunked_encoding::data_offset],
+                                bytes_read)
+                            .wait();
+                    }
+                }
+            }
+            catch (...)
+<span style = "background-color:#fdd">            {
+                p_request_context-&gt;report_exception(std::current_exception());
+                return;
+            }</span>
+
+<span style = "background-color:#fdd">            _ASSERTE(bytes_read != static_cast&lt;size_t&gt;(-1));</span>
+
+<span style = "background-color:#fdd">            size_t offset = http::details::chunked_encoding::add_chunked_delimiters(</span>
+                p_request_context-&gt;m_body_data.get(),
+                chunk_size + http::details::chunked_encoding::additional_encoding_space,
+                bytes_read);
+
+<span style = "background-color:#fdd">            if (!compressor &amp;&amp; p_request_context-&gt;m_remaining_to_write != (std::numeric_limits&lt;size_t&gt;::max)())</span>
+            {
+<span style = "background-color:#fdd">                if (bytes_read == 0 &amp;&amp; p_request_context-&gt;m_remaining_to_write)</span>
+                {
+                    // The stream ended earlier than we detected it should
+<span style = "background-color:#fdd">                    http_exception ex(</span>
+                        U("Unexpected end of request body stream encountered before expected length met."));
+<span style = "background-color:#fdd">                    p_request_context-&gt;report_exception(ex);
+                    return;</span>
+                }
+<span style = "background-color:#fdd">                p_request_context-&gt;m_remaining_to_write -= bytes_read;</span>
+            }
+
+            // Stop writing chunks if we reached the end of the stream.
+            // Note that we could detect end-of-stream based on !m_remaining_to_write, and insert
+            // the last (0) chunk if we have enough extra space... though we currently don't.
+<span style = "background-color:#fdd">            if (bytes_read == 0)</span>
+            {
+<span style = "background-color:#fdd">                p_request_context-&gt;m_bodyType = no_body;
+                if (p_request_context-&gt;m_readBufferCopy)</span>
+                {
+                    // Move the saved buffer into the read buffer, which now supports seeking.
+<span style = "background-color:#fdd">                    p_request_context-&gt;m_readStream =</span>
+                        concurrency::streams::container_stream&lt;std::vector&lt;uint8_t&gt;&gt;::open_istream(
+                            std::move(p_request_context-&gt;m_readBufferCopy-&gt;collection()));
+<span style = "background-color:#fdd">                    p_request_context-&gt;m_readBufferCopy.reset();</span>
+                }
+            }
+
+<span style = "background-color:#fdd">            const auto length = bytes_read + (http::details::chunked_encoding::additional_encoding_space - offset);</span>
+
+<span style = "background-color:#fdd">            if (!WinHttpWriteData(p_request_context-&gt;m_request_handle,</span>
+                                  &amp;p_request_context-&gt;m_body_data.get()[offset],
+                                  static_cast&lt;DWORD&gt;(length),
+                                  nullptr))
+            {
+<span style = "background-color:#fdd">                auto errorCode = GetLastError();
+                p_request_context-&gt;report_error(errorCode, build_error_msg(errorCode, "WinHttpWriteData"));</span>
+            }
+<span style = "background-color:#fdd">        };</span>
+
+<span style = "background-color:#fdd">        if (compressor)</span>
+        {
+            auto do_compress =
+<span style = "background-color:#fdd">                [p_request_context, chunk_size, &amp;compressor](pplx::task&lt;size_t&gt; op) -&gt; pplx::task&lt;size_t&gt; {</span>
+                size_t bytes_read;
+
+                try
+                {
+<span style = "background-color:#fdd">                    bytes_read = op.get();</span>
+                }
+                catch (...)
+<span style = "background-color:#fdd">                {
+                    return pplx::task_from_exception&lt;size_t&gt;(std::current_exception());
+                }</span>
+
+<span style = "background-color:#fdd">                uint8_t* buffer = p_request_context-&gt;m_compression_state.m_acquired;
+                if (buffer == nullptr)</span>
+                {
+<span style = "background-color:#fdd">                    buffer = p_request_context-&gt;m_compression_state.m_buffer.data();</span>
+                }
+
+<span style = "background-color:#fdd">                web::http::compression::operation_hint hint = web::http::compression::operation_hint::has_more;</span>
+
+<span style = "background-color:#fdd">                if (bytes_read)</span>
+                {
+                    // An actual read always resets compression state for the next chunk
+<span style = "background-color:#fdd">                    _ASSERTE(p_request_context-&gt;m_compression_state.m_bytes_processed ==</span>
+                             p_request_context-&gt;m_compression_state.m_bytes_read);
+<span style = "background-color:#fdd">                    _ASSERTE(!p_request_context-&gt;m_compression_state.m_needs_flush);
+                    p_request_context-&gt;m_compression_state.m_bytes_read = bytes_read;
+                    p_request_context-&gt;m_compression_state.m_bytes_processed = 0;
+                    if (p_request_context-&gt;m_readBufferCopy)</span>
+                    {
+                        // If we've been asked to keep a copy of the raw data for restarts, do so here, pre-compression
+<span style = "background-color:#fdd">                        p_request_context-&gt;m_readBufferCopy-&gt;putn_nocopy(buffer, bytes_read).wait();</span>
+                    }
+<span style = "background-color:#fdd">                    if (p_request_context-&gt;m_remaining_to_write == bytes_read)</span>
+                    {
+                        // We've read to the end of the stream; finalize here if possible.  We'll
+                        // decrement the remaining count as we actually process the read buffer.
+<span style = "background-color:#fdd">                        hint = web::http::compression::operation_hint::is_last;</span>
+                    }
+<span style = "background-color:#fdd">                }
+                else if (p_request_context-&gt;m_compression_state.m_needs_flush)</span>
+                {
+                    // All input has been consumed, but we still need to collect additional compressed output;
+                    // this is done (in theory it can be multiple times) as a finalizing operation
+<span style = "background-color:#fdd">                    hint = web::http::compression::operation_hint::is_last;
+                }
+                else if (p_request_context-&gt;m_compression_state.m_bytes_processed ==</span>
+                         p_request_context-&gt;m_compression_state.m_bytes_read)
+                {
+<span style = "background-color:#fdd">                    if (p_request_context-&gt;m_remaining_to_write &amp;&amp;</span>
+                        p_request_context-&gt;m_remaining_to_write != (std::numeric_limits&lt;size_t&gt;::max)())
+                    {
+                        // The stream ended earlier than we detected it should
+<span style = "background-color:#fdd">                        return pplx::task_from_exception&lt;size_t&gt;(http_exception(</span>
+                            U("Unexpected end of request body stream encountered before expected length met.")));
+                    }
+
+                    // We think we're done; inform the compression library so it can finalize and/or give us any pending
+                    // compressed bytes. Note that we may end up here multiple times if m_needs_flush is set, until all
+                    // compressed bytes are drained.
+<span style = "background-color:#fdd">                    hint = web::http::compression::operation_hint::is_last;</span>
+                }
+                // else we're still compressing bytes from the previous read
+
+<span style = "background-color:#fdd">                _ASSERTE(p_request_context-&gt;m_compression_state.m_bytes_processed &lt;=</span>
+                         p_request_context-&gt;m_compression_state.m_bytes_read);
+
+<span style = "background-color:#fdd">                uint8_t* in = buffer + p_request_context-&gt;m_compression_state.m_bytes_processed;
+                size_t inbytes = p_request_context-&gt;m_compression_state.m_bytes_read -</span>
+                                 p_request_context-&gt;m_compression_state.m_bytes_processed;
+<span style = "background-color:#fdd">                return compressor</span>
+                    -&gt;compress(in,
+                               inbytes,
+                               &amp;p_request_context-&gt;m_body_data.get()[http::details::chunked_encoding::data_offset],
+                               chunk_size,
+                               hint)
+                    .then([p_request_context, bytes_read, hint, chunk_size](
+<span style = "background-color:#fdd">                              pplx::task&lt;http::compression::operation_result&gt; op) -&gt; pplx::task&lt;size_t&gt; {</span>
+                        http::compression::operation_result r;
+
+                        try
+                        {
+<span style = "background-color:#fdd">                            r = op.get();</span>
+                        }
+                        catch (...)
+<span style = "background-color:#fdd">                        {
+                            return pplx::task_from_exception&lt;size_t&gt;(std::current_exception());
+                        }</span>
+
+<span style = "background-color:#fdd">                        if (hint == web::http::compression::operation_hint::is_last)</span>
+                        {
+                            // We're done reading all chunks, but the compressor may still have compressed bytes to
+                            // drain from previous reads
+<span style = "background-color:#fdd">                            _ASSERTE(r.done || r.output_bytes_produced == chunk_size);
+                            p_request_context-&gt;m_compression_state.m_needs_flush = !r.done;
+                            p_request_context-&gt;m_compression_state.m_done = r.done;</span>
+                        }
+
+                        // Update the number of bytes compressed in this read chunk; if it's been fully compressed,
+                        // we'll reset m_bytes_processed and m_bytes_read after reading the next chunk
+<span style = "background-color:#fdd">                        p_request_context-&gt;m_compression_state.m_bytes_processed += r.input_bytes_processed;
+                        _ASSERTE(p_request_context-&gt;m_compression_state.m_bytes_processed &lt;=</span>
+                                 p_request_context-&gt;m_compression_state.m_bytes_read);
+<span style = "background-color:#fdd">                        if (p_request_context-&gt;m_remaining_to_write != (std::numeric_limits&lt;size_t&gt;::max)())</span>
+                        {
+<span style = "background-color:#fdd">                            _ASSERTE(p_request_context-&gt;m_remaining_to_write &gt;= r.input_bytes_processed);
+                            p_request_context-&gt;m_remaining_to_write -= r.input_bytes_processed;</span>
+                        }
+
+<span style = "background-color:#fdd">                        if (p_request_context-&gt;m_compression_state.m_acquired != nullptr &amp;&amp;</span>
+                            p_request_context-&gt;m_compression_state.m_bytes_processed ==
+                                p_request_context-&gt;m_compression_state.m_bytes_read)
+                        {
+                            // Release the acquired buffer back to the streambuf at the earliest possible point
+<span style = "background-color:#fdd">                            p_request_context-&gt;_get_readbuffer().release(</span>
+                                p_request_context-&gt;m_compression_state.m_acquired,
+                                p_request_context-&gt;m_compression_state.m_bytes_processed);
+<span style = "background-color:#fdd">                            p_request_context-&gt;m_compression_state.m_acquired = nullptr;</span>
+                        }
+
+<span style = "background-color:#fdd">                        return pplx::task_from_result&lt;size_t&gt;(r.output_bytes_produced);
+                    });
+            };</span>
+
+            if (p_request_context-&gt;m_compression_state.m_bytes_processed &lt;
+<span style = "background-color:#fdd">                    p_request_context-&gt;m_compression_state.m_bytes_read ||</span>
+                p_request_context-&gt;m_compression_state.m_needs_flush)
+            {
+                // We're still working on data from a previous read; continue compression without reading new data
+<span style = "background-color:#fdd">                do_compress(pplx::task_from_result&lt;size_t&gt;(0)).then(after_read);
+            }
+            else if (p_request_context-&gt;m_compression_state.m_done)</span>
+            {
+                // We just need to send the last (zero-length) chunk; there's no sense in going through the compression
+                // path
+<span style = "background-color:#fdd">                after_read(pplx::task_from_result&lt;size_t&gt;(0));
+            }</span>
+            else
+            {
+                size_t length;
+
+                // We need to read from the input stream, then compress before sending
+<span style = "background-color:#fdd">                if (p_request_context-&gt;_get_readbuffer().acquire(p_request_context-&gt;m_compression_state.m_acquired,</span>
+                                                                 length))
+                {
+<span style = "background-color:#fdd">                    if (length == 0)</span>
+                    {
+<span style = "background-color:#fdd">                        if (p_request_context-&gt;_get_readbuffer().exception())</span>
+                        {
+<span style = "background-color:#fdd">                            p_request_context-&gt;report_exception(p_request_context-&gt;_get_readbuffer().exception());
+                            return;
+                        }
+                        else if (p_request_context-&gt;m_remaining_to_write &amp;&amp;</span>
+                                 p_request_context-&gt;m_remaining_to_write != (std::numeric_limits&lt;size_t&gt;::max)())
+                        {
+                            // Unexpected end-of-stream.
+<span style = "background-color:#fdd">                            p_request_context-&gt;report_error(GetLastError(),</span>
+                                                            _XPLATSTR("Outgoing HTTP body stream ended early."));
+<span style = "background-color:#fdd">                            return;</span>
+                        }
+<span style = "background-color:#fdd">                    }
+                    else if (length &gt; p_request_context-&gt;m_remaining_to_write)</span>
+                    {
+                        // The stream grew, but we won't
+<span style = "background-color:#fdd">                        length = static_cast&lt;size_t&gt;(p_request_context-&gt;m_remaining_to_write);</span>
+                    }
+
+<span style = "background-color:#fdd">                    do_compress(pplx::task_from_result&lt;size_t&gt;(length)).then(after_read);
+                }</span>
+                else
+                {
+<span style = "background-color:#fdd">                    length = (std::min)(static_cast&lt;size_t&gt;(p_request_context-&gt;m_remaining_to_write),</span>
+                                        p_request_context-&gt;m_http_client-&gt;client_config().chunksize());
+<span style = "background-color:#fdd">                    if (p_request_context-&gt;m_compression_state.m_buffer.capacity() &lt; length)</span>
+                    {
+<span style = "background-color:#fdd">                        p_request_context-&gt;m_compression_state.m_buffer.reserve(length);</span>
+                    }
+<span style = "background-color:#fdd">                    p_request_context-&gt;_get_readbuffer()</span>
+                        .getn(p_request_context-&gt;m_compression_state.m_buffer.data(), length)
+                        .then(do_compress)
+                        .then(after_read);
+                }
+            }
+<span style = "background-color:#fdd">        }</span>
+        else
+        {
+            // We're not compressing; just read and chunk
+<span style = "background-color:#fdd">            p_request_context-&gt;_get_readbuffer()</span>
+                .getn(&amp;p_request_context-&gt;m_body_data.get()[http::details::chunked_encoding::data_offset], chunk_size)
+                .then(after_read);
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    static void _multiple_segment_write_data(_In_ winhttp_request_context* p_request_context)
+<span style = "background-color:#fdd">    {
+        auto rbuf = p_request_context-&gt;_get_readbuffer();
+        msl::safeint3::SafeInt&lt;utility::size64_t&gt; safeCount = p_request_context-&gt;m_remaining_to_write;
+        safeCount = safeCount.Min(p_request_context-&gt;m_http_client-&gt;client_config().chunksize());</span>
+
+<span style = "background-color:#fdd">        uint8_t* block = nullptr;
+        size_t length = 0;
+        if (rbuf.acquire(block, length))</span>
+        {
+<span style = "background-color:#fdd">            if (length == 0)</span>
+            {
+                // Unexpected end-of-stream.
+<span style = "background-color:#fdd">                if (rbuf.exception() == nullptr)</span>
+                {
+<span style = "background-color:#fdd">                    p_request_context-&gt;report_error(GetLastError(),</span>
+                                                    _XPLATSTR("Error reading outgoing HTTP body from its stream."));
+<span style = "background-color:#fdd">                }</span>
+                else
+                {
+<span style = "background-color:#fdd">                    p_request_context-&gt;report_exception(rbuf.exception());</span>
+                }
+<span style = "background-color:#fdd">                return;</span>
+            }
+
+<span style = "background-color:#fdd">            p_request_context-&gt;allocate_request_space(block, length);</span>
+
+<span style = "background-color:#fdd">            const size_t to_write = safeCount.Min(length);</span>
+
+            // Stop writing chunks after this one if no more data.
+<span style = "background-color:#fdd">            p_request_context-&gt;m_remaining_to_write -= to_write;
+            if (p_request_context-&gt;m_remaining_to_write == 0)</span>
+            {
+<span style = "background-color:#fdd">                p_request_context-&gt;m_bodyType = no_body;</span>
+            }
+
+<span style = "background-color:#fdd">            if (!WinHttpWriteData(p_request_context-&gt;m_request_handle,</span>
+                                  p_request_context-&gt;m_body_data.get(),
+                                  static_cast&lt;DWORD&gt;(to_write),
+                                  nullptr))
+            {
+<span style = "background-color:#fdd">                auto errorCode = GetLastError();
+                p_request_context-&gt;report_error(errorCode, build_error_msg(errorCode, "WinHttpWriteData"));</span>
+            }
+<span style = "background-color:#fdd">        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            p_request_context-&gt;allocate_request_space(nullptr, safeCount);</span>
+
+<span style = "background-color:#fdd">            rbuf.getn(p_request_context-&gt;m_body_data.get(), safeCount)
+                .then([p_request_context, rbuf](pplx::task&lt;size_t&gt; op) {</span>
+                    size_t read;
+                    try
+                    {
+<span style = "background-color:#fdd">                        read = op.get();</span>
+                    }
+                    catch (...)
+<span style = "background-color:#fdd">                    {
+                        p_request_context-&gt;report_exception(std::current_exception());
+                        return;
+                    }
+                    _ASSERTE(read != static_cast&lt;size_t&gt;(-1));</span>
+
+<span style = "background-color:#fdd">                    if (read == 0)</span>
+                    {
+<span style = "background-color:#fdd">                        p_request_context-&gt;report_exception(http_exception(</span>
+                            U("Unexpected end of request body stream encountered before Content-Length met.")));
+<span style = "background-color:#fdd">                        return;</span>
+                    }
+
+<span style = "background-color:#fdd">                    p_request_context-&gt;m_remaining_to_write -= read;</span>
+
+                    // Stop writing chunks after this one if no more data.
+<span style = "background-color:#fdd">                    if (p_request_context-&gt;m_remaining_to_write == 0)</span>
+                    {
+<span style = "background-color:#fdd">                        p_request_context-&gt;m_bodyType = no_body;</span>
+                    }
+
+<span style = "background-color:#fdd">                    if (!WinHttpWriteData(p_request_context-&gt;m_request_handle,</span>
+                                          p_request_context-&gt;m_body_data.get(),
+                                          static_cast&lt;DWORD&gt;(read),
+                                          nullptr))
+                    {
+<span style = "background-color:#fdd">                        auto errorCode = GetLastError();
+                        p_request_context-&gt;report_error(errorCode, build_error_msg(errorCode, "WinHttpWriteData"));</span>
+                    }
+<span style = "background-color:#fdd">                });</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    static utility::string_t get_request_url(HINTERNET hRequestHandle)
+<span style = "background-color:#fdd">    {
+        utility::string_t url;
+        auto urlSize = static_cast&lt;unsigned long&gt;(url.capacity()) * 2; // use initial small string optimization capacity</span>
+        for (;;)
+        {
+<span style = "background-color:#fdd">            url.resize(urlSize / sizeof(utility::char_t));
+            if (WinHttpQueryOption(hRequestHandle, WINHTTP_OPTION_URL, &amp;url[0], (LPDWORD)&amp;urlSize))</span>
+            {
+<span style = "background-color:#fdd">                url.resize(url.length());
+                return url;</span>
+            }
+
+<span style = "background-color:#fdd">            const auto lastError = GetLastError();
+            if (lastError != ERROR_INSUFFICIENT_BUFFER || urlSize == 0)</span>
+            {
+<span style = "background-color:#fdd">                url.clear();
+                url.shrink_to_fit();
+                return url;</span>
+            }
+<span style = "background-color:#fdd">        }
+    }</span>
+
+    // Returns true if we handle successfully and resending the request
+    // or false if we fail to handle.
+    static bool handle_authentication_failure(HINTERNET hRequestHandle,
+                                              const std::shared_ptr&lt;winhttp_request_context&gt;&amp; p_request_context,
+                                              _In_ DWORD error = 0)
+<span style = "background-color:#fdd">    {
+        http_request&amp; request = p_request_context-&gt;m_request;</span>
+
+<span style = "background-color:#fdd">        _ASSERTE(p_request_context-&gt;m_response.status_code() == status_codes::Unauthorized ||</span>
+                 p_request_context-&gt;m_response.status_code() == status_codes::ProxyAuthRequired ||
+                 error == ERROR_WINHTTP_RESEND_REQUEST);
+
+        // Check if the saved read position is valid
+<span style = "background-color:#fdd">        auto rdpos = p_request_context-&gt;m_startingPosition;
+        if (rdpos != static_cast&lt;std::char_traits&lt;uint8_t&gt;::pos_type&gt;(std::char_traits&lt;uint8_t&gt;::eof()))</span>
+        {
+            // Try to seek back to the saved read position
+<span style = "background-color:#fdd">            auto rbuf = p_request_context-&gt;_get_readbuffer();
+            if (rbuf.seekpos(rdpos, std::ios::ios_base::in) != rdpos)</span>
+            {
+<span style = "background-color:#fdd">                return false;</span>
+            }
+
+            // We successfully seeked back; now reset the compression state, if any, to match
+<span style = "background-color:#fdd">            if (p_request_context-&gt;m_request.compressor())</span>
+            {
+                try
+                {
+<span style = "background-color:#fdd">                    p_request_context-&gt;m_request.compressor()-&gt;reset();</span>
+                }
+                catch (...)
+<span style = "background-color:#fdd">                {
+                    return false;
+                }</span>
+            }
+<span style = "background-color:#fdd">        }
+        p_request_context-&gt;m_compression_state = winhttp_request_context::compression_state();</span>
+
+        //  If we got ERROR_WINHTTP_RESEND_REQUEST, the response header is not available,
+        //  we cannot call WinHttpQueryAuthSchemes and WinHttpSetCredentials.
+<span style = "background-color:#fdd">        if (error != ERROR_WINHTTP_RESEND_REQUEST)</span>
+        {
+            // Obtain the supported and preferred schemes.
+            DWORD dwSupportedSchemes;
+            DWORD dwFirstScheme;
+            DWORD dwAuthTarget;
+<span style = "background-color:#fdd">            if (!WinHttpQueryAuthSchemes(hRequestHandle, &amp;dwSupportedSchemes, &amp;dwFirstScheme, &amp;dwAuthTarget))</span>
+            {
+                // This will return the authentication failure to the user, without reporting fatal errors
+<span style = "background-color:#fdd">                return false;</span>
+            }
+
+<span style = "background-color:#fdd">            DWORD dwSelectedScheme = ChooseAuthScheme(dwSupportedSchemes);
+            if (dwSelectedScheme == 0)</span>
+            {
+                // This will return the authentication failure to the user, without reporting fatal errors
+<span style = "background-color:#fdd">                return false;</span>
+            }
+
+<span style = "background-color:#fdd">            credentials cred;
+            if (dwAuthTarget == WINHTTP_AUTH_TARGET_SERVER &amp;&amp; !p_request_context-&gt;m_server_authentication_tried)</span>
+            {
+<span style = "background-color:#fdd">                cred = p_request_context-&gt;m_http_client-&gt;client_config().credentials();
+                p_request_context-&gt;m_server_authentication_tried = true;
+            }
+            else if (dwAuthTarget == WINHTTP_AUTH_TARGET_PROXY)</span>
+            {
+<span style = "background-color:#fdd">                bool is_redirect = false;</span>
+                try
+                {
+<span style = "background-color:#fdd">                    web::uri current_uri(get_request_url(hRequestHandle));
+                    is_redirect = p_request_context-&gt;m_request.absolute_uri().to_string() != current_uri.to_string();
+                }</span>
+                catch (const std::exception&amp;)
+<span style = "background-color:#fdd">                {
+                }</span>
+
+                // If we have been redirected, then WinHttp needs the proxy credentials again to make the next request
+                // leg (which may be on a different server)
+<span style = "background-color:#fdd">                if (is_redirect || !p_request_context-&gt;m_proxy_authentication_tried)</span>
+                {
+<span style = "background-color:#fdd">                    cred = p_request_context-&gt;m_http_client-&gt;client_config().proxy().credentials();
+                    p_request_context-&gt;m_proxy_authentication_tried = true;</span>
+                }
+            }
+
+            // No credentials found so can't resend.
+<span style = "background-color:#fdd">            if (!cred.is_set())</span>
+            {
+<span style = "background-color:#fdd">                return false;</span>
+            }
+
+            // New scope to ensure plaintext password is cleared as soon as possible.
+            {
+<span style = "background-color:#fdd">                auto password = cred._internal_decrypt();
+                if (!WinHttpSetCredentials(hRequestHandle,</span>
+                                           dwAuthTarget,
+                                           dwSelectedScheme,
+                                           cred.username().c_str(),
+                                           password-&gt;c_str(),
+                                           nullptr))
+                {
+<span style = "background-color:#fdd">                    return false;</span>
+                }
+<span style = "background-color:#fdd">            }
+        }</span>
+
+        // Reset the request body type since it might have already started sending.
+        size_t content_length;
+        try
+        {
+<span style = "background-color:#fdd">            content_length = request._get_impl()-&gt;_get_content_length_and_set_compression();</span>
+        }
+        catch (...)
+<span style = "background-color:#fdd">        {
+            return false;
+        }</span>
+
+<span style = "background-color:#fdd">        if (content_length &gt; 0)</span>
+        {
+            // There is a request body that needs to be transferred.
+<span style = "background-color:#fdd">            if (content_length == (std::numeric_limits&lt;size_t&gt;::max)())</span>
+            {
+                // The content length is unknown and the application set a stream. This is an
+                // indication that we will need to chunk the data.
+<span style = "background-color:#fdd">                p_request_context-&gt;m_bodyType = transfer_encoding_chunked;
+                p_request_context-&gt;m_remaining_to_write = request._get_impl()-&gt;_get_stream_length();
+            }</span>
+            else
+            {
+                // While we won't be transfer-encoding the data, we will write it in portions.
+<span style = "background-color:#fdd">                p_request_context-&gt;m_bodyType = content_length_chunked;
+                p_request_context-&gt;m_remaining_to_write = content_length;</span>
+            }
+<span style = "background-color:#fdd">        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            p_request_context-&gt;m_bodyType = no_body;</span>
+        }
+
+        // We're good.
+<span style = "background-color:#fdd">        winhttp_client* winclnt = reinterpret_cast&lt;winhttp_client*&gt;(p_request_context-&gt;m_http_client.get());
+        winclnt-&gt;_start_request_send(p_request_context, content_length);</span>
+
+        // We will not complete the request. Instead wait for the response to the request that was resent
+<span style = "background-color:#fdd">        return true;
+    }</span>
+
+    // Callback used with WinHTTP to listen for async completions.
+    static void CALLBACK completion_callback(
+        HINTERNET hRequestHandle, DWORD_PTR context, DWORD statusCode, _In_ void* statusInfo, DWORD statusInfoLength)
+<span style = "background-color:#fdd">    {</span>
+        (void)statusInfoLength;
+
+<span style = "background-color:#fdd">        std::weak_ptr&lt;winhttp_request_context&gt;* p_weak_request_context =</span>
+            reinterpret_cast&lt;std::weak_ptr&lt;winhttp_request_context&gt;*&gt;(context);
+
+<span style = "background-color:#fdd">        if (p_weak_request_context == nullptr)</span>
+        {
+<span style = "background-color:#fdd">            return;</span>
+        }
+
+<span style = "background-color:#fdd">        if (statusCode == WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING)</span>
+        {
+            // This callback is responsible for freeing the type-erased context.
+            // This particular status code indicates that this is the final callback call, suitable for context
+            // destruction.
+<span style = "background-color:#fdd">            delete p_weak_request_context;
+            return;</span>
+        }
+
+<span style = "background-color:#fdd">        auto p_request_context = p_weak_request_context-&gt;lock();
+        if (!p_request_context)</span>
+        {
+            // The request context was already released, probably due to cancellation
+<span style = "background-color:#fdd">            return;</span>
+        }
+
+<span style = "background-color:#fdd">        switch (statusCode)</span>
+        {
+            case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR:
+            {
+<span style = "background-color:#fdd">                WINHTTP_ASYNC_RESULT* error_result = reinterpret_cast&lt;WINHTTP_ASYNC_RESULT*&gt;(statusInfo);
+                const DWORD errorCode = error_result-&gt;dwError;</span>
+
+                //  Some authentication schemes require multiple transactions.
+                //  When ERROR_WINHTTP_RESEND_REQUEST is encountered,
+                //  we should continue to resend the request until a response is received that does not contain a 401 or
+                //  407 status code.
+<span style = "background-color:#fdd">                if (errorCode == ERROR_WINHTTP_RESEND_REQUEST)</span>
+                {
+<span style = "background-color:#fdd">                    bool resending = handle_authentication_failure(hRequestHandle, p_request_context, errorCode);
+                    if (resending)</span>
+                    {
+                        // The request is resending. Wait until we get a new response.
+<span style = "background-color:#fdd">                        return;</span>
+                    }
+                }
+
+<span style = "background-color:#fdd">                p_request_context-&gt;report_error(errorCode, build_error_msg(error_result));
+                return;</span>
+            }
+            case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
+            {
+<span style = "background-color:#fdd">                if (!p_request_context-&gt;m_request.body())</span>
+                {
+                    // Report progress finished uploading with no message body.
+<span style = "background-color:#fdd">                    auto progress = p_request_context-&gt;m_request._get_impl()-&gt;_progress_handler();
+                    if (progress)</span>
+                    {
+                        try
+                        {
+<span style = "background-color:#fdd">                            (*progress)(message_direction::upload, 0);</span>
+                        }
+                        catch (...)
+<span style = "background-color:#fdd">                        {
+                            p_request_context-&gt;report_exception(std::current_exception());
+                            return;
+                        }</span>
+                    }
+<span style = "background-color:#fdd">                }</span>
+
+<span style = "background-color:#fdd">                if (p_request_context-&gt;m_bodyType == transfer_encoding_chunked)</span>
+                {
+<span style = "background-color:#fdd">                    _transfer_encoding_chunked_write_data(p_request_context.get());
+                }
+                else if (p_request_context-&gt;m_bodyType == content_length_chunked)</span>
+                {
+<span style = "background-color:#fdd">                    _multiple_segment_write_data(p_request_context.get());
+                }</span>
+                else
+                {
+<span style = "background-color:#fdd">                    if (!WinHttpReceiveResponse(hRequestHandle, nullptr))</span>
+                    {
+<span style = "background-color:#fdd">                        auto errorCode = GetLastError();
+                        p_request_context-&gt;report_error(errorCode,</span>
+                                                        build_error_msg(errorCode, "WinHttpReceiveResponse"));
+                    }
+                }
+<span style = "background-color:#fdd">                return;</span>
+            }
+            case WINHTTP_CALLBACK_STATUS_SENDING_REQUEST:
+            {
+<span style = "background-color:#fdd">                p_request_context-&gt;on_send_request_validate_cn();
+                return;</span>
+            }
+            case WINHTTP_CALLBACK_STATUS_SECURE_FAILURE:
+            {
+<span style = "background-color:#fdd">                p_request_context-&gt;report_exception(web::http::http_exception(</span>
+                    generate_security_failure_message(*reinterpret_cast&lt;std::uint32_t*&gt;(statusInfo))));
+<span style = "background-color:#fdd">                return;</span>
+            }
+            case WINHTTP_CALLBACK_STATUS_WRITE_COMPLETE:
+            {
+<span style = "background-color:#fdd">                DWORD bytesWritten = *((DWORD*)statusInfo);
+                _ASSERTE(statusInfoLength == sizeof(DWORD));</span>
+
+<span style = "background-color:#fdd">                if (bytesWritten &gt; 0)</span>
+                {
+<span style = "background-color:#fdd">                    auto progress = p_request_context-&gt;m_request._get_impl()-&gt;_progress_handler();
+                    if (progress)</span>
+                    {
+<span style = "background-color:#fdd">                        p_request_context-&gt;m_uploaded += bytesWritten;</span>
+                        try
+                        {
+<span style = "background-color:#fdd">                            (*progress)(message_direction::upload, p_request_context-&gt;m_uploaded);</span>
+                        }
+                        catch (...)
+<span style = "background-color:#fdd">                        {
+                            p_request_context-&gt;report_exception(std::current_exception());
+                            return;
+                        }</span>
+                    }
+<span style = "background-color:#fdd">                }</span>
+
+<span style = "background-color:#fdd">                if (p_request_context-&gt;is_externally_allocated())</span>
+                {
+<span style = "background-color:#fdd">                    p_request_context-&gt;_get_readbuffer().release(p_request_context-&gt;m_body_data.get(), bytesWritten);</span>
+                }
+
+<span style = "background-color:#fdd">                if (p_request_context-&gt;m_bodyType == transfer_encoding_chunked)</span>
+                {
+<span style = "background-color:#fdd">                    _transfer_encoding_chunked_write_data(p_request_context.get());
+                }
+                else if (p_request_context-&gt;m_bodyType == content_length_chunked)</span>
+                {
+<span style = "background-color:#fdd">                    _multiple_segment_write_data(p_request_context.get());
+                }</span>
+                else
+                {
+<span style = "background-color:#fdd">                    if (!WinHttpReceiveResponse(hRequestHandle, nullptr))</span>
+                    {
+<span style = "background-color:#fdd">                        auto errorCode = GetLastError();
+                        p_request_context-&gt;report_error(errorCode,</span>
+                                                        build_error_msg(errorCode, "WinHttpReceiveResponse"));
+                    }
+                }
+<span style = "background-color:#fdd">                return;</span>
+            }
+            case WINHTTP_CALLBACK_STATUS_REDIRECT:
+            {
+                // Return and continue unless that's too many automatic redirects.
+<span style = "background-color:#fdd">                if (p_request_context-&gt;m_remaining_redirects &gt; 0)</span>
+                {
+<span style = "background-color:#fdd">                    --p_request_context-&gt;m_remaining_redirects;
+                    return;</span>
+                }
+
+                // First need to query to see what the headers size is.
+<span style = "background-color:#fdd">                DWORD headerBufferLength = 0;
+                query_header_length(hRequestHandle, WINHTTP_QUERY_RAW_HEADERS_CRLF, headerBufferLength);</span>
+
+                // Now allocate buffer for headers and query for them.
+<span style = "background-color:#fdd">                std::vector&lt;unsigned char&gt; header_raw_buffer;
+                header_raw_buffer.resize(headerBufferLength);
+                utility::char_t* header_buffer = reinterpret_cast&lt;utility::char_t*&gt;(&amp;header_raw_buffer[0]);
+                if (!WinHttpQueryHeaders(hRequestHandle,</span>
+                                         WINHTTP_QUERY_RAW_HEADERS_CRLF,
+                                         WINHTTP_HEADER_NAME_BY_INDEX,
+                                         header_buffer,
+                                         &amp;headerBufferLength,
+                                         WINHTTP_NO_HEADER_INDEX))
+                {
+<span style = "background-color:#fdd">                    auto errorCode = GetLastError();
+                    p_request_context-&gt;report_error(errorCode, build_error_msg(errorCode, "WinHttpQueryHeaders"));
+                    return;</span>
+                }
+
+<span style = "background-color:#fdd">                http_response&amp; response = p_request_context-&gt;m_response;
+                parse_winhttp_headers(hRequestHandle, header_buffer, response);</span>
+
+                // Signal that the headers are available.
+<span style = "background-color:#fdd">                p_request_context-&gt;complete_headers();</span>
+
+                // The body of the message is unavailable in WINHTTP_CALLBACK_STATUS_REDIRECT.
+<span style = "background-color:#fdd">                p_request_context-&gt;allocate_request_space(nullptr, 0);
+                p_request_context-&gt;complete_request(0);</span>
+
+                // Cancel the WinHTTP operation by closing the handle.
+<span style = "background-color:#fdd">                p_request_context-&gt;cleanup();
+                return;</span>
+            }
+            case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
+            {
+                // First need to query to see what the headers size is.
+<span style = "background-color:#fdd">                DWORD headerBufferLength = 0;
+                query_header_length(hRequestHandle, WINHTTP_QUERY_RAW_HEADERS_CRLF, headerBufferLength);</span>
+
+                // Now allocate buffer for headers and query for them.
+<span style = "background-color:#fdd">                std::vector&lt;unsigned char&gt; header_raw_buffer;
+                header_raw_buffer.resize(headerBufferLength);
+                utility::char_t* header_buffer = reinterpret_cast&lt;utility::char_t*&gt;(&amp;header_raw_buffer[0]);
+                if (!WinHttpQueryHeaders(hRequestHandle,</span>
+                                         WINHTTP_QUERY_RAW_HEADERS_CRLF,
+                                         WINHTTP_HEADER_NAME_BY_INDEX,
+                                         header_buffer,
+                                         &amp;headerBufferLength,
+                                         WINHTTP_NO_HEADER_INDEX))
+                {
+<span style = "background-color:#fdd">                    auto errorCode = GetLastError();
+                    p_request_context-&gt;report_error(errorCode, build_error_msg(errorCode, "WinHttpQueryHeaders"));
+                    return;</span>
+                }
+
+<span style = "background-color:#fdd">                http_response&amp; response = p_request_context-&gt;m_response;
+                parse_winhttp_headers(hRequestHandle, header_buffer, response);</span>
+
+<span style = "background-color:#fdd">                if (response.status_code() == status_codes::Unauthorized /*401*/ ||</span>
+                    response.status_code() == status_codes::ProxyAuthRequired /*407*/)
+                {
+<span style = "background-color:#fdd">                    bool resending = handle_authentication_failure(hRequestHandle, p_request_context);
+                    if (resending)</span>
+                    {
+                        // The request was not completed but resent with credentials. Wait until we get a new response
+<span style = "background-color:#fdd">                        return;</span>
+                    }
+                }
+
+                // Check whether the request is compressed, and if so, whether we're handling it.
+<span style = "background-color:#fdd">                if (!p_request_context-&gt;handle_compression())</span>
+                {
+                    // false indicates report_exception was called
+<span style = "background-color:#fdd">                    return;</span>
+                }
+<span style = "background-color:#fdd">                if (p_request_context-&gt;m_decompressor &amp;&amp;</span>
+                    !p_request_context-&gt;m_http_client-&gt;client_config().request_compressed_response())
+                {
+<span style = "background-color:#fdd">                    p_request_context-&gt;m_compression_state.m_chunk =</span>
+                        ::utility::details::make_unique&lt;winhttp_request_context::compression_state::_chunk_helper&gt;();
+<span style = "background-color:#fdd">                    p_request_context-&gt;m_compression_state.m_chunked = true;</span>
+                }
+
+                // Signal that the headers are available.
+<span style = "background-color:#fdd">                p_request_context-&gt;complete_headers();</span>
+
+                // If the method was 'HEAD,' the body of the message is by definition empty. No need to
+                // read it. Any headers that suggest the presence of a body can safely be ignored.
+<span style = "background-color:#fdd">                if (p_request_context-&gt;m_request.method() == methods::HEAD)</span>
+                {
+<span style = "background-color:#fdd">                    p_request_context-&gt;allocate_request_space(nullptr, 0);
+                    p_request_context-&gt;complete_request(0);
+                    return;</span>
+                }
+
+                // HTTP Specification states:
+                // If a message is received with both a Transfer-Encoding header field
+                // and a Content-Length header field, the latter MUST be ignored.
+                // If none of them is specified, the message length should be determined by the server closing the
+                // connection. http://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html#sec4.4
+
+<span style = "background-color:#fdd">                read_next_response_chunk(p_request_context.get(), 0, true);
+                return;</span>
+            }
+            case WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE:
+            {
+                // Status information contains pointer to DWORD containing number of bytes available.
+<span style = "background-color:#fdd">                const DWORD num_bytes = *(PDWORD)statusInfo;</span>
+                uint8_t* buffer;
+
+<span style = "background-color:#fdd">                if (num_bytes &gt; 0)</span>
+                {
+<span style = "background-color:#fdd">                    if (p_request_context-&gt;m_decompressor)</span>
+                    {
+                        // Allocate space for the compressed data; we'll decompress it into the caller stream once it's
+                        // been filled in
+<span style = "background-color:#fdd">                        if (p_request_context-&gt;m_compression_state.m_buffer.capacity() &lt; num_bytes)</span>
+                        {
+<span style = "background-color:#fdd">                            p_request_context-&gt;m_compression_state.m_buffer.reserve(num_bytes);</span>
+                        }
+<span style = "background-color:#fdd">                        buffer = p_request_context-&gt;m_compression_state.m_buffer.data();
+                    }</span>
+                    else
+                    {
+<span style = "background-color:#fdd">                        auto writebuf = p_request_context-&gt;_get_writebuffer();
+                        p_request_context-&gt;allocate_reply_space(writebuf.alloc(num_bytes), num_bytes);
+                        buffer = p_request_context-&gt;m_body_data.get();
+                    }</span>
+
+                    // Read in available body data all at once.
+<span style = "background-color:#fdd">                    if (!WinHttpReadData(hRequestHandle, buffer, num_bytes, nullptr))</span>
+                    {
+<span style = "background-color:#fdd">                        auto errorCode = GetLastError();
+                        p_request_context-&gt;report_error(errorCode, build_error_msg(errorCode, "WinHttpReadData"));</span>
+                    }
+<span style = "background-color:#fdd">                }</span>
+                else
+                {
+<span style = "background-color:#fdd">                    if (p_request_context-&gt;m_decompressor)</span>
+                    {
+<span style = "background-color:#fdd">                        if (p_request_context-&gt;m_compression_state.m_chunked)</span>
+                        {
+                            // We haven't seen the 0-length chunk and/or trailing delimiter that indicate the end of
+                            // chunked input
+<span style = "background-color:#fdd">                            p_request_context-&gt;report_exception(</span>
+                                http_exception("Chunked response stream ended unexpectedly"));
+<span style = "background-color:#fdd">                            return;</span>
+                        }
+<span style = "background-color:#fdd">                        if (p_request_context-&gt;m_compression_state.m_started &amp;&amp;</span>
+                            !p_request_context-&gt;m_compression_state.m_done)
+                        {
+<span style = "background-color:#fdd">                            p_request_context-&gt;report_exception(</span>
+                                http_exception("Received incomplete compressed stream"));
+<span style = "background-color:#fdd">                            return;</span>
+                        }
+                    }
+
+                    // No more data available, complete the request.
+<span style = "background-color:#fdd">                    auto progress = p_request_context-&gt;m_request._get_impl()-&gt;_progress_handler();
+                    if (progress)</span>
+                    {
+                        try
+                        {
+<span style = "background-color:#fdd">                            (*progress)(message_direction::download, p_request_context-&gt;m_downloaded);</span>
+                        }
+                        catch (...)
+<span style = "background-color:#fdd">                        {
+                            p_request_context-&gt;report_exception(std::current_exception());
+                            return;
+                        }</span>
+                    }
+
+<span style = "background-color:#fdd">                    p_request_context-&gt;complete_request(p_request_context-&gt;m_downloaded);
+                }
+                return;</span>
+            }
+            case WINHTTP_CALLBACK_STATUS_READ_COMPLETE:
+            {
+                // Status information length contains the number of bytes read.
+<span style = "background-color:#fdd">                DWORD bytesRead = statusInfoLength;</span>
+
+                // Report progress about downloaded bytes.
+<span style = "background-color:#fdd">                auto progress = p_request_context-&gt;m_request._get_impl()-&gt;_progress_handler();
+                p_request_context-&gt;m_downloaded += statusInfoLength;
+                if (progress)</span>
+                {
+                    try
+                    {
+<span style = "background-color:#fdd">                        (*progress)(message_direction::download, p_request_context-&gt;m_downloaded);</span>
+                    }
+                    catch (...)
+<span style = "background-color:#fdd">                    {
+                        p_request_context-&gt;report_exception(std::current_exception());
+                        return;
+                    }</span>
+                }
+
+                // If no bytes have been read, then this is the end of the response.
+<span style = "background-color:#fdd">                if (bytesRead == 0)</span>
+                {
+<span style = "background-color:#fdd">                    if (p_request_context-&gt;m_decompressor)</span>
+                    {
+<span style = "background-color:#fdd">                        if (p_request_context-&gt;m_compression_state.m_chunked)</span>
+                        {
+                            // We haven't seen the 0-length chunk and/or trailing delimiter that indicate the end of
+                            // chunked input
+<span style = "background-color:#fdd">                            p_request_context-&gt;report_exception(</span>
+                                http_exception("Chunked response stream ended unexpectedly"));
+<span style = "background-color:#fdd">                            return;</span>
+                        }
+<span style = "background-color:#fdd">                        if (p_request_context-&gt;m_compression_state.m_started &amp;&amp;</span>
+                            !p_request_context-&gt;m_compression_state.m_done)
+                        {
+<span style = "background-color:#fdd">                            p_request_context-&gt;report_exception(</span>
+                                http_exception("Received incomplete compressed stream"));
+<span style = "background-color:#fdd">                            return;</span>
+                        }
+                    }
+<span style = "background-color:#fdd">                    p_request_context-&gt;complete_request(p_request_context-&gt;m_downloaded);
+                    return;</span>
+                }
+
+<span style = "background-color:#fdd">                auto writebuf = p_request_context-&gt;_get_writebuffer();</span>
+
+<span style = "background-color:#fdd">                if (p_request_context-&gt;m_decompressor)</span>
+                {
+<span style = "background-color:#fdd">                    size_t chunk_size = (std::max)(static_cast&lt;size_t&gt;(bytesRead),</span>
+                                                   p_request_context-&gt;m_http_client-&gt;client_config().chunksize());
+<span style = "background-color:#fdd">                    p_request_context-&gt;m_compression_state.m_bytes_read = static_cast&lt;size_t&gt;(bytesRead);
+                    p_request_context-&gt;m_compression_state.m_chunk_bytes = 0;</span>
+
+                    // Note, some servers seem to send a first chunk of body data that decompresses to nothing, but
+                    // initializes the decompression state; this produces no decompressed output.  Subsequent chunks
+                    // will then begin emitting decompressed body data.
+
+                    // Oddly enough, WinHttp doesn't de-chunk for us if "chunked" isn't the only
+                    // encoding, so we need to do so on the fly as we process the received data
+                    auto process_buffer =
+<span style = "background-color:#fdd">                        [chunk_size](winhttp_request_context* c, size_t bytes_produced, bool outer) -&gt; bool {
+                        if (!c-&gt;m_compression_state.m_chunk_bytes)</span>
+                        {
+<span style = "background-color:#fdd">                            if (c-&gt;m_compression_state.m_chunked)</span>
+                            {
+                                size_t offset;
+                                bool done;
+
+                                // Process the next portion of this piece of the transfer-encoded message
+<span style = "background-color:#fdd">                                done = c-&gt;m_compression_state.m_chunk-&gt;process_buffer(</span>
+                                    c-&gt;m_compression_state.m_buffer.data() + c-&gt;m_compression_state.m_bytes_processed,
+                                    c-&gt;m_compression_state.m_bytes_read - c-&gt;m_compression_state.m_bytes_processed,
+                                    offset,
+                                    c-&gt;m_compression_state.m_chunk_bytes);
+
+                                // Skip chunk-related metadata; it isn't relevant to decompression
+<span style = "background-color:#fdd">                                _ASSERTE(c-&gt;m_compression_state.m_bytes_processed + offset &lt;=</span>
+                                         c-&gt;m_compression_state.m_bytes_read);
+<span style = "background-color:#fdd">                                c-&gt;m_compression_state.m_bytes_processed += offset;</span>
+
+<span style = "background-color:#fdd">                                if (!c-&gt;m_compression_state.m_chunk_bytes)</span>
+                                {
+<span style = "background-color:#fdd">                                    if (done)</span>
+                                    {
+                                        // We've processed/validated all bytes in this transfer-encoded message.
+                                        // Note that we currently ignore "extra" trailing bytes, i.e.
+                                        // c-&gt;m_compression_state.m_bytes_processed &lt;
+                                        // c-&gt;m_compression_state.m_bytes_read
+<span style = "background-color:#fdd">                                        if (c-&gt;m_compression_state.m_done)</span>
+                                        {
+<span style = "background-color:#fdd">                                            c-&gt;complete_request(c-&gt;m_downloaded);
+                                            return false;
+                                        }
+                                        else if (!outer &amp;&amp; bytes_produced != chunk_size)</span>
+                                        {
+<span style = "background-color:#fdd">                                            throw http_exception("Transfer ended before decompression completed");</span>
+                                        }
+<span style = "background-color:#fdd">                                    }
+                                    else if (!outer &amp;&amp; bytes_produced != chunk_size)</span>
+                                    {
+                                        // There should be more data to receive; look for it
+<span style = "background-color:#fdd">                                        c-&gt;m_compression_state.m_bytes_processed = 0;
+                                        read_next_response_chunk(</span>
+                                            c, static_cast&lt;DWORD&gt;(c-&gt;m_compression_state.m_bytes_read));
+<span style = "background-color:#fdd">                                        return false;</span>
+                                    }
+                                }
+<span style = "background-color:#fdd">                            }</span>
+                            else
+                            {
+<span style = "background-color:#fdd">                                _ASSERTE(!c-&gt;m_compression_state.m_bytes_processed ||</span>
+                                         c-&gt;m_compression_state.m_bytes_processed ==
+                                             c-&gt;m_compression_state.m_bytes_read);
+<span style = "background-color:#fdd">                                if (c-&gt;m_compression_state.m_done)</span>
+                                {
+                                    // Decompression is done; complete the request
+<span style = "background-color:#fdd">                                    c-&gt;complete_request(c-&gt;m_downloaded);
+                                    return false;
+                                }
+                                else if (c-&gt;m_compression_state.m_bytes_processed !=</span>
+                                         c-&gt;m_compression_state.m_bytes_read)
+                                {
+                                    // We still have more data to process in the current buffer
+<span style = "background-color:#fdd">                                    c-&gt;m_compression_state.m_chunk_bytes =</span>
+                                        c-&gt;m_compression_state.m_bytes_read - c-&gt;m_compression_state.m_bytes_processed;
+<span style = "background-color:#fdd">                                }
+                                else if (!outer &amp;&amp; bytes_produced != chunk_size)</span>
+                                {
+                                    // There should be more data to receive; look for it
+<span style = "background-color:#fdd">                                    c-&gt;m_compression_state.m_bytes_processed = 0;
+                                    read_next_response_chunk(c,</span>
+                                                             static_cast&lt;DWORD&gt;(c-&gt;m_compression_state.m_bytes_read));
+<span style = "background-color:#fdd">                                    return false;</span>
+                                }
+                                // Otherwise, we've processed all bytes in the input buffer, but there's a good chance
+                                // that there are still decompressed bytes to emit; we'll do so before reading the next
+                                // chunk
+                            }
+                        }
+
+                        // We're still processing the current message chunk
+<span style = "background-color:#fdd">                        return true;
+                    };</span>
+
+<span style = "background-color:#fdd">                    pplx::details::_do_while([p_request_context, chunk_size, process_buffer]() -&gt; pplx::task&lt;bool&gt; {</span>
+                        uint8_t* buffer;
+
+                        try
+                        {
+<span style = "background-color:#fdd">                            if (!process_buffer(p_request_context.get(), 0, true))</span>
+                            {
+                                // The chunked request has been completely processed (or contains no data in the first
+                                // place)
+<span style = "background-color:#fdd">                                return pplx::task_from_result&lt;bool&gt;(false);</span>
+                            }
+                        }
+                        catch (...)
+<span style = "background-color:#fdd">                        {</span>
+                            // The outer do-while requires an explicit task return to activate the then() clause
+<span style = "background-color:#fdd">                            return pplx::task_from_exception&lt;bool&gt;(std::current_exception());
+                        }</span>
+
+                        // If it's possible to know how much post-compression data we're expecting (for instance if we
+                        // can discern how much total data the ostream can support, we could allocate (or at least
+                        // attempt to acquire) based on that
+<span style = "background-color:#fdd">                        p_request_context-&gt;m_compression_state.m_acquired =</span>
+                            p_request_context-&gt;_get_writebuffer().alloc(chunk_size);
+<span style = "background-color:#fdd">                        if (p_request_context-&gt;m_compression_state.m_acquired)</span>
+                        {
+<span style = "background-color:#fdd">                            buffer = p_request_context-&gt;m_compression_state.m_acquired;
+                        }</span>
+                        else
+                        {
+                            // The streambuf couldn't accommodate our request; we'll use m_body_data's
+                            // internal vector as temporary storage, then putn() to the caller's stream
+<span style = "background-color:#fdd">                            p_request_context-&gt;allocate_reply_space(nullptr, chunk_size);
+                            buffer = p_request_context-&gt;m_body_data.get();</span>
+                        }
+
+<span style = "background-color:#fdd">                        uint8_t* in = p_request_context-&gt;m_compression_state.m_buffer.data() +</span>
+                                      p_request_context-&gt;m_compression_state.m_bytes_processed;
+<span style = "background-color:#fdd">                        size_t inbytes = p_request_context-&gt;m_compression_state.m_chunk_bytes;
+                        if (inbytes)</span>
+                        {
+<span style = "background-color:#fdd">                            p_request_context-&gt;m_compression_state.m_started = true;</span>
+                        }
+<span style = "background-color:#fdd">                        return p_request_context-&gt;m_decompressor</span>
+                            -&gt;decompress(
+                                in, inbytes, buffer, chunk_size, web::http::compression::operation_hint::has_more)
+                            .then([p_request_context, buffer, chunk_size, process_buffer](
+<span style = "background-color:#fdd">                                      pplx::task&lt;web::http::compression::operation_result&gt; op) {
+                                auto r = op.get();
+                                auto keep_going = [&amp;r, process_buffer](winhttp_request_context* c) -&gt; pplx::task&lt;bool&gt; {
+                                    _ASSERTE(r.input_bytes_processed &lt;= c-&gt;m_compression_state.m_chunk_bytes);
+                                    c-&gt;m_compression_state.m_chunk_bytes -= r.input_bytes_processed;
+                                    c-&gt;m_compression_state.m_bytes_processed += r.input_bytes_processed;
+                                    c-&gt;m_compression_state.m_done = r.done;</span>
+
+                                    try
+                                    {
+                                        // See if we still have more work to do for this section and/or for the response
+                                        // in general
+<span style = "background-color:#fdd">                                        return pplx::task_from_result&lt;bool&gt;(</span>
+                                            process_buffer(c, r.output_bytes_produced, false));
+                                    }
+                                    catch (...)
+<span style = "background-color:#fdd">                                    {
+                                        return pplx::task_from_exception&lt;bool&gt;(std::current_exception());
+                                    }
+                                };</span>
+
+<span style = "background-color:#fdd">                                _ASSERTE(p_request_context-&gt;m_compression_state.m_bytes_processed +</span>
+                                             r.input_bytes_processed &lt;=
+                                         p_request_context-&gt;m_compression_state.m_bytes_read);
+
+<span style = "background-color:#fdd">                                if (p_request_context-&gt;m_compression_state.m_acquired != nullptr)</span>
+                                {
+                                    // We decompressed directly into the output stream
+<span style = "background-color:#fdd">                                    p_request_context-&gt;m_compression_state.m_acquired = nullptr;
+                                    p_request_context-&gt;_get_writebuffer().commit(r.output_bytes_produced);
+                                    return keep_going(p_request_context.get());</span>
+                                }
+
+                                // We decompressed into our own buffer; let the stream copy the data
+<span style = "background-color:#fdd">                                return p_request_context-&gt;_get_writebuffer()</span>
+                                    .putn_nocopy(buffer, r.output_bytes_produced)
+<span style = "background-color:#fdd">                                    .then([p_request_context, r, keep_going](pplx::task&lt;size_t&gt; op) {
+                                        if (op.get() != r.output_bytes_produced)</span>
+                                        {
+<span style = "background-color:#fdd">                                            return pplx::task_from_exception&lt;bool&gt;(</span>
+                                                std::runtime_error("Response stream unexpectedly failed to write the "
+                                                                   "requested number of bytes"));
+                                        }
+<span style = "background-color:#fdd">                                        return keep_going(p_request_context.get());
+                                    });
+                            });
+                    }).then([p_request_context](pplx::task&lt;bool&gt; op) {</span>
+                        try
+                        {
+<span style = "background-color:#fdd">                            op.get();</span>
+                        }
+                        catch (...)
+<span style = "background-color:#fdd">                        {</span>
+                            // We're only here to pick up any exception that may have been thrown, and to clean up
+                            // if needed
+<span style = "background-color:#fdd">                            if (p_request_context-&gt;m_compression_state.m_acquired)</span>
+                            {
+<span style = "background-color:#fdd">                                p_request_context-&gt;_get_writebuffer().commit(0);
+                                p_request_context-&gt;m_compression_state.m_acquired = nullptr;</span>
+                            }
+<span style = "background-color:#fdd">                            p_request_context-&gt;report_exception(std::current_exception());
+                        }
+                    });
+                }</span>
+                else
+                {
+                    // If the data was allocated directly from the buffer then commit, otherwise we still
+                    // need to write to the response stream buffer.
+<span style = "background-color:#fdd">                    if (p_request_context-&gt;is_externally_allocated())</span>
+                    {
+<span style = "background-color:#fdd">                        writebuf.commit(bytesRead);
+                        read_next_response_chunk(p_request_context.get(), bytesRead);
+                    }</span>
+                    else
+                    {
+<span style = "background-color:#fdd">                        writebuf.putn_nocopy(p_request_context-&gt;m_body_data.get(), bytesRead)
+                            .then([hRequestHandle, p_request_context, bytesRead](pplx::task&lt;size_t&gt; op) {
+                                size_t written = 0;</span>
+                                try
+                                {
+<span style = "background-color:#fdd">                                    written = op.get();</span>
+                                }
+                                catch (...)
+<span style = "background-color:#fdd">                                {
+                                    p_request_context-&gt;report_exception(std::current_exception());
+                                    return;
+                                }</span>
+
+                                // If we couldn't write everything, it's time to exit.
+<span style = "background-color:#fdd">                                if (written != bytesRead)</span>
+                                {
+<span style = "background-color:#fdd">                                    p_request_context-&gt;report_exception(std::runtime_error(</span>
+                                        "response stream unexpectedly failed to write the requested number of bytes"));
+<span style = "background-color:#fdd">                                    return;</span>
+                                }
+
+<span style = "background-color:#fdd">                                read_next_response_chunk(p_request_context.get(), bytesRead);
+                            });</span>
+                    }
+                }
+<span style = "background-color:#fdd">                return;</span>
+            }
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    std::atomic&lt;bool&gt; m_opened;
+
+    // WinHTTP session and connection
+    HINTERNET m_hSession;
+    HINTERNET m_hConnection;
+    bool m_secure;
+
+    // If auto config is true, dynamically find the proxy for each URL using
+    // the proxy configuration script at the given URL if it's not empty or
+    // using WPAD otherwise.
+<span style = "background-color:#fdd">    bool m_proxy_auto_config {false};</span>
+    utility::string_t m_proxy_auto_config_url;
+};
+
+std::shared_ptr&lt;_http_client_communicator&gt; create_platform_final_pipeline_stage(uri&amp;&amp; base_uri,
+                                                                                http_client_config&amp;&amp; client_config)
+<span style = "background-color:#fdd">{
+    return std::make_shared&lt;details::winhttp_client&gt;(std::move(base_uri), std::move(client_config));
+}</span>
+
+
+} // namespace details
+} // namespace client
+} // namespace http
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

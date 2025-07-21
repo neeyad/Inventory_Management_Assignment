@@ -1,0 +1,1275 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>json_parsing.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: JSON parser
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#include "stdafx.h"
+
+#include &lt;cstdlib&gt;
+
+#if defined(_MSC_VER)
+#pragma warning(disable : 4127) // allow expressions like while(true) pass
+#endif
+using namespace web;
+using namespace web::json;
+using namespace utility;
+using namespace utility::conversions;
+
+std::array&lt;signed char, 128&gt; _hexval = {
+    {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0,  1,  2,  3,
+     4,  5,  6,  7,  8,  9,  -1, -1, -1, -1, -1, -1, -1, 10, 11, 12, 13, 14, 15, -1, -1, -1, -1, -1, -1, -1,
+     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 10, 11, 12, 13, 14, 15, -1,
+     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}};
+
+namespace web
+{
+namespace json
+{
+namespace details
+{
+//
+// JSON Parsing
+//
+
+template&lt;typename Token&gt;
+#if defined(_WIN32)
+__declspec(noreturn)
+#else
+    __attribute__((noreturn))
+#endif
+    void CreateException(const Token&amp; tk, const utility::string_t&amp; message)
+<span style = "background-color:#fdd">{
+    std::string str("* Line ");
+    str += std::to_string(tk.start.m_line);
+    str += ", Column ";
+    str += std::to_string(tk.start.m_column);
+    str += " Syntax error: ";
+    str += utility::conversions::to_utf8string(message);
+    throw web::json::json_exception(std::move(str));
+}</span>
+
+template&lt;typename Token&gt;
+void SetErrorCode(Token&amp; tk, json_error jsonErrorCode)
+<span style = "background-color:#fdd">{
+    tk.m_error = std::error_code(jsonErrorCode, json_error_category());
+}</span>
+
+template&lt;typename CharType&gt;
+class JSON_Parser
+{
+public:
+<span style = "background-color:#fdd">    JSON_Parser() : m_currentLine(1), m_currentColumn(1), m_currentParsingDepth(0) {}</span>
+
+    struct Location
+    {
+        size_t m_line;
+        size_t m_column;
+    };
+
+    struct Token
+    {
+        enum Kind
+        {
+            TKN_EOF,
+
+            TKN_OpenBrace,
+            TKN_CloseBrace,
+            TKN_OpenBracket,
+            TKN_CloseBracket,
+            TKN_Comma,
+            TKN_Colon,
+            TKN_StringLiteral,
+            TKN_NumberLiteral,
+            TKN_IntegerLiteral,
+            TKN_BooleanLiteral,
+            TKN_NullLiteral,
+            TKN_Comment
+        };
+
+<span style = "background-color:#fdd">        Token() : kind(TKN_EOF) {}</span>
+
+        Kind kind;
+        std::basic_string&lt;CharType&gt; string_val;
+
+        typename JSON_Parser&lt;CharType&gt;::Location start;
+
+        union {
+            double double_val;
+            int64_t int64_val;
+            uint64_t uint64_val;
+            bool boolean_val;
+            bool has_unescape_symbol;
+        };
+
+        bool signed_number;
+
+        std::error_code m_error;
+    };
+
+    void GetNextToken(Token&amp;);
+
+    web::json::value ParseValue(typename JSON_Parser&lt;CharType&gt;::Token&amp; first)
+<span style = "background-color:#fdd">    {</span>
+#ifndef _WIN32
+        utility::details::scoped_c_thread_locale locale;
+#endif
+
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">        auto _value = _ParseValue(first);
+        auto type = _value-&gt;type();
+        return web::json::value(std::move(_value), type);</span>
+#else
+        return web::json::value(_ParseValue(first));
+#endif
+<span style = "background-color:#fdd">    }</span>
+
+protected:
+    typedef typename std::char_traits&lt;CharType&gt;::int_type int_type;
+    virtual int_type NextCharacter() = 0;
+    virtual int_type PeekCharacter() = 0;
+
+    virtual bool CompleteComment(Token&amp; token);
+    virtual bool CompleteStringLiteral(Token&amp; token);
+    int convert_unicode_to_code_point();
+    bool handle_unescape_char(Token&amp; token);
+
+private:
+    bool CompleteNumberLiteral(CharType first, Token&amp; token);
+    bool ParseInt64(CharType first, uint64_t&amp; value);
+    bool CompleteKeywordTrue(Token&amp; token);
+    bool CompleteKeywordFalse(Token&amp; token);
+    bool CompleteKeywordNull(Token&amp; token);
+    std::unique_ptr&lt;web::json::details::_Value&gt; _ParseValue(typename JSON_Parser&lt;CharType&gt;::Token&amp; first);
+    std::unique_ptr&lt;web::json::details::_Value&gt; _ParseObject(typename JSON_Parser&lt;CharType&gt;::Token&amp; tkn);
+    std::unique_ptr&lt;web::json::details::_Value&gt; _ParseArray(typename JSON_Parser&lt;CharType&gt;::Token&amp; tkn);
+
+    JSON_Parser&amp; operator=(const JSON_Parser&amp;);
+
+    int_type EatWhitespace();
+
+    void CreateToken(typename JSON_Parser&lt;CharType&gt;::Token&amp; tk, typename Token::Kind kind, Location&amp; start)
+<span style = "background-color:#fdd">    {
+        tk.kind = kind;
+        tk.start = start;
+        tk.string_val.clear();
+    }</span>
+
+    void CreateToken(typename JSON_Parser&lt;CharType&gt;::Token&amp; tk, typename Token::Kind kind)
+<span style = "background-color:#fdd">    {
+        tk.kind = kind;
+        tk.start.m_line = m_currentLine;
+        tk.start.m_column = m_currentColumn;
+        tk.string_val.clear();
+    }</span>
+
+protected:
+    size_t m_currentLine;
+    size_t m_currentColumn;
+    size_t m_currentParsingDepth;
+
+// The DEBUG macro is defined in XCode but we don't in our CMakeList
+// so for now we will keep the same on debug and release. In the future
+// this can be increase on release if necessary.
+#if defined(__APPLE__)
+    static const size_t maxParsingDepth = 32;
+#else
+    static const size_t maxParsingDepth = 128;
+#endif
+};
+
+// Replace with template alias once VS 2012 support is removed.
+template&lt;typename CharType&gt;
+typename std::char_traits&lt;CharType&gt;::int_type eof()
+<span style = "background-color:#fdd">{
+    return std::char_traits&lt;CharType&gt;::eof();
+}</span>
+
+template&lt;typename CharType&gt;
+class JSON_StreamParser : public JSON_Parser&lt;CharType&gt;
+{
+public:
+<span style = "background-color:#fdd">    JSON_StreamParser(std::basic_istream&lt;CharType&gt;&amp; stream) : m_streambuf(stream.rdbuf()) {}</span>
+
+protected:
+    virtual typename JSON_Parser&lt;CharType&gt;::int_type NextCharacter();
+    virtual typename JSON_Parser&lt;CharType&gt;::int_type PeekCharacter();
+
+private:
+    typename std::basic_streambuf&lt;CharType, std::char_traits&lt;CharType&gt;&gt;* m_streambuf;
+};
+
+template&lt;typename CharType&gt;
+class JSON_StringParser : public JSON_Parser&lt;CharType&gt;
+{
+public:
+<span style = "background-color:#fdd">    JSON_StringParser(const std::basic_string&lt;CharType&gt;&amp; string) : m_position(&amp;string[0])
+    {
+        m_startpos = m_position;
+        m_endpos = m_position + string.size();
+    }</span>
+
+protected:
+    virtual typename JSON_Parser&lt;CharType&gt;::int_type NextCharacter();
+    virtual typename JSON_Parser&lt;CharType&gt;::int_type PeekCharacter();
+
+    virtual bool CompleteComment(typename JSON_Parser&lt;CharType&gt;::Token&amp; token);
+    virtual bool CompleteStringLiteral(typename JSON_Parser&lt;CharType&gt;::Token&amp; token);
+
+private:
+    bool finish_parsing_string_with_unescape_char(typename JSON_Parser&lt;CharType&gt;::Token&amp; token);
+    const CharType* m_position;
+    const CharType* m_startpos;
+    const CharType* m_endpos;
+};
+
+template&lt;typename CharType&gt;
+typename JSON_Parser&lt;CharType&gt;::int_type JSON_StreamParser&lt;CharType&gt;::NextCharacter()
+<span style = "background-color:#fdd">{
+    auto ch = m_streambuf-&gt;sbumpc();</span>
+
+<span style = "background-color:#fdd">    if (ch == '\n')</span>
+    {
+<span style = "background-color:#fdd">        this-&gt;m_currentLine += 1;
+        this-&gt;m_currentColumn = 0;
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        this-&gt;m_currentColumn += 1;</span>
+    }
+
+<span style = "background-color:#fdd">    return ch;
+}</span>
+
+template&lt;typename CharType&gt;
+typename JSON_Parser&lt;CharType&gt;::int_type JSON_StreamParser&lt;CharType&gt;::PeekCharacter()
+<span style = "background-color:#fdd">{
+    return m_streambuf-&gt;sgetc();
+}</span>
+
+template&lt;typename CharType&gt;
+typename JSON_Parser&lt;CharType&gt;::int_type JSON_StringParser&lt;CharType&gt;::NextCharacter()
+<span style = "background-color:#fdd">{
+    if (m_position == m_endpos) return eof&lt;CharType&gt;();</span>
+
+<span style = "background-color:#fdd">    CharType ch = *m_position;
+    m_position += 1;</span>
+
+<span style = "background-color:#fdd">    if (ch == '\n')</span>
+    {
+<span style = "background-color:#fdd">        this-&gt;m_currentLine += 1;
+        this-&gt;m_currentColumn = 0;
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        this-&gt;m_currentColumn += 1;</span>
+    }
+
+<span style = "background-color:#fdd">    return ch;
+}</span>
+
+template&lt;typename CharType&gt;
+typename JSON_Parser&lt;CharType&gt;::int_type JSON_StringParser&lt;CharType&gt;::PeekCharacter()
+<span style = "background-color:#fdd">{
+    if (m_position == m_endpos) return eof&lt;CharType&gt;();</span>
+
+<span style = "background-color:#fdd">    return *m_position;
+}</span>
+
+//
+// Consume whitespace characters and return the first non-space character or EOF
+//
+template&lt;typename CharType&gt;
+typename JSON_Parser&lt;CharType&gt;::int_type JSON_Parser&lt;CharType&gt;::EatWhitespace()
+<span style = "background-color:#fdd">{
+    auto ch = NextCharacter();</span>
+
+<span style = "background-color:#fdd">    while (ch != eof&lt;CharType&gt;() &amp;&amp; iswspace(static_cast&lt;wint_t&gt;(ch)))</span>
+    {
+<span style = "background-color:#fdd">        ch = NextCharacter();
+    }</span>
+
+<span style = "background-color:#fdd">    return ch;
+}</span>
+
+template&lt;typename CharType&gt;
+bool JSON_Parser&lt;CharType&gt;::CompleteKeywordTrue(Token&amp; token)
+<span style = "background-color:#fdd">{
+    if (NextCharacter() != 'r') return false;
+    if (NextCharacter() != 'u') return false;
+    if (NextCharacter() != 'e') return false;
+    token.kind = Token::TKN_BooleanLiteral;
+    token.boolean_val = true;
+    return true;
+}</span>
+
+template&lt;typename CharType&gt;
+bool JSON_Parser&lt;CharType&gt;::CompleteKeywordFalse(Token&amp; token)
+<span style = "background-color:#fdd">{
+    if (NextCharacter() != 'a') return false;
+    if (NextCharacter() != 'l') return false;
+    if (NextCharacter() != 's') return false;
+    if (NextCharacter() != 'e') return false;
+    token.kind = Token::TKN_BooleanLiteral;
+    token.boolean_val = false;
+    return true;
+}</span>
+
+template&lt;typename CharType&gt;
+bool JSON_Parser&lt;CharType&gt;::CompleteKeywordNull(Token&amp; token)
+<span style = "background-color:#fdd">{
+    if (NextCharacter() != 'u') return false;
+    if (NextCharacter() != 'l') return false;
+    if (NextCharacter() != 'l') return false;
+    token.kind = Token::TKN_NullLiteral;
+    return true;
+}</span>
+
+// Returns false only on overflow
+template&lt;typename CharType&gt;
+inline bool JSON_Parser&lt;CharType&gt;::ParseInt64(CharType first, uint64_t&amp; value)
+<span style = "background-color:#fdd">{
+    value = first - '0';
+    auto ch = PeekCharacter();
+    while (ch &gt;= '0' &amp;&amp; ch &lt;= '9')</span>
+    {
+<span style = "background-color:#fdd">        unsigned int next_digit = (unsigned int)(ch - '0');
+        if (value &gt; (ULLONG_MAX / 10) || (value == ULLONG_MAX / 10 &amp;&amp; next_digit &gt; ULLONG_MAX % 10)) return false;</span>
+
+<span style = "background-color:#fdd">        NextCharacter();</span>
+
+<span style = "background-color:#fdd">        value *= 10;
+        value += next_digit;
+        ch = PeekCharacter();
+    }
+    return true;
+}</span>
+
+// This namespace hides the x-plat helper functions
+namespace
+{
+#if defined(_WIN32)
+static int print_llu(char* ptr, size_t n, uint64_t val64)
+<span style = "background-color:#fdd">{
+    return _snprintf_s_l(ptr, n, _TRUNCATE, "%I64u", utility::details::scoped_c_thread_locale::c_locale(), val64);
+}</span>
+
+static int print_llu(wchar_t* ptr, size_t n, uint64_t val64)
+<span style = "background-color:#fdd">{
+    return _snwprintf_s_l(ptr, n, _TRUNCATE, L"%I64u", utility::details::scoped_c_thread_locale::c_locale(), val64);
+}</span>
+static double anystod(const char* str)
+<span style = "background-color:#fdd">{
+    return _strtod_l(str, nullptr, utility::details::scoped_c_thread_locale::c_locale());
+}</span>
+static double anystod(const wchar_t* str)
+<span style = "background-color:#fdd">{
+    return _wcstod_l(str, nullptr, utility::details::scoped_c_thread_locale::c_locale());
+}</span>
+#else
+static int __attribute__((__unused__)) print_llu(char* ptr, size_t n, unsigned long long val64)
+{
+    return snprintf(ptr, n, "%llu", val64);
+}
+static int __attribute__((__unused__)) print_llu(char* ptr, size_t n, unsigned long val64)
+{
+    return snprintf(ptr, n, "%lu", val64);
+}
+static double __attribute__((__unused__)) anystod(const char* str) { return strtod(str, nullptr); }
+static double __attribute__((__unused__)) anystod(const wchar_t* str) { return wcstod(str, nullptr); }
+#endif
+} // namespace
+
+template&lt;typename CharType&gt;
+bool JSON_Parser&lt;CharType&gt;::CompleteNumberLiteral(CharType first, Token&amp; token)
+<span style = "background-color:#fdd">{</span>
+    bool minus_sign;
+
+<span style = "background-color:#fdd">    if (first == '-')</span>
+    {
+<span style = "background-color:#fdd">        minus_sign = true;</span>
+
+        // Safe to cast because the check after this if/else statement will cover EOF.
+<span style = "background-color:#fdd">        first = static_cast&lt;CharType&gt;(NextCharacter());
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        minus_sign = false;</span>
+    }
+
+<span style = "background-color:#fdd">    if (first &lt; '0' || first &gt; '9') return false;</span>
+
+<span style = "background-color:#fdd">    auto ch = PeekCharacter();</span>
+
+    // Check for two (or more) zeros at the beginning
+<span style = "background-color:#fdd">    if (first == '0' &amp;&amp; ch == '0') return false;</span>
+
+    // Parse the number assuming its integer
+    uint64_t val64;
+<span style = "background-color:#fdd">    bool complete = ParseInt64(first, val64);</span>
+
+<span style = "background-color:#fdd">    ch = PeekCharacter();
+    if (complete &amp;&amp; ch != '.' &amp;&amp; ch != 'E' &amp;&amp; ch != 'e')</span>
+    {
+<span style = "background-color:#fdd">        if (minus_sign)</span>
+        {
+<span style = "background-color:#fdd">            if (val64 &gt; static_cast&lt;uint64_t&gt;(1) &lt;&lt; 63)</span>
+            {
+                // It is negative and cannot be represented in int64, so we resort to double
+<span style = "background-color:#fdd">                token.double_val = 0 - static_cast&lt;double&gt;(val64);
+                token.signed_number = true;
+                token.kind = JSON_Parser&lt;CharType&gt;::Token::TKN_NumberLiteral;
+                return true;</span>
+            }
+
+            // It is negative, but fits into int64
+<span style = "background-color:#fdd">            token.int64_val = 0 - static_cast&lt;int64_t&gt;(val64);
+            token.kind = JSON_Parser&lt;CharType&gt;::Token::TKN_IntegerLiteral;
+            token.signed_number = true;
+            return true;</span>
+        }
+
+        // It is positive so we use unsigned int64
+<span style = "background-color:#fdd">        token.uint64_val = val64;
+        token.kind = JSON_Parser&lt;CharType&gt;::Token::TKN_IntegerLiteral;
+        token.signed_number = false;
+        return true;</span>
+    }
+
+    // Magic number 5 leaves room for decimal point, null terminator, etc (in most cases)
+<span style = "background-color:#fdd">    ::std::vector&lt;CharType&gt; buf(::std::numeric_limits&lt;uint64_t&gt;::digits10 + 5);
+    int count = print_llu(buf.data(), buf.size(), val64);
+    _ASSERTE(count &gt;= 0);
+    _ASSERTE((size_t)count &lt; buf.size());</span>
+    // Resize to cut off the null terminator
+<span style = "background-color:#fdd">    buf.resize(count);</span>
+
+<span style = "background-color:#fdd">    bool decimal = false;</span>
+
+<span style = "background-color:#fdd">    while (ch != eof&lt;CharType&gt;())</span>
+    {
+        // Digit encountered?
+<span style = "background-color:#fdd">        if (ch &gt;= '0' &amp;&amp; ch &lt;= '9')</span>
+        {
+<span style = "background-color:#fdd">            buf.push_back(static_cast&lt;CharType&gt;(ch));
+            NextCharacter();
+            ch = PeekCharacter();
+        }</span>
+
+        // Decimal dot?
+<span style = "background-color:#fdd">        else if (ch == '.')</span>
+        {
+<span style = "background-color:#fdd">            if (decimal) return false;</span>
+
+<span style = "background-color:#fdd">            decimal = true;
+            buf.push_back(static_cast&lt;CharType&gt;(ch));</span>
+
+<span style = "background-color:#fdd">            NextCharacter();
+            ch = PeekCharacter();</span>
+
+            // Check that the following char is a digit
+<span style = "background-color:#fdd">            if (ch &lt; '0' || ch &gt; '9') return false;</span>
+
+<span style = "background-color:#fdd">            buf.push_back(static_cast&lt;CharType&gt;(ch));
+            NextCharacter();
+            ch = PeekCharacter();
+        }</span>
+
+        // Exponent?
+<span style = "background-color:#fdd">        else if (ch == 'E' || ch == 'e')</span>
+        {
+<span style = "background-color:#fdd">            buf.push_back(static_cast&lt;CharType&gt;(ch));
+            NextCharacter();
+            ch = PeekCharacter();</span>
+
+            // Check for the exponent sign
+<span style = "background-color:#fdd">            if (ch == '+')</span>
+            {
+<span style = "background-color:#fdd">                buf.push_back(static_cast&lt;CharType&gt;(ch));
+                NextCharacter();
+                ch = PeekCharacter();
+            }
+            else if (ch == '-')</span>
+            {
+<span style = "background-color:#fdd">                buf.push_back(static_cast&lt;CharType&gt;(ch));
+                NextCharacter();
+                ch = PeekCharacter();</span>
+            }
+
+            // First number of the exponent
+<span style = "background-color:#fdd">            if (ch &gt;= '0' &amp;&amp; ch &lt;= '9')</span>
+            {
+<span style = "background-color:#fdd">                buf.push_back(static_cast&lt;CharType&gt;(ch));
+                NextCharacter();
+                ch = PeekCharacter();
+            }</span>
+            else
+<span style = "background-color:#fdd">                return false;</span>
+
+            // The rest of the exponent
+<span style = "background-color:#fdd">            while (ch &gt;= '0' &amp;&amp; ch &lt;= '9')</span>
+            {
+<span style = "background-color:#fdd">                buf.push_back(static_cast&lt;CharType&gt;(ch));
+                NextCharacter();
+                ch = PeekCharacter();
+            }</span>
+
+            // The peeked character is not a number, so we can break from the loop and construct the number
+<span style = "background-color:#fdd">            break;
+        }</span>
+        else
+        {
+            // Not expected number character?
+<span style = "background-color:#fdd">            break;</span>
+        }
+<span style = "background-color:#fdd">    };</span>
+
+<span style = "background-color:#fdd">    buf.push_back('\0');
+    token.double_val = anystod(buf.data());
+    if (minus_sign)</span>
+    {
+<span style = "background-color:#fdd">        token.double_val = -token.double_val;</span>
+    }
+<span style = "background-color:#fdd">    token.kind = (JSON_Parser&lt;CharType&gt;::Token::TKN_NumberLiteral);</span>
+
+<span style = "background-color:#fdd">    return true;
+}</span>
+
+template&lt;typename CharType&gt;
+bool JSON_Parser&lt;CharType&gt;::CompleteComment(Token&amp; token)
+<span style = "background-color:#fdd">{</span>
+    // We already found a '/' character as the first of a token -- what kind of comment is it?
+
+<span style = "background-color:#fdd">    auto ch = NextCharacter();</span>
+
+<span style = "background-color:#fdd">    if (ch == eof&lt;CharType&gt;() || (ch != '/' &amp;&amp; ch != '*')) return false;</span>
+
+<span style = "background-color:#fdd">    if (ch == '/')</span>
+    {
+        // Line comment -- look for a newline or EOF to terminate.
+
+<span style = "background-color:#fdd">        ch = NextCharacter();</span>
+
+<span style = "background-color:#fdd">        while (ch != eof&lt;CharType&gt;() &amp;&amp; ch != '\n')</span>
+        {
+<span style = "background-color:#fdd">            ch = NextCharacter();
+        }
+    }</span>
+    else
+    {
+        // Block comment -- look for a terminating "*/" sequence.
+
+<span style = "background-color:#fdd">        ch = NextCharacter();</span>
+
+<span style = "background-color:#fdd">        while (true)</span>
+        {
+<span style = "background-color:#fdd">            if (ch == eof&lt;CharType&gt;()) return false;</span>
+
+<span style = "background-color:#fdd">            if (ch == '*')</span>
+            {
+<span style = "background-color:#fdd">                auto ch1 = PeekCharacter();</span>
+
+<span style = "background-color:#fdd">                if (ch1 == eof&lt;CharType&gt;()) return false;</span>
+
+<span style = "background-color:#fdd">                if (ch1 == '/')</span>
+                {
+                    // Consume the character
+<span style = "background-color:#fdd">                    NextCharacter();
+                    break;</span>
+                }
+
+<span style = "background-color:#fdd">                ch = ch1;</span>
+            }
+
+<span style = "background-color:#fdd">            ch = NextCharacter();
+        }</span>
+    }
+
+<span style = "background-color:#fdd">    token.kind = Token::TKN_Comment;</span>
+
+<span style = "background-color:#fdd">    return true;
+}</span>
+
+template&lt;typename CharType&gt;
+bool JSON_StringParser&lt;CharType&gt;::CompleteComment(typename JSON_Parser&lt;CharType&gt;::Token&amp; token)
+<span style = "background-color:#fdd">{</span>
+    // This function is specialized for the string parser, since we can be slightly more
+    // efficient in copying data from the input to the token: do a memcpy() rather than
+    // one character at a time.
+
+<span style = "background-color:#fdd">    auto ch = JSON_StringParser&lt;CharType&gt;::NextCharacter();</span>
+
+<span style = "background-color:#fdd">    if (ch == eof&lt;CharType&gt;() || (ch != '/' &amp;&amp; ch != '*')) return false;</span>
+
+<span style = "background-color:#fdd">    if (ch == '/')</span>
+    {
+        // Line comment -- look for a newline or EOF to terminate.
+
+<span style = "background-color:#fdd">        ch = JSON_StringParser&lt;CharType&gt;::NextCharacter();</span>
+
+<span style = "background-color:#fdd">        while (ch != eof&lt;CharType&gt;() &amp;&amp; ch != '\n')</span>
+        {
+<span style = "background-color:#fdd">            ch = JSON_StringParser&lt;CharType&gt;::NextCharacter();
+        }
+    }</span>
+    else
+    {
+        // Block comment -- look for a terminating "*/" sequence.
+
+<span style = "background-color:#fdd">        ch = JSON_StringParser&lt;CharType&gt;::NextCharacter();</span>
+
+<span style = "background-color:#fdd">        while (true)</span>
+        {
+<span style = "background-color:#fdd">            if (ch == eof&lt;CharType&gt;()) return false;</span>
+
+<span style = "background-color:#fdd">            if (ch == '*')</span>
+            {
+<span style = "background-color:#fdd">                ch = JSON_StringParser&lt;CharType&gt;::PeekCharacter();</span>
+
+<span style = "background-color:#fdd">                if (ch == eof&lt;CharType&gt;()) return false;</span>
+
+<span style = "background-color:#fdd">                if (ch == '/')</span>
+                {
+                    // Consume the character
+<span style = "background-color:#fdd">                    JSON_StringParser&lt;CharType&gt;::NextCharacter();
+                    break;</span>
+                }
+            }
+
+<span style = "background-color:#fdd">            ch = JSON_StringParser&lt;CharType&gt;::NextCharacter();
+        }</span>
+    }
+
+<span style = "background-color:#fdd">    token.kind = JSON_Parser&lt;CharType&gt;::Token::TKN_Comment;</span>
+
+<span style = "background-color:#fdd">    return true;
+}</span>
+
+void convert_append_unicode_code_unit(JSON_Parser&lt;utf16char&gt;::Token&amp; token, utf16string value)
+<span style = "background-color:#fdd">{
+    token.string_val.append(value);
+}</span>
+void convert_append_unicode_code_unit(JSON_Parser&lt;char&gt;::Token&amp; token, utf16string value)
+<span style = "background-color:#fdd">{
+    token.string_val.append(::utility::conversions::utf16_to_utf8(value));
+}</span>
+void convert_append_unicode_code_unit(JSON_Parser&lt;utf16char&gt;::Token&amp; token, utf16char value)
+<span style = "background-color:#fdd">{
+    token.string_val.push_back(value);
+}</span>
+void convert_append_unicode_code_unit(JSON_Parser&lt;char&gt;::Token&amp; token, utf16char value)
+<span style = "background-color:#fdd">{
+    utf16string utf16(reinterpret_cast&lt;utf16char*&gt;(&amp;value), 1);
+    token.string_val.append(::utility::conversions::utf16_to_utf8(utf16));
+}</span>
+
+template&lt;typename CharType&gt;
+int JSON_Parser&lt;CharType&gt;::convert_unicode_to_code_point()
+<span style = "background-color:#fdd">{</span>
+    // A four-hexdigit Unicode character.
+    // Transform into a 16 bit code point.
+<span style = "background-color:#fdd">    int decoded = 0;
+    for (int i = 0; i &lt; 4; ++i)</span>
+    {
+<span style = "background-color:#fdd">        auto ch = NextCharacter();
+        int ch_int = static_cast&lt;int&gt;(ch);
+        if (ch_int &lt; 0 || ch_int &gt; 127) return -1;</span>
+#ifdef _WIN32
+<span style = "background-color:#fdd">        const int isxdigitResult = _isxdigit_l(ch_int, utility::details::scoped_c_thread_locale::c_locale());</span>
+#else
+        const int isxdigitResult = isxdigit(ch_int);
+#endif
+<span style = "background-color:#fdd">        if (!isxdigitResult) return -1;</span>
+
+<span style = "background-color:#fdd">        int val = _hexval[static_cast&lt;size_t&gt;(ch_int)];</span>
+
+<span style = "background-color:#fdd">        _ASSERTE(val != -1);</span>
+
+        // Add the input char to the decoded number
+<span style = "background-color:#fdd">        decoded |= (val &lt;&lt; (4 * (3 - i)));
+    }
+    return decoded;
+}</span>
+
+#define H_SURROGATE_START 0xD800
+#define H_SURROGATE_END 0xDBFF
+
+template&lt;typename CharType&gt;
+inline bool JSON_Parser&lt;CharType&gt;::handle_unescape_char(Token&amp; token)
+<span style = "background-color:#fdd">{
+    token.has_unescape_symbol = true;</span>
+
+    // This function converts unescaped character pairs (e.g. "\t") into their ASCII or Unicode representations (e.g.
+    // tab sign) Also it handles \u + 4 hexadecimal digits
+<span style = "background-color:#fdd">    auto ch = NextCharacter();
+    switch (ch)</span>
+    {
+<span style = "background-color:#fdd">        case '\"': token.string_val.push_back('\"'); return true;
+        case '\\': token.string_val.push_back('\\'); return true;
+        case '/': token.string_val.push_back('/'); return true;
+        case 'b': token.string_val.push_back('\b'); return true;
+        case 'f': token.string_val.push_back('\f'); return true;
+        case 'r': token.string_val.push_back('\r'); return true;
+        case 'n': token.string_val.push_back('\n'); return true;
+        case 't': token.string_val.push_back('\t'); return true;</span>
+        case 'u':
+        {
+<span style = "background-color:#fdd">            int decoded = convert_unicode_to_code_point();
+            if (decoded == -1)</span>
+            {
+<span style = "background-color:#fdd">                return false;</span>
+            }
+
+            // handle multi-block characters that start with a high-surrogate
+<span style = "background-color:#fdd">            if (decoded &gt;= H_SURROGATE_START &amp;&amp; decoded &lt;= H_SURROGATE_END)</span>
+            {
+                // skip escape character '\u'
+<span style = "background-color:#fdd">                if (NextCharacter() != '\\' || NextCharacter() != 'u')</span>
+                {
+<span style = "background-color:#fdd">                    return false;</span>
+                }
+<span style = "background-color:#fdd">                int decoded2 = convert_unicode_to_code_point();</span>
+
+<span style = "background-color:#fdd">                if (decoded2 == -1)</span>
+                {
+<span style = "background-color:#fdd">                    return false;</span>
+                }
+
+<span style = "background-color:#fdd">                utf16string compoundUTF16 = {static_cast&lt;utf16char&gt;(decoded), static_cast&lt;utf16char&gt;(decoded2)};
+                convert_append_unicode_code_unit(token, compoundUTF16);</span>
+
+<span style = "background-color:#fdd">                return true;</span>
+            }
+
+            // Construct the character based on the decoded number
+<span style = "background-color:#fdd">            convert_append_unicode_code_unit(token, static_cast&lt;utf16char&gt;(decoded));</span>
+
+<span style = "background-color:#fdd">            return true;</span>
+        }
+<span style = "background-color:#fdd">        default: return false;</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+template&lt;typename CharType&gt;
+bool JSON_Parser&lt;CharType&gt;::CompleteStringLiteral(Token&amp; token)
+<span style = "background-color:#fdd">{
+    token.has_unescape_symbol = false;
+    auto ch = NextCharacter();
+    while (ch != '"')</span>
+    {
+<span style = "background-color:#fdd">        if (ch == '\\')</span>
+        {
+<span style = "background-color:#fdd">            handle_unescape_char(token);
+        }
+        else if (ch &gt;= CharType(0x0) &amp;&amp; ch &lt; CharType(0x20))</span>
+        {
+<span style = "background-color:#fdd">            return false;
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            if (ch == eof&lt;CharType&gt;()) return false;</span>
+
+<span style = "background-color:#fdd">            token.string_val.push_back(static_cast&lt;CharType&gt;(ch));</span>
+        }
+<span style = "background-color:#fdd">        ch = NextCharacter();
+    }</span>
+
+<span style = "background-color:#fdd">    if (ch == '"')</span>
+    {
+<span style = "background-color:#fdd">        token.kind = Token::TKN_StringLiteral;
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        return false;</span>
+    }
+
+<span style = "background-color:#fdd">    return true;
+}</span>
+
+template&lt;typename CharType&gt;
+bool JSON_StringParser&lt;CharType&gt;::CompleteStringLiteral(typename JSON_Parser&lt;CharType&gt;::Token&amp; token)
+<span style = "background-color:#fdd">{</span>
+    // This function is specialized for the string parser, since we can be slightly more
+    // efficient in copying data from the input to the token: do a memcpy() rather than
+    // one character at a time.
+
+<span style = "background-color:#fdd">    auto start = m_position;
+    token.has_unescape_symbol = false;</span>
+
+<span style = "background-color:#fdd">    auto ch = JSON_StringParser&lt;CharType&gt;::NextCharacter();</span>
+
+<span style = "background-color:#fdd">    while (ch != '"')</span>
+    {
+<span style = "background-color:#fdd">        if (ch == eof&lt;CharType&gt;()) return false;</span>
+
+<span style = "background-color:#fdd">        if (ch == '\\')</span>
+        {
+<span style = "background-color:#fdd">            const size_t numChars = m_position - start - 1;
+            const size_t prevSize = token.string_val.size();
+            token.string_val.resize(prevSize + numChars);
+            memcpy(const_cast&lt;CharType*&gt;(token.string_val.c_str() + prevSize), start, numChars * sizeof(CharType));</span>
+
+<span style = "background-color:#fdd">            if (!JSON_StringParser&lt;CharType&gt;::handle_unescape_char(token))</span>
+            {
+<span style = "background-color:#fdd">                return false;</span>
+            }
+
+            // Reset start position and continue.
+<span style = "background-color:#fdd">            start = m_position;
+        }
+        else if (ch &gt;= CharType(0x0) &amp;&amp; ch &lt; CharType(0x20))</span>
+        {
+<span style = "background-color:#fdd">            return false;</span>
+        }
+
+<span style = "background-color:#fdd">        ch = JSON_StringParser&lt;CharType&gt;::NextCharacter();
+    }</span>
+
+<span style = "background-color:#fdd">    const size_t numChars = m_position - start - 1;
+    const size_t prevSize = token.string_val.size();
+    token.string_val.resize(prevSize + numChars);
+    memcpy(const_cast&lt;CharType*&gt;(token.string_val.c_str() + prevSize), start, numChars * sizeof(CharType));</span>
+
+<span style = "background-color:#fdd">    token.kind = JSON_Parser&lt;CharType&gt;::Token::TKN_StringLiteral;</span>
+
+<span style = "background-color:#fdd">    return true;
+}</span>
+
+template&lt;typename CharType&gt;
+void JSON_Parser&lt;CharType&gt;::GetNextToken(typename JSON_Parser&lt;CharType&gt;::Token&amp; result)
+<span style = "background-color:#fdd">{</span>
+try_again:
+<span style = "background-color:#fdd">    auto ch = EatWhitespace();</span>
+
+<span style = "background-color:#fdd">    CreateToken(result, Token::TKN_EOF);</span>
+
+<span style = "background-color:#fdd">    if (ch == eof&lt;CharType&gt;()) return;</span>
+
+<span style = "background-color:#fdd">    switch (ch)</span>
+    {
+        case '{':
+        case '[':
+        {
+<span style = "background-color:#fdd">            if (++m_currentParsingDepth &gt; JSON_Parser&lt;CharType&gt;::maxParsingDepth)</span>
+            {
+<span style = "background-color:#fdd">                SetErrorCode(result, json_error::nesting);
+                break;</span>
+            }
+
+<span style = "background-color:#fdd">            typename JSON_Parser&lt;CharType&gt;::Token::Kind tk = ch == '{' ? Token::TKN_OpenBrace : Token::TKN_OpenBracket;
+            CreateToken(result, tk, result.start);
+            break;</span>
+        }
+        case '}':
+        case ']':
+        {
+<span style = "background-color:#fdd">            if ((signed int)(--m_currentParsingDepth) &lt; 0)</span>
+            {
+<span style = "background-color:#fdd">                SetErrorCode(result, json_error::mismatched_brances);
+                break;</span>
+            }
+
+<span style = "background-color:#fdd">            typename JSON_Parser&lt;CharType&gt;::Token::Kind tk =</span>
+                ch == '}' ? Token::TKN_CloseBrace : Token::TKN_CloseBracket;
+<span style = "background-color:#fdd">            CreateToken(result, tk, result.start);
+            break;</span>
+        }
+<span style = "background-color:#fdd">        case ',': CreateToken(result, Token::TKN_Comma, result.start); break;</span>
+
+<span style = "background-color:#fdd">        case ':': CreateToken(result, Token::TKN_Colon, result.start); break;</span>
+
+        case 't':
+<span style = "background-color:#fdd">            if (!CompleteKeywordTrue(result))</span>
+            {
+<span style = "background-color:#fdd">                SetErrorCode(result, json_error::malformed_literal);</span>
+            }
+<span style = "background-color:#fdd">            break;</span>
+        case 'f':
+<span style = "background-color:#fdd">            if (!CompleteKeywordFalse(result))</span>
+            {
+<span style = "background-color:#fdd">                SetErrorCode(result, json_error::malformed_literal);</span>
+            }
+<span style = "background-color:#fdd">            break;</span>
+        case 'n':
+<span style = "background-color:#fdd">            if (!CompleteKeywordNull(result))</span>
+            {
+<span style = "background-color:#fdd">                SetErrorCode(result, json_error::malformed_literal);</span>
+            }
+<span style = "background-color:#fdd">            break;</span>
+        case '/':
+<span style = "background-color:#fdd">            if (!CompleteComment(result))</span>
+            {
+<span style = "background-color:#fdd">                SetErrorCode(result, json_error::malformed_comment);
+                break;</span>
+            }
+            // For now, we're ignoring comments.
+<span style = "background-color:#fdd">            goto try_again;</span>
+        case '"':
+<span style = "background-color:#fdd">            if (!CompleteStringLiteral(result))</span>
+            {
+<span style = "background-color:#fdd">                SetErrorCode(result, json_error::malformed_string_literal);</span>
+            }
+<span style = "background-color:#fdd">            break;</span>
+
+        case '-':
+        case '0':
+        case '1':
+        case '2':
+        case '3':
+        case '4':
+        case '5':
+        case '6':
+        case '7':
+        case '8':
+        case '9':
+<span style = "background-color:#fdd">            if (!CompleteNumberLiteral(static_cast&lt;CharType&gt;(ch), result))</span>
+            {
+<span style = "background-color:#fdd">                SetErrorCode(result, json_error::malformed_numeric_literal);</span>
+            }
+<span style = "background-color:#fdd">            break;
+        default: SetErrorCode(result, json_error::malformed_token); break;</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+template&lt;typename CharType&gt;
+std::unique_ptr&lt;web::json::details::_Value&gt; JSON_Parser&lt;CharType&gt;::_ParseObject(
+    typename JSON_Parser&lt;CharType&gt;::Token&amp; tkn)
+<span style = "background-color:#fdd">{
+    auto obj = utility::details::make_unique&lt;web::json::details::_Object&gt;(g_keep_json_object_unsorted);
+    auto&amp; elems = obj-&gt;m_object.m_elements;</span>
+
+<span style = "background-color:#fdd">    GetNextToken(tkn);
+    if (tkn.m_error) goto error;</span>
+
+<span style = "background-color:#fdd">    if (tkn.kind != JSON_Parser&lt;CharType&gt;::Token::TKN_CloseBrace)</span>
+    {
+<span style = "background-color:#fdd">        while (true)</span>
+        {
+            // State 1: New field or end of object, looking for field name or closing brace
+<span style = "background-color:#fdd">            std::basic_string&lt;CharType&gt; fieldName;
+            switch (tkn.kind)</span>
+            {
+<span style = "background-color:#fdd">                case JSON_Parser&lt;CharType&gt;::Token::TKN_StringLiteral: fieldName = std::move(tkn.string_val); break;
+                default: goto error;</span>
+            }
+
+<span style = "background-color:#fdd">            GetNextToken(tkn);
+            if (tkn.m_error) goto error;</span>
+
+            // State 2: Looking for a colon.
+<span style = "background-color:#fdd">            if (tkn.kind != JSON_Parser&lt;CharType&gt;::Token::TKN_Colon) goto error;</span>
+
+<span style = "background-color:#fdd">            GetNextToken(tkn);
+            if (tkn.m_error) goto error;</span>
+
+                // State 3: Looking for an expression.
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">            auto fieldValue = _ParseValue(tkn);
+            auto type = fieldValue-&gt;type();
+            elems.emplace_back(utility::conversions::to_string_t(std::move(fieldName)),</span>
+                               json::value(std::move(fieldValue), type));
+#else
+            elems.emplace_back(utility::conversions::to_string_t(std::move(fieldName)), json::value(_ParseValue(tkn)));
+#endif
+<span style = "background-color:#fdd">            if (tkn.m_error) goto error;</span>
+
+            // State 4: Looking for a comma or a closing brace
+<span style = "background-color:#fdd">            switch (tkn.kind)</span>
+            {
+                case JSON_Parser&lt;CharType&gt;::Token::TKN_Comma:
+<span style = "background-color:#fdd">                    GetNextToken(tkn);
+                    if (tkn.m_error) goto error;
+                    break;
+                case JSON_Parser&lt;CharType&gt;::Token::TKN_CloseBrace: goto done;
+                default: goto error;</span>
+            }
+<span style = "background-color:#fdd">        }</span>
+    }
+
+<span style = "background-color:#fdd">done:
+    GetNextToken(tkn);
+    if (tkn.m_error) return utility::details::make_unique&lt;web::json::details::_Null&gt;();</span>
+
+<span style = "background-color:#fdd">    if (!g_keep_json_object_unsorted)</span>
+    {
+<span style = "background-color:#fdd">        ::std::sort(elems.begin(), elems.end(), json::object::compare_pairs);</span>
+    }
+
+<span style = "background-color:#fdd">    return std::unique_ptr&lt;web::json::details::_Value&gt;(obj.release());</span>
+
+<span style = "background-color:#fdd">error:
+    if (!tkn.m_error)</span>
+    {
+<span style = "background-color:#fdd">        SetErrorCode(tkn, json_error::malformed_object_literal);</span>
+    }
+<span style = "background-color:#fdd">    return utility::details::make_unique&lt;web::json::details::_Null&gt;();
+}</span>
+
+template&lt;typename CharType&gt;
+std::unique_ptr&lt;web::json::details::_Value&gt; JSON_Parser&lt;CharType&gt;::_ParseArray(
+    typename JSON_Parser&lt;CharType&gt;::Token&amp; tkn)
+<span style = "background-color:#fdd">{
+    GetNextToken(tkn);
+    if (tkn.m_error) return utility::details::make_unique&lt;web::json::details::_Null&gt;();</span>
+
+<span style = "background-color:#fdd">    auto result = utility::details::make_unique&lt;web::json::details::_Array&gt;();</span>
+
+<span style = "background-color:#fdd">    if (tkn.kind != JSON_Parser&lt;CharType&gt;::Token::TKN_CloseBracket)</span>
+    {
+<span style = "background-color:#fdd">        while (true)</span>
+        {
+            // State 1: Looking for an expression.
+<span style = "background-color:#fdd">            result-&gt;m_array.m_elements.emplace_back(ParseValue(tkn));
+            if (tkn.m_error) return utility::details::make_unique&lt;web::json::details::_Null&gt;();</span>
+
+            // State 4: Looking for a comma or a closing bracket
+<span style = "background-color:#fdd">            switch (tkn.kind)</span>
+            {
+                case JSON_Parser&lt;CharType&gt;::Token::TKN_Comma:
+<span style = "background-color:#fdd">                    GetNextToken(tkn);
+                    if (tkn.m_error) return utility::details::make_unique&lt;web::json::details::_Null&gt;();
+                    break;</span>
+                case JSON_Parser&lt;CharType&gt;::Token::TKN_CloseBracket:
+<span style = "background-color:#fdd">                    GetNextToken(tkn);
+                    if (tkn.m_error) return utility::details::make_unique&lt;web::json::details::_Null&gt;();
+                    return std::unique_ptr&lt;web::json::details::_Value&gt;(result.release());</span>
+                default:
+<span style = "background-color:#fdd">                    SetErrorCode(tkn, json_error::malformed_array_literal);
+                    return utility::details::make_unique&lt;web::json::details::_Null&gt;();</span>
+            }
+<span style = "background-color:#fdd">        }</span>
+    }
+
+<span style = "background-color:#fdd">    GetNextToken(tkn);
+    if (tkn.m_error) return utility::details::make_unique&lt;web::json::details::_Null&gt;();</span>
+
+<span style = "background-color:#fdd">    return std::unique_ptr&lt;web::json::details::_Value&gt;(result.release());
+}</span>
+
+template&lt;typename CharType&gt;
+std::unique_ptr&lt;web::json::details::_Value&gt; JSON_Parser&lt;CharType&gt;::_ParseValue(
+    typename JSON_Parser&lt;CharType&gt;::Token&amp; tkn)
+<span style = "background-color:#fdd">{</span>
+    typedef std::unique_ptr&lt;web::json::details::_Value&gt; Vptr;
+<span style = "background-color:#fdd">    switch (tkn.kind)</span>
+    {
+        case JSON_Parser&lt;CharType&gt;::Token::TKN_OpenBrace:
+        {
+<span style = "background-color:#fdd">            return _ParseObject(tkn);</span>
+        }
+        case JSON_Parser&lt;CharType&gt;::Token::TKN_OpenBracket:
+        {
+<span style = "background-color:#fdd">            return _ParseArray(tkn);</span>
+        }
+        case JSON_Parser&lt;CharType&gt;::Token::TKN_StringLiteral:
+        {
+<span style = "background-color:#fdd">            Vptr value = utility::details::make_unique&lt;web::json::details::_String&gt;(std::move(tkn.string_val),</span>
+                                                                                    tkn.has_unescape_symbol);
+<span style = "background-color:#fdd">            GetNextToken(tkn);
+            if (tkn.m_error) return utility::details::make_unique&lt;web::json::details::_Null&gt;();
+            return value;</span>
+        }
+        case JSON_Parser&lt;CharType&gt;::Token::TKN_IntegerLiteral:
+        {
+<span style = "background-color:#fdd">            Vptr value;
+            if (tkn.signed_number)
+                value = utility::details::make_unique&lt;web::json::details::_Number&gt;(tkn.int64_val);</span>
+            else
+<span style = "background-color:#fdd">                value = utility::details::make_unique&lt;web::json::details::_Number&gt;(tkn.uint64_val);</span>
+
+<span style = "background-color:#fdd">            GetNextToken(tkn);
+            if (tkn.m_error) return utility::details::make_unique&lt;web::json::details::_Null&gt;();
+            return value;</span>
+        }
+        case JSON_Parser&lt;CharType&gt;::Token::TKN_NumberLiteral:
+        {
+<span style = "background-color:#fdd">            Vptr value = utility::details::make_unique&lt;web::json::details::_Number&gt;(tkn.double_val);
+            GetNextToken(tkn);
+            if (tkn.m_error) return utility::details::make_unique&lt;web::json::details::_Null&gt;();
+            return value;</span>
+        }
+        case JSON_Parser&lt;CharType&gt;::Token::TKN_BooleanLiteral:
+        {
+<span style = "background-color:#fdd">            Vptr value = utility::details::make_unique&lt;web::json::details::_Boolean&gt;(tkn.boolean_val);
+            GetNextToken(tkn);
+            if (tkn.m_error) return utility::details::make_unique&lt;web::json::details::_Null&gt;();
+            return value;</span>
+        }
+        case JSON_Parser&lt;CharType&gt;::Token::TKN_NullLiteral:
+        {
+<span style = "background-color:#fdd">            GetNextToken(tkn);</span>
+            // Returning a null value whether or not an error occurred.
+<span style = "background-color:#fdd">            return utility::details::make_unique&lt;web::json::details::_Null&gt;();</span>
+        }
+        default:
+        {
+<span style = "background-color:#fdd">            SetErrorCode(tkn, json_error::malformed_token);
+            return utility::details::make_unique&lt;web::json::details::_Null&gt;();</span>
+        }
+    }
+<span style = "background-color:#fdd">}</span>
+
+} // namespace details
+} // namespace json
+} // namespace web
+
+template&lt;typename CharType&gt;
+static web::json::value _parse_stream(std::basic_istream&lt;CharType&gt;&amp; stream)
+<span style = "background-color:#fdd">{
+    web::json::details::JSON_StreamParser&lt;CharType&gt; parser(stream);
+    typename web::json::details::JSON_Parser&lt;CharType&gt;::Token tkn;</span>
+
+<span style = "background-color:#fdd">    parser.GetNextToken(tkn);
+    if (tkn.m_error)</span>
+    {
+<span style = "background-color:#fdd">        web::json::details::CreateException(tkn, utility::conversions::to_string_t(tkn.m_error.message()));</span>
+    }
+
+<span style = "background-color:#fdd">    auto value = parser.ParseValue(tkn);
+    if (tkn.m_error)</span>
+    {
+<span style = "background-color:#fdd">        web::json::details::CreateException(tkn, utility::conversions::to_string_t(tkn.m_error.message()));
+    }
+    else if (tkn.kind != web::json::details::JSON_Parser&lt;CharType&gt;::Token::TKN_EOF)</span>
+    {
+<span style = "background-color:#fdd">        web::json::details::CreateException(tkn,</span>
+                                            _XPLATSTR("Left-over characters in stream after parsing a JSON value"));
+    }
+<span style = "background-color:#fdd">    return value;
+}</span>
+
+template&lt;typename CharType&gt;
+static web::json::value _parse_stream(std::basic_istream&lt;CharType&gt;&amp; stream, std::error_code&amp; error)
+<span style = "background-color:#fdd">{
+    web::json::details::JSON_StreamParser&lt;CharType&gt; parser(stream);
+    typename web::json::details::JSON_Parser&lt;CharType&gt;::Token tkn;</span>
+
+<span style = "background-color:#fdd">    parser.GetNextToken(tkn);
+    if (tkn.m_error)</span>
+    {
+<span style = "background-color:#fdd">        error = std::move(tkn.m_error);
+        return web::json::value();</span>
+    }
+
+<span style = "background-color:#fdd">    auto returnObject = parser.ParseValue(tkn);
+    if (tkn.kind != web::json::details::JSON_Parser&lt;CharType&gt;::Token::TKN_EOF)</span>
+    {
+<span style = "background-color:#fdd">        web::json::details::SetErrorCode(tkn, web::json::details::json_error::left_over_character_in_stream);</span>
+    }
+
+<span style = "background-color:#fdd">    error = std::move(tkn.m_error);
+    return returnObject;
+}</span>
+
+template&lt;typename CharType&gt;
+static web::json::value _parse_string(const std::basic_string&lt;CharType&gt;&amp; str)
+<span style = "background-color:#fdd">{
+    web::json::details::JSON_StringParser&lt;CharType&gt; parser(str);
+    typename web::json::details::JSON_Parser&lt;CharType&gt;::Token tkn;</span>
+
+<span style = "background-color:#fdd">    parser.GetNextToken(tkn);
+    if (tkn.m_error)</span>
+    {
+<span style = "background-color:#fdd">        web::json::details::CreateException(tkn, utility::conversions::to_string_t(tkn.m_error.message()));</span>
+    }
+
+<span style = "background-color:#fdd">    auto value = parser.ParseValue(tkn);
+    if (tkn.m_error)</span>
+    {
+<span style = "background-color:#fdd">        web::json::details::CreateException(tkn, utility::conversions::to_string_t(tkn.m_error.message()));
+    }
+    else if (tkn.kind != web::json::details::JSON_Parser&lt;CharType&gt;::Token::TKN_EOF)</span>
+    {
+<span style = "background-color:#fdd">        web::json::details::CreateException(tkn,</span>
+                                            _XPLATSTR("Left-over characters in stream after parsing a JSON value"));
+    }
+<span style = "background-color:#fdd">    return value;
+}</span>
+
+template&lt;typename CharType&gt;
+static web::json::value _parse_string(const std::basic_string&lt;CharType&gt;&amp; str, std::error_code&amp; error)
+<span style = "background-color:#fdd">{
+    web::json::details::JSON_StringParser&lt;CharType&gt; parser(str);
+    typename web::json::details::JSON_Parser&lt;CharType&gt;::Token tkn;</span>
+
+<span style = "background-color:#fdd">    parser.GetNextToken(tkn);
+    if (tkn.m_error)</span>
+    {
+<span style = "background-color:#fdd">        error = std::move(tkn.m_error);
+        return web::json::value();</span>
+    }
+
+<span style = "background-color:#fdd">    auto returnObject = parser.ParseValue(tkn);
+    if (tkn.kind != web::json::details::JSON_Parser&lt;CharType&gt;::Token::TKN_EOF)</span>
+    {
+<span style = "background-color:#fdd">        returnObject = web::json::value();
+        web::json::details::SetErrorCode(tkn, web::json::details::json_error::left_over_character_in_stream);</span>
+    }
+
+<span style = "background-color:#fdd">    error = std::move(tkn.m_error);
+    return returnObject;
+}</span>
+
+<span style = "background-color:#fdd">web::json::value web::json::value::parse(const utility::string_t&amp; str) { return _parse_string(str); }</span>
+
+web::json::value web::json::value::parse(const utility::string_t&amp; str, std::error_code&amp; error)
+<span style = "background-color:#fdd">{
+    return _parse_string(str, error);
+}</span>
+
+<span style = "background-color:#fdd">web::json::value web::json::value::parse(utility::istream_t&amp; stream) { return _parse_stream(stream); }</span>
+
+web::json::value web::json::value::parse(utility::istream_t&amp; stream, std::error_code&amp; error)
+<span style = "background-color:#fdd">{
+    return _parse_stream(stream, error);
+}</span>
+
+#ifdef _WIN32
+<span style = "background-color:#fdd">web::json::value web::json::value::parse(const std::string&amp; str) { return _parse_string(str); }</span>
+
+web::json::value web::json::value::parse(const std::string&amp; str, std::error_code&amp; error)
+<span style = "background-color:#fdd">{
+    return _parse_string(str, error);
+}</span>
+
+<span style = "background-color:#fdd">web::json::value web::json::value::parse(std::istream&amp; stream) { return _parse_stream(stream); }</span>
+
+web::json::value web::json::value::parse(std::istream&amp; stream, std::error_code&amp; error)
+<span style = "background-color:#fdd">{
+    return _parse_stream(stream, error);
+}</span>
+#endif</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

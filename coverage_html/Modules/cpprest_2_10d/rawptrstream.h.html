@@ -1,0 +1,624 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>rawptrstream.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * This file defines a stream buffer that is based on a raw pointer and block size. Unlike a vector-based
+ * stream buffer, the buffer cannot be expanded or contracted, it has a fixed capacity.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#pragma once
+
+#ifndef CASA_RAWPTR_STREAMS_H
+#define CASA_RAWPTR_STREAMS_H
+
+#include "cpprest/astreambuf.h"
+#include "cpprest/streams.h"
+#include "pplx/pplxtasks.h"
+#include &lt;algorithm&gt;
+#include &lt;iterator&gt;
+#include &lt;queue&gt;
+#include &lt;vector&gt;
+
+namespace Concurrency
+{
+namespace streams
+{
+// Forward declarations
+template&lt;typename _CharType&gt;
+class rawptr_buffer;
+
+namespace details
+{
+/// &lt;summary&gt;
+/// The basic_rawptr_buffer class serves as a memory-based steam buffer that supports both writing and reading
+/// sequences of characters to and from a fixed-size block.
+/// &lt;/summary&gt;
+template&lt;typename _CharType&gt;
+class basic_rawptr_buffer : public streams::details::streambuf_state_manager&lt;_CharType&gt;
+{
+public:
+    typedef _CharType char_type;
+
+    typedef typename basic_streambuf&lt;_CharType&gt;::traits traits;
+    typedef typename basic_streambuf&lt;_CharType&gt;::int_type int_type;
+    typedef typename basic_streambuf&lt;_CharType&gt;::pos_type pos_type;
+    typedef typename basic_streambuf&lt;_CharType&gt;::off_type off_type;
+
+    /// &lt;summary&gt;
+    /// Constructor
+    /// &lt;/summary&gt;
+    basic_rawptr_buffer()
+        : streambuf_state_manager&lt;_CharType&gt;(std::ios_base::in | std::ios_base::out)
+        , m_data(nullptr)
+        , m_current_position(0)
+        , m_size(0)
+    {
+    }
+
+    /// &lt;summary&gt;
+    /// Destructor
+    /// &lt;/summary&gt;
+    virtual ~basic_rawptr_buffer()
+<span style = "background-color:#fdd">    {
+        this-&gt;_close_read();
+        this-&gt;_close_write();
+    }</span>
+
+protected:
+    /// &lt;summary&gt;
+    /// can_seek is used to determine whether a stream buffer supports seeking.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    virtual bool can_seek() const { return this-&gt;is_open(); }</span>
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;has_size&lt;c/&gt; is used to determine whether a stream buffer supports size().
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    virtual bool has_size() const { return this-&gt;is_open(); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the size of the stream, if known. Calls to &lt;c&gt;has_size&lt;/c&gt; will determine whether
+    /// the result of &lt;c&gt;size&lt;/c&gt; can be relied on.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    virtual utility::size64_t size() const { return utility::size64_t(m_size); }</span>
+
+    /// &lt;summary&gt;
+    /// Get the stream buffer size, if one has been set.
+    /// &lt;/summary&gt;
+    /// &lt;param name="direction"&gt;The direction of buffering (in or out)&lt;/param&gt;
+    /// &lt;remarks&gt;An implementation that does not support buffering will always return '0'.&lt;/remarks&gt;
+<span style = "background-color:#fdd">    virtual size_t buffer_size(std::ios_base::openmode = std::ios_base::in) const { return 0; }</span>
+
+    /// &lt;summary&gt;
+    /// Set the stream buffer implementation to buffer or not buffer.
+    /// &lt;/summary&gt;
+    /// &lt;param name="size"&gt;The size to use for internal buffering, 0 if no buffering should be done.&lt;/param&gt;
+    /// &lt;param name="direction"&gt;The direction of buffering (in or out)&lt;/param&gt;
+    /// &lt;remarks&gt;An implementation that does not support buffering will silently ignore calls to this function and it
+    /// will not have
+    ///          any effect on what is returned by subsequent calls to buffer_size().&lt;/remarks&gt;
+<span style = "background-color:#fdd">    virtual void set_buffer_size(size_t, std::ios_base::openmode = std::ios_base::in) { return; }</span>
+
+    /// &lt;summary&gt;
+    /// For any input stream, in_avail returns the number of characters that are immediately available
+    /// to be consumed without blocking. May be used in conjunction with &lt;cref="::sbumpc method"/&gt; and sgetn() to
+    /// read data without incurring the overhead of using tasks.
+    /// &lt;/summary&gt;
+    virtual size_t in_avail() const
+<span style = "background-color:#fdd">    {</span>
+        // See the comment in seek around the restiction that we do not allow read head to
+        // seek beyond the current size.
+<span style = "background-color:#fdd">        _ASSERTE(m_current_position &lt;= m_size);</span>
+
+<span style = "background-color:#fdd">        msl::safeint3::SafeInt&lt;size_t&gt; readhead(m_current_position);
+        msl::safeint3::SafeInt&lt;size_t&gt; writeend(m_size);
+        return (size_t)(writeend - readhead);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Closes the stream buffer, preventing further read or write operations.
+    /// &lt;/summary&gt;
+    /// &lt;param name="mode"&gt;The I/O mode (in or out) to close for.&lt;/param&gt;
+    virtual pplx::task&lt;void&gt; close(std::ios_base::openmode mode)
+<span style = "background-color:#fdd">    {
+        if (mode &amp; std::ios_base::in)</span>
+        {
+<span style = "background-color:#fdd">            this-&gt;_close_read().get(); // Safe to call get() here.</span>
+        }
+
+<span style = "background-color:#fdd">        if (mode &amp; std::ios_base::out)</span>
+        {
+<span style = "background-color:#fdd">            this-&gt;_close_write().get(); // Safe to call get() here.</span>
+        }
+
+<span style = "background-color:#fdd">        if (!this-&gt;can_read() &amp;&amp; !this-&gt;can_write())</span>
+        {
+<span style = "background-color:#fdd">            m_data = nullptr;</span>
+        }
+
+        // Exceptions will be propagated out of _close_read or _close_write
+<span style = "background-color:#fdd">        return pplx::task_from_result();
+    }</span>
+
+<span style = "background-color:#fdd">    virtual pplx::task&lt;bool&gt; _sync() { return pplx::task_from_result(true); }</span>
+
+    virtual pplx::task&lt;int_type&gt; _putc(_CharType ch)
+<span style = "background-color:#fdd">    {
+        if (m_current_position &gt;= m_size) return pplx::task_from_result&lt;int_type&gt;(traits::eof());
+        int_type retVal = (this-&gt;write(&amp;ch, 1) == 1) ? static_cast&lt;int_type&gt;(ch) : traits::eof();
+        return pplx::task_from_result&lt;int_type&gt;(retVal);
+    }</span>
+
+    virtual pplx::task&lt;size_t&gt; _putn(const _CharType* ptr, size_t count)
+<span style = "background-color:#fdd">    {
+        msl::safeint3::SafeInt&lt;size_t&gt; newSize = msl::safeint3::SafeInt&lt;size_t&gt;(count) + m_current_position;
+        if (newSize &gt; m_size)
+            return pplx::task_from_exception&lt;size_t&gt;(</span>
+                std::make_exception_ptr(std::runtime_error("Writing past the end of the buffer")));
+<span style = "background-color:#fdd">        return pplx::task_from_result&lt;size_t&gt;(this-&gt;write(ptr, count));
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Allocates a contiguous memory block and returns it.
+    /// &lt;/summary&gt;
+    /// &lt;param name="count"&gt;The number of characters to allocate.&lt;/param&gt;
+    /// &lt;returns&gt;A pointer to a block to write to, null if the stream buffer implementation does not support
+    /// alloc/commit.&lt;/returns&gt;
+    _CharType* _alloc(size_t count)
+<span style = "background-color:#fdd">    {
+        if (!this-&gt;can_write()) return nullptr;</span>
+
+<span style = "background-color:#fdd">        msl::safeint3::SafeInt&lt;size_t&gt; readhead(m_current_position);
+        msl::safeint3::SafeInt&lt;size_t&gt; writeend(m_size);
+        size_t space_left = (size_t)(writeend - readhead);</span>
+
+<span style = "background-color:#fdd">        if (space_left &lt; count) return nullptr;</span>
+
+        // Let the caller copy the data
+<span style = "background-color:#fdd">        return (_CharType*)(m_data + m_current_position);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Submits a block already allocated by the stream buffer.
+    /// &lt;/summary&gt;
+    /// &lt;param name="count"&gt;The number of characters to be committed.&lt;/param&gt;
+    void _commit(size_t actual)
+<span style = "background-color:#fdd">    {</span>
+        // Update the write position and satisfy any pending reads
+<span style = "background-color:#fdd">        update_current_position(m_current_position + actual);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Gets a pointer to the next already allocated contiguous block of data.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;A reference to a pointer variable that will hold the address of the block on success.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The number of contiguous characters available at the address in 'ptr'.&lt;/param&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the operation succeeded, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// A return of false does not necessarily indicate that a subsequent read operation would fail, only that
+    /// there is no block to return immediately or that the stream buffer does not support the operation.
+    /// The stream buffer may not de-allocate the block until &lt;see cref="::release method" /&gt; is called.
+    /// If the end of the stream is reached, the function will return &lt;c&gt;true&lt;/c&gt;, a null pointer, and a count of zero;
+    /// a subsequent read will not succeed.
+    /// &lt;/remarks&gt;
+    virtual bool acquire(_Out_ _CharType*&amp; ptr, _Out_ size_t&amp; count)
+<span style = "background-color:#fdd">    {
+        count = 0;
+        ptr = nullptr;</span>
+
+<span style = "background-color:#fdd">        if (!this-&gt;can_read()) return false;</span>
+
+<span style = "background-color:#fdd">        count = in_avail();</span>
+
+<span style = "background-color:#fdd">        if (count &gt; 0)</span>
+        {
+<span style = "background-color:#fdd">            ptr = (_CharType*)(m_data + m_current_position);
+            return true;
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            ptr = nullptr;</span>
+
+            // Can only be open for read OR write, not both. If there is no data then
+            // we have reached the end of the stream so indicate such with true.
+<span style = "background-color:#fdd">            return true;</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    /// &lt;summary&gt;
+    /// Releases a block of data acquired using &lt;see cref="::acquire method"/&gt;. This frees the stream buffer to
+    /// de-allocate the memory, if it so desires. Move the read position ahead by the count.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;A pointer to the block of data to be released.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The number of characters that were read.&lt;/param&gt;
+    virtual void release(_Out_writes_opt_(count) _CharType* ptr, _In_ size_t count)
+<span style = "background-color:#fdd">    {
+        if (ptr != nullptr) update_current_position(m_current_position + count);
+    }</span>
+
+    virtual pplx::task&lt;size_t&gt; _getn(_Out_writes_(count) _CharType* ptr, _In_ size_t count)
+<span style = "background-color:#fdd">    {
+        return pplx::task_from_result(this-&gt;read(ptr, count));
+    }</span>
+
+    size_t _sgetn(_Out_writes_(count) _CharType* ptr, _In_ size_t count) { return this-&gt;read(ptr, count); }
+
+    virtual size_t _scopy(_Out_writes_(count) _CharType* ptr, _In_ size_t count)
+<span style = "background-color:#fdd">    {
+        return this-&gt;read(ptr, count, false);
+    }</span>
+
+<span style = "background-color:#fdd">    virtual pplx::task&lt;int_type&gt; _bumpc() { return pplx::task_from_result(this-&gt;read_byte(true)); }</span>
+
+<span style = "background-color:#fdd">    virtual int_type _sbumpc() { return this-&gt;read_byte(true); }</span>
+
+<span style = "background-color:#fdd">    virtual pplx::task&lt;int_type&gt; _getc() { return pplx::task_from_result(this-&gt;read_byte(false)); }</span>
+
+<span style = "background-color:#fdd">    int_type _sgetc() { return this-&gt;read_byte(false); }</span>
+
+    virtual pplx::task&lt;int_type&gt; _nextc()
+<span style = "background-color:#fdd">    {
+        if (m_current_position &gt;= m_size - 1) return pplx::task_from_result(basic_streambuf&lt;_CharType&gt;::traits::eof());</span>
+
+<span style = "background-color:#fdd">        this-&gt;read_byte(true);
+        return pplx::task_from_result(this-&gt;read_byte(false));
+    }</span>
+
+    virtual pplx::task&lt;int_type&gt; _ungetc()
+<span style = "background-color:#fdd">    {
+        auto pos = seekoff(-1, std::ios_base::cur, std::ios_base::in);
+        if (pos == (pos_type)traits::eof()) return pplx::task_from_result(traits::eof());
+        return this-&gt;getc();
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the current read or write position in the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="direction"&gt;The I/O direction to seek (see remarks)&lt;/param&gt;
+    /// &lt;returns&gt;The current position. EOF if the operation fails.&lt;/returns&gt;
+    /// &lt;remarks&gt;Some streams may have separate write and read cursors.
+    ///          For such streams, the direction parameter defines whether to move the read or the write
+    ///          cursor.&lt;/remarks&gt;
+    virtual pos_type getpos(std::ios_base::openmode mode) const
+<span style = "background-color:#fdd">    {
+        if (((mode &amp; std::ios_base::in) &amp;&amp; !this-&gt;can_read()) || ((mode &amp; std::ios_base::out) &amp;&amp; !this-&gt;can_write()))
+            return static_cast&lt;pos_type&gt;(traits::eof());</span>
+
+<span style = "background-color:#fdd">        if (mode == std::ios_base::in)
+            return (pos_type)m_current_position;
+        else if (mode == std::ios_base::out)
+            return (pos_type)m_current_position;</span>
+        else
+<span style = "background-color:#fdd">            return (pos_type)traits::eof();
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Seeks to the given position.
+    /// &lt;/summary&gt;
+    /// &lt;param name="pos"&gt;The offset from the beginning of the stream.&lt;/param&gt;
+    /// &lt;param name="direction"&gt;The I/O direction to seek (see remarks).&lt;/param&gt;
+    /// &lt;returns&gt;The position. EOF if the operation fails.&lt;/returns&gt;
+    /// &lt;remarks&gt;Some streams may have separate write and read cursors. For such streams, the direction parameter
+    /// defines whether to move the read or the write cursor.&lt;/remarks&gt;
+    virtual pos_type seekpos(pos_type position, std::ios_base::openmode mode)
+<span style = "background-color:#fdd">    {
+        pos_type beg(0);
+        pos_type end(m_size);</span>
+
+<span style = "background-color:#fdd">        if (position &gt;= beg)</span>
+        {
+<span style = "background-color:#fdd">            auto pos = static_cast&lt;size_t&gt;(position);</span>
+
+            // Read head
+<span style = "background-color:#fdd">            if ((mode &amp; std::ios_base::in) &amp;&amp; this-&gt;can_read())</span>
+            {
+<span style = "background-color:#fdd">                if (position &lt;= end)</span>
+                {
+                    // We do not allow reads to seek beyond the end or before the start position.
+<span style = "background-color:#fdd">                    update_current_position(pos);
+                    return static_cast&lt;pos_type&gt;(m_current_position);</span>
+                }
+            }
+
+            // Write head
+<span style = "background-color:#fdd">            if ((mode &amp; std::ios_base::out) &amp;&amp; this-&gt;can_write())</span>
+            {
+                // Update write head and satisfy read requests if any
+<span style = "background-color:#fdd">                update_current_position(pos);</span>
+
+<span style = "background-color:#fdd">                return static_cast&lt;pos_type&gt;(m_current_position);</span>
+            }
+        }
+
+<span style = "background-color:#fdd">        return static_cast&lt;pos_type&gt;(traits::eof());
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Seeks to a position given by a relative offset.
+    /// &lt;/summary&gt;
+    /// &lt;param name="offset"&gt;The relative position to seek to&lt;/param&gt;
+    /// &lt;param name="way"&gt;The starting point (beginning, end, current) for the seek.&lt;/param&gt;
+    /// &lt;param name="mode"&gt;The I/O direction to seek (see remarks)&lt;/param&gt;
+    /// &lt;returns&gt;The position. EOF if the operation fails.&lt;/returns&gt;
+    /// &lt;remarks&gt;Some streams may have separate write and read cursors.
+    ///          For such streams, the mode parameter defines whether to move the read or the write cursor.&lt;/remarks&gt;
+    virtual pos_type seekoff(off_type offset, std::ios_base::seekdir way, std::ios_base::openmode mode)
+<span style = "background-color:#fdd">    {
+        pos_type beg = 0;
+        pos_type cur = static_cast&lt;pos_type&gt;(m_current_position);
+        pos_type end = static_cast&lt;pos_type&gt;(m_size);</span>
+
+<span style = "background-color:#fdd">        switch (way)</span>
+        {
+<span style = "background-color:#fdd">            case std::ios_base::beg: return seekpos(beg + offset, mode);</span>
+
+<span style = "background-color:#fdd">            case std::ios_base::cur: return seekpos(cur + offset, mode);</span>
+
+<span style = "background-color:#fdd">            case std::ios_base::end: return seekpos(end + offset, mode);</span>
+
+<span style = "background-color:#fdd">            default: return static_cast&lt;pos_type&gt;(traits::eof());</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+private:
+    template&lt;typename _CharType1&gt;
+    friend class ::concurrency::streams::rawptr_buffer;
+
+    /// &lt;summary&gt;
+    /// Constructor
+    /// &lt;/summary&gt;
+    /// &lt;param name="data"&gt;The address (pointer to) the memory block.&lt;/param&gt;
+    /// &lt;param name="size"&gt;The memory block size, measured in number of characters.&lt;/param&gt;
+    basic_rawptr_buffer(const _CharType* data, size_t size)
+        : streambuf_state_manager&lt;_CharType&gt;(std::ios_base::in)
+        , m_data(const_cast&lt;_CharType*&gt;(data))
+        , m_size(size)
+        , m_current_position(0)
+    {
+        validate_mode(std::ios_base::in);
+    }
+
+    /// &lt;summary&gt;
+    /// Constructor
+    /// &lt;/summary&gt;
+    /// &lt;param name="data"&gt;The address (pointer to) the memory block.&lt;/param&gt;
+    /// &lt;param name="size"&gt;The memory block size, measured in number of characters.&lt;/param&gt;
+    /// &lt;param name="mode"&gt;The stream mode (in, out, etc.).&lt;/param&gt;
+    basic_rawptr_buffer(_CharType* data, size_t size, std::ios_base::openmode mode)
+<span style = "background-color:#fdd">        : streambuf_state_manager&lt;_CharType&gt;(mode), m_data(data), m_size(size), m_current_position(0)
+    {
+        validate_mode(mode);
+    }</span>
+
+    static void validate_mode(std::ios_base::openmode mode)
+<span style = "background-color:#fdd">    {</span>
+        // Disallow simultaneous use of the stream buffer for writing and reading.
+<span style = "background-color:#fdd">        if ((mode &amp; std::ios_base::in) &amp;&amp; (mode &amp; std::ios_base::out))
+            throw std::invalid_argument("this combination of modes on raw pointer stream not supported");
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Determines if the request can be satisfied.
+    /// &lt;/summary&gt;
+    bool can_satisfy(size_t) const
+<span style = "background-color:#fdd">    {</span>
+        // We can always satisfy a read, at least partially, unless the
+        // read position is at the very end of the buffer.
+<span style = "background-color:#fdd">        return (in_avail() &gt; 0);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Reads a byte from the stream and returns it as int_type.
+    /// Note: This routine must only be called if can_satisfy() returns true.
+    /// &lt;/summary&gt;
+    int_type read_byte(bool advance = true)
+<span style = "background-color:#fdd">    {</span>
+        _CharType value;
+<span style = "background-color:#fdd">        auto read_size = this-&gt;read(&amp;value, 1, advance);
+        return read_size == 1 ? static_cast&lt;int_type&gt;(value) : traits::eof();
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Reads up to count characters into ptr and returns the count of characters copied.
+    /// The return value (actual characters copied) could be &lt;= count.
+    /// Note: This routine must only be called if can_satisfy() returns true.
+    /// &lt;/summary&gt;
+    size_t read(_Out_writes_(count) _CharType* ptr, _In_ size_t count, bool advance = true)
+<span style = "background-color:#fdd">    {
+        if (!can_satisfy(count)) return 0;</span>
+
+<span style = "background-color:#fdd">        msl::safeint3::SafeInt&lt;size_t&gt; request_size(count);
+        msl::safeint3::SafeInt&lt;size_t&gt; read_size = request_size.Min(in_avail());</span>
+
+<span style = "background-color:#fdd">        size_t newPos = m_current_position + read_size;</span>
+
+<span style = "background-color:#fdd">        auto readBegin = m_data + m_current_position;
+        auto readEnd = m_data + newPos;</span>
+
+#if defined(_ITERATOR_DEBUG_LEVEL) &amp;&amp; _ITERATOR_DEBUG_LEVEL != 0
+        // Avoid warning C4996: Use checked iterators under SECURE_SCL
+<span style = "background-color:#fdd">        std::copy(readBegin, readEnd, stdext::checked_array_iterator&lt;_CharType*&gt;(ptr, count));</span>
+#else
+        std::copy(readBegin, readEnd, ptr);
+#endif // _WIN32
+
+<span style = "background-color:#fdd">        if (advance)</span>
+        {
+<span style = "background-color:#fdd">            update_current_position(newPos);</span>
+        }
+
+<span style = "background-color:#fdd">        return (size_t)read_size;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Write count characters from the ptr into the stream buffer
+    /// &lt;/summary&gt;
+    size_t write(const _CharType* ptr, size_t count)
+<span style = "background-color:#fdd">    {
+        if (!this-&gt;can_write() || (count == 0)) return 0;</span>
+
+<span style = "background-color:#fdd">        msl::safeint3::SafeInt&lt;size_t&gt; newSize = msl::safeint3::SafeInt&lt;size_t&gt;(count) + m_current_position;</span>
+
+<span style = "background-color:#fdd">        if (newSize &gt; m_size) throw std::runtime_error("Writing past the end of the buffer");</span>
+
+            // Copy the data
+#if defined(_ITERATOR_DEBUG_LEVEL) &amp;&amp; _ITERATOR_DEBUG_LEVEL != 0
+        // Avoid warning C4996: Use checked iterators under SECURE_SCL
+<span style = "background-color:#fdd">        std::copy(ptr, ptr + count, stdext::checked_array_iterator&lt;_CharType*&gt;(m_data, m_size, m_current_position));</span>
+#else
+        std::copy(ptr, ptr + count, m_data + m_current_position);
+#endif // _WIN32
+
+        // Update write head and satisfy pending reads if any
+<span style = "background-color:#fdd">        update_current_position(newSize);</span>
+
+<span style = "background-color:#fdd">        return count;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Updates the current read or write position
+    /// &lt;/summary&gt;
+    void update_current_position(size_t newPos)
+<span style = "background-color:#fdd">    {</span>
+        // The new write head
+<span style = "background-color:#fdd">        m_current_position = newPos;</span>
+
+<span style = "background-color:#fdd">        _ASSERTE(m_current_position &lt;= m_size);
+    }</span>
+
+    // The actual memory block
+    _CharType* m_data;
+
+    // The size of the memory block
+    size_t m_size;
+
+    // Read/write head
+    size_t m_current_position;
+};
+
+} // namespace details
+
+/// &lt;summary&gt;
+/// The &lt;c&gt;rawptr_buffer&lt;/c&gt; class serves as a memory-based stream buffer that supports reading
+/// sequences of characters to or from a fixed-size block. Note that it cannot be used simultaneously for reading as
+/// well as writing.
+/// &lt;/summary&gt;
+/// &lt;typeparam name="_CharType"&gt;
+/// The data type of the basic element of the &lt;c&gt;rawptr_buffer&lt;/c&gt;.
+/// &lt;/typeparam&gt;
+template&lt;typename _CharType&gt;
+class rawptr_buffer : public streambuf&lt;_CharType&gt;
+{
+public:
+    typedef _CharType char_type;
+
+    /// &lt;summary&gt;
+    /// Create a rawptr_buffer given a pointer to a memory block and the size of the block.
+    /// &lt;/summary&gt;
+    /// &lt;param name="data"&gt;The address (pointer to) the memory block.&lt;/param&gt;
+    /// &lt;param name="size"&gt;The memory block size, measured in number of characters.&lt;/param&gt;
+    rawptr_buffer(const char_type* data, size_t size)
+        : streambuf&lt;char_type&gt;(std::shared_ptr&lt;details::basic_rawptr_buffer&lt;char_type&gt;&gt;(
+              new details::basic_rawptr_buffer&lt;char_type&gt;(data, size)))
+    {
+    }
+
+    /// &lt;summary&gt;
+    /// Create a rawptr_buffer given a pointer to a memory block and the size of the block.
+    /// &lt;/summary&gt;
+    /// &lt;param name="data"&gt;The address (pointer to) the memory block.&lt;/param&gt;
+    /// &lt;param name="size"&gt;The memory block size, measured in number of characters.&lt;/param&gt;
+    rawptr_buffer(char_type* data, size_t size, std::ios_base::openmode mode = std::ios::out)
+<span style = "background-color:#fdd">        : streambuf&lt;char_type&gt;(std::shared_ptr&lt;details::basic_rawptr_buffer&lt;char_type&gt;&gt;(</span>
+              new details::basic_rawptr_buffer&lt;char_type&gt;(data, size, mode)))
+<span style = "background-color:#fdd">    {
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Default constructor.
+    /// &lt;/summary&gt;
+    rawptr_buffer() {}
+};
+
+/// &lt;summary&gt;
+/// The rawptr_stream class is used to create memory-backed streams that support writing or reading
+/// sequences of characters to / from a fixed-size block.
+/// &lt;/summary&gt;
+/// &lt;typeparam name="_CharType"&gt;
+/// The data type of the basic element of the &lt;c&gt;rawptr_stream&lt;/c&gt;.
+/// &lt;/typeparam&gt;
+template&lt;typename _CharType&gt;
+class rawptr_stream
+{
+public:
+    typedef _CharType char_type;
+    typedef rawptr_buffer&lt;_CharType&gt; buffer_type;
+
+    /// &lt;summary&gt;
+    /// Create a rawptr-stream given a pointer to a read-only memory block and the size of the block.
+    /// &lt;/summary&gt;
+    /// &lt;param name="data"&gt;The address (pointer to) the memory block.&lt;/param&gt;
+    /// &lt;param name="size"&gt;The memory block size, measured in number of characters.&lt;/param&gt;
+    /// &lt;returns&gt;An opened input stream.&lt;/returns&gt;
+    static concurrency::streams::basic_istream&lt;char_type&gt; open_istream(const char_type* data, size_t size)
+    {
+        return concurrency::streams::basic_istream&lt;char_type&gt;(buffer_type(data, size));
+    }
+
+    /// &lt;summary&gt;
+    /// Create a rawptr-stream given a pointer to a writable memory block and the size of the block.
+    /// &lt;/summary&gt;
+    /// &lt;param name="data"&gt;The address (pointer to) the memory block.&lt;/param&gt;
+    /// &lt;param name="size"&gt;The memory block size, measured in number of characters.&lt;/param&gt;
+    /// &lt;returns&gt;An opened input stream.&lt;/returns&gt;
+    static concurrency::streams::basic_istream&lt;char_type&gt; open_istream(char_type* data, size_t size)
+    {
+        return concurrency::streams::basic_istream&lt;char_type&gt;(buffer_type(data, size, std::ios::in));
+    }
+
+    /// &lt;summary&gt;
+    /// Create a rawptr-stream given a pointer to a writable memory block and the size of the block.
+    /// &lt;/summary&gt;
+    /// &lt;param name="data"&gt;The address (pointer to) the memory block.&lt;/param&gt;
+    /// &lt;param name="size"&gt;The memory block size, measured in number of characters.&lt;/param&gt;
+    /// &lt;returns&gt;An opened output stream.&lt;/returns&gt;
+    static concurrency::streams::basic_ostream&lt;char_type&gt; open_ostream(char_type* data, size_t size)
+    {
+        return concurrency::streams::basic_ostream&lt;char_type&gt;(buffer_type(data, size, std::ios::out));
+    }
+};
+
+} // namespace streams
+} // namespace Concurrency
+
+#endif</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

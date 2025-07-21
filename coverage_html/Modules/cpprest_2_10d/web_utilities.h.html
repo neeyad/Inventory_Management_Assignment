@@ -1,0 +1,251 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>web_utilities.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * utility classes used by the different web:: clients
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#pragma once
+
+#include "cpprest/asyncrt_utils.h"
+#include "cpprest/uri.h"
+
+namespace web
+{
+namespace details
+{
+class zero_memory_deleter
+{
+public:
+    _ASYNCRTIMP void operator()(::utility::string_t* data) const;
+};
+typedef std::unique_ptr&lt;::utility::string_t, zero_memory_deleter&gt; plaintext_string;
+
+#ifdef _WIN32
+#if _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+#ifdef __cplusplus_winrt
+class winrt_encryption
+{
+public:
+    winrt_encryption() = default;
+    _ASYNCRTIMP winrt_encryption(const std::wstring&amp; data);
+    _ASYNCRTIMP plaintext_string decrypt() const;
+
+private:
+    ::pplx::task&lt;Windows::Storage::Streams::IBuffer ^&gt; m_buffer;
+};
+#else  // ^^^ __cplusplus_winrt ^^^ // vvv !__cplusplus_winrt vvv
+class win32_encryption
+{
+public:
+<span style = "background-color:#fdd">    win32_encryption() = default;</span>
+    _ASYNCRTIMP win32_encryption(const std::wstring&amp; data);
+    _ASYNCRTIMP ~win32_encryption();
+    _ASYNCRTIMP plaintext_string decrypt() const;
+
+private:
+    std::vector&lt;char&gt; m_buffer;
+    size_t m_numCharacters;
+};
+#endif // __cplusplus_winrt
+#endif // _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+#endif // _WIN32
+} // namespace details
+
+/// &lt;summary&gt;
+/// Represents a set of user credentials (user name and password) to be used
+/// for authentication.
+/// &lt;/summary&gt;
+class credentials
+{
+public:
+    /// &lt;summary&gt;
+    /// Constructs an empty set of credentials without a user name or password.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    credentials() {}</span>
+
+    /// &lt;summary&gt;
+    /// Constructs credentials from given user name and password.
+    /// &lt;/summary&gt;
+    /// &lt;param name="username"&gt;User name as a string.&lt;/param&gt;
+    /// &lt;param name="password"&gt;Password as a string.&lt;/param&gt;
+    credentials(utility::string_t username, const utility::string_t&amp; password)
+        : m_username(std::move(username)), m_password(password)
+    {
+    }
+
+    /// &lt;summary&gt;
+    /// The user name associated with the credentials.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A string containing the user name.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; username() const { return m_username; }</span>
+
+    /// &lt;summary&gt;
+    /// The password for the user name associated with the credentials.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A string containing the password.&lt;/returns&gt;
+    CASABLANCA_DEPRECATED(
+        "This API is deprecated for security reasons to avoid unnecessary password copies stored in plaintext.")
+    utility::string_t password() const
+    {
+#if defined(_WIN32) &amp;&amp; _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+        return utility::string_t(*m_password.decrypt());
+#else
+        return m_password;
+#endif
+    }
+
+    /// &lt;summary&gt;
+    /// Checks if credentials have been set
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if user name and password is set, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool is_set() const { return !m_username.empty(); }</span>
+
+    details::plaintext_string _internal_decrypt() const
+<span style = "background-color:#fdd">    {</span>
+        // Encryption APIs not supported on XP
+#if defined(_WIN32) &amp;&amp; _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+<span style = "background-color:#fdd">        return m_password.decrypt();</span>
+#else
+        return details::plaintext_string(new ::utility::string_t(m_password));
+#endif
+<span style = "background-color:#fdd">    }</span>
+
+private:
+    ::utility::string_t m_username;
+
+#if defined(_WIN32) &amp;&amp; _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+#if defined(__cplusplus_winrt)
+    details::winrt_encryption m_password;
+#else
+    details::win32_encryption m_password;
+#endif
+#else
+    ::utility::string_t m_password;
+#endif
+};
+
+/// &lt;summary&gt;
+/// web_proxy represents the concept of the web proxy, which can be auto-discovered,
+/// disabled, or specified explicitly by the user.
+/// &lt;/summary&gt;
+class web_proxy
+{
+    enum web_proxy_mode_internal
+    {
+        use_default_,
+        use_auto_discovery_,
+        disabled_,
+        user_provided_
+    };
+
+public:
+    enum web_proxy_mode
+    {
+        use_default = use_default_,
+        use_auto_discovery = use_auto_discovery_,
+        disabled = disabled_
+    };
+
+    /// &lt;summary&gt;
+    /// Constructs a proxy with the default settings.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    web_proxy() : m_address(), m_mode(use_default_) {}</span>
+
+    /// &lt;summary&gt;
+    /// Creates a proxy with specified mode.
+    /// &lt;/summary&gt;
+    /// &lt;param name="mode"&gt;Mode to use.&lt;/param&gt;
+    web_proxy(web_proxy_mode mode) : m_address(), m_mode(static_cast&lt;web_proxy_mode_internal&gt;(mode)) {}
+
+    /// &lt;summary&gt;
+    /// Creates a proxy explicitly with provided address.
+    /// &lt;/summary&gt;
+    /// &lt;param name="address"&gt;Proxy URI to use.&lt;/param&gt;
+    web_proxy(uri address) : m_address(address), m_mode(user_provided_) {}
+
+    /// &lt;summary&gt;
+    /// Gets this proxy's URI address. Returns an empty URI if not explicitly set by user.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A reference to this proxy's URI.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const uri&amp; address() const { return m_address; }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the credentials used for authentication with this proxy.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Credentials to for this proxy.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const web::credentials&amp; credentials() const { return m_credentials; }</span>
+
+    /// &lt;summary&gt;
+    /// Sets the credentials to use for authentication with this proxy.
+    /// &lt;/summary&gt;
+    /// &lt;param name="cred"&gt;Credentials to use for this proxy.&lt;/param&gt;
+    void set_credentials(web::credentials cred)
+    {
+        if (m_mode == disabled_)
+        {
+            throw std::invalid_argument("Cannot attach credentials to a disabled proxy");
+        }
+        m_credentials = std::move(cred);
+    }
+
+    /// &lt;summary&gt;
+    /// Checks if this proxy was constructed with default settings.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;True if default, false otherwise.&lt;/param&gt;
+<span style = "background-color:#fdd">    bool is_default() const { return m_mode == use_default_; }</span>
+
+    /// &lt;summary&gt;
+    /// Checks if using a proxy is disabled.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;True if disabled, false otherwise.&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool is_disabled() const { return m_mode == disabled_; }</span>
+
+    /// &lt;summary&gt;
+    /// Checks if the auto discovery protocol, WPAD, is to be used.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;True if auto discovery enabled, false otherwise.&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool is_auto_discovery() const { return m_mode == use_auto_discovery_; }</span>
+
+    /// &lt;summary&gt;
+    /// Checks if a proxy address is explicitly specified by the user.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;True if a proxy address was explicitly specified, false otherwise.&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool is_specified() const { return m_mode == user_provided_; }</span>
+
+private:
+    web::uri m_address;
+    web_proxy_mode_internal m_mode;
+    web::credentials m_credentials;
+};
+
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

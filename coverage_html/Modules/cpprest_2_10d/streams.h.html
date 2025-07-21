@@ -1,0 +1,1787 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>streams.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * Asynchronous I/O: streams API, used for formatted input and output, based on unformatted I/O using stream buffers
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#pragma once
+
+#ifndef CASA_STREAMS_H
+#define CASA_STREAMS_H
+
+#include "cpprest/astreambuf.h"
+#include &lt;iosfwd&gt;
+#include &lt;cstdio&gt;
+
+namespace Concurrency
+{
+namespace streams
+{
+template&lt;typename CharType&gt;
+class basic_ostream;
+template&lt;typename CharType&gt;
+class basic_istream;
+
+namespace details
+{
+template&lt;typename CharType&gt;
+class basic_ostream_helper
+{
+public:
+<span style = "background-color:#fdd">    basic_ostream_helper(streams::streambuf&lt;CharType&gt; buffer) : m_buffer(buffer) {}</span>
+
+<span style = "background-color:#fdd">    ~basic_ostream_helper() {}</span>
+
+private:
+    template&lt;typename CharType1&gt;
+    friend class streams::basic_ostream;
+
+    concurrency::streams::streambuf&lt;CharType&gt; m_buffer;
+};
+
+template&lt;typename CharType&gt;
+class basic_istream_helper
+{
+public:
+<span style = "background-color:#fdd">    basic_istream_helper(streams::streambuf&lt;CharType&gt; buffer) : m_buffer(buffer) {}</span>
+
+<span style = "background-color:#fdd">    ~basic_istream_helper() {}</span>
+
+private:
+    template&lt;typename CharType1&gt;
+    friend class streams::basic_istream;
+
+    concurrency::streams::streambuf&lt;CharType&gt; m_buffer;
+};
+
+template&lt;typename CharType&gt;
+struct Value2StringFormatter
+{
+    template&lt;typename T&gt;
+    static std::basic_string&lt;CharType&gt; format(const T&amp; val)
+    {
+        std::basic_ostringstream&lt;CharType&gt; ss;
+        ss &lt;&lt; val;
+        return ss.str();
+    }
+};
+
+template&lt;&gt;
+struct Value2StringFormatter&lt;uint8_t&gt;
+{
+    template&lt;typename T&gt;
+    static std::basic_string&lt;uint8_t&gt; format(const T&amp; val)
+    {
+        std::basic_ostringstream&lt;char&gt; ss;
+        ss &lt;&lt; val;
+        return reinterpret_cast&lt;const uint8_t*&gt;(ss.str().c_str());
+    }
+
+    static std::basic_string&lt;uint8_t&gt; format(const utf16string&amp; val)
+    {
+        return format(utility::conversions::utf16_to_utf8(val));
+    }
+};
+
+static const char* _in_stream_msg = "stream not set up for input of data";
+static const char* _in_streambuf_msg = "stream buffer not set up for input of data";
+static const char* _out_stream_msg = "stream not set up for output of data";
+static const char* _out_streambuf_msg = "stream buffer not set up for output of data";
+} // namespace details
+
+/// &lt;summary&gt;
+/// Base interface for all asynchronous output streams.
+/// &lt;/summary&gt;
+template&lt;typename CharType&gt;
+class basic_ostream
+{
+public:
+    typedef char_traits&lt;CharType&gt; traits;
+    typedef typename traits::int_type int_type;
+    typedef typename traits::pos_type pos_type;
+    typedef typename traits::off_type off_type;
+
+    /// &lt;summary&gt;
+    /// Default constructor
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    basic_ostream() {}</span>
+
+    /// &lt;summary&gt;
+    /// Copy constructor
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;The source object&lt;/param&gt;
+<span style = "background-color:#fdd">    basic_ostream(const basic_ostream&amp; other) : m_helper(other.m_helper) {}</span>
+
+    /// &lt;summary&gt;
+    /// Assignment operator
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;The source object&lt;/param&gt;
+    /// &lt;returns&gt;A reference to the stream object that contains the result of the assignment.&lt;/returns&gt;
+    basic_ostream&amp; operator=(const basic_ostream&amp; other)
+<span style = "background-color:#fdd">    {
+        m_helper = other.m_helper;
+        return *this;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Constructor
+    /// &lt;/summary&gt;
+    /// &lt;param name="buffer"&gt;A stream buffer.&lt;/param&gt;
+    basic_ostream(streams::streambuf&lt;CharType&gt; buffer)
+<span style = "background-color:#fdd">        : m_helper(std::make_shared&lt;details::basic_ostream_helper&lt;CharType&gt;&gt;(buffer))
+    {
+        _verify_and_throw(details::_out_streambuf_msg);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Close the stream, preventing further write operations.
+    /// &lt;/summary&gt;
+    pplx::task&lt;void&gt; close() const
+<span style = "background-color:#fdd">    {
+        return is_valid() ? helper()-&gt;m_buffer.close(std::ios_base::out) : pplx::task_from_result();
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Close the stream with exception, preventing further write operations.
+    /// &lt;/summary&gt;
+    /// &lt;param name="eptr"&gt;Pointer to the exception.&lt;/param&gt;
+    pplx::task&lt;void&gt; close(std::exception_ptr eptr) const
+<span style = "background-color:#fdd">    {
+        return is_valid() ? helper()-&gt;m_buffer.close(std::ios_base::out, eptr) : pplx::task_from_result();
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Put a single character into the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ch"&gt;A character&lt;/param&gt;
+    pplx::task&lt;int_type&gt; write(CharType ch) const
+    {
+        pplx::task&lt;int_type&gt; result;
+        if (!_verify_and_return_task(details::_out_stream_msg, result)) return result;
+        return helper()-&gt;m_buffer.putc(ch);
+    }
+
+    /// &lt;summary&gt;
+    /// Write a single value of "blittable" type T into the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="value"&gt;A value of type T.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This is not a replacement for a proper binary serialization solution, but it may
+    /// form the foundation for one. Writing data bit-wise to a stream is a primitive
+    /// operation of binary serialization.
+    /// Currently, no attention is paid to byte order. All data is written in the platform's
+    /// native byte order, which means little-endian on all platforms that have been tested.
+    /// This function is only available for streams using a single-byte character size.
+    /// &lt;/remarks&gt;
+    template&lt;typename T&gt;
+    CASABLANCA_DEPRECATED(
+        "Unsafe API that will be removed in future releases, use one of the other write overloads instead.")
+    pplx::task&lt;size_t&gt; write(T value) const
+    {
+        static_assert(sizeof(CharType) == 1, "binary write is only supported for single-byte streams");
+        static_assert(std::is_trivial&lt;T&gt;::value, "unsafe to use with non-trivial types");
+
+        pplx::task&lt;size_t&gt; result;
+        if (!_verify_and_return_task(details::_out_stream_msg, result)) return result;
+
+        auto copy = std::make_shared&lt;T&gt;(std::move(value));
+        return helper()
+            -&gt;m_buffer.putn_nocopy((CharType*)copy.get(), sizeof(T))
+            .then([copy](pplx::task&lt;size_t&gt; op) -&gt; size_t { return op.get(); });
+    }
+
+    /// &lt;summary&gt;
+    /// Write a number of characters from a given stream buffer into the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="source"&gt;A source stream buffer.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The number of characters to write.&lt;/param&gt;
+    pplx::task&lt;size_t&gt; write(streams::streambuf&lt;CharType&gt; source, size_t count) const
+    {
+        pplx::task&lt;size_t&gt; result;
+        if (!_verify_and_return_task(details::_out_stream_msg, result)) return result;
+        if (!source.can_read())
+            return pplx::task_from_exception&lt;size_t&gt;(
+                std::make_exception_ptr(std::runtime_error("source buffer not set up for input of data")));
+
+        if (count == 0) return pplx::task_from_result((size_t)0);
+
+        auto buffer = helper()-&gt;m_buffer;
+        auto data = buffer.alloc(count);
+
+        if (data != nullptr)
+        {
+            auto post_read = [buffer](pplx::task&lt;size_t&gt; op) -&gt; pplx::task&lt;size_t&gt; {
+                auto b = buffer;
+                b.commit(op.get());
+                return op;
+            };
+            return source.getn(data, count).then(post_read);
+        }
+        else
+        {
+            size_t available = 0;
+
+            const bool acquired = source.acquire(data, available);
+            if (available &gt;= count)
+            {
+                auto post_write = [source, data](pplx::task&lt;size_t&gt; op) -&gt; pplx::task&lt;size_t&gt; {
+                    auto s = source;
+                    s.release(data, op.get());
+                    return op;
+                };
+                return buffer.putn_nocopy(data, count).then(post_write);
+            }
+            else
+            {
+                // Always have to release if acquire returned true.
+                if (acquired)
+                {
+                    source.release(data, 0);
+                }
+
+                std::shared_ptr&lt;CharType&gt; buf(new CharType[count], [](CharType* buf) { delete[] buf; });
+
+                auto post_write = [buf](pplx::task&lt;size_t&gt; op) -&gt; pplx::task&lt;size_t&gt; { return op; };
+                auto post_read = [buf, post_write, buffer](pplx::task&lt;size_t&gt; op) -&gt; pplx::task&lt;size_t&gt; {
+                    auto b = buffer;
+                    return b.putn_nocopy(buf.get(), op.get()).then(post_write);
+                };
+
+                return source.getn(buf.get(), count).then(post_read);
+            }
+        }
+    }
+
+    /// &lt;summary&gt;
+    /// Write the specified string to the output stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="str"&gt;Input string.&lt;/param&gt;
+    pplx::task&lt;size_t&gt; print(const std::basic_string&lt;CharType&gt;&amp; str) const
+    {
+        pplx::task&lt;size_t&gt; result;
+        if (!_verify_and_return_task(details::_out_stream_msg, result)) return result;
+
+        if (str.empty())
+        {
+            return pplx::task_from_result&lt;size_t&gt;(0);
+        }
+        else
+        {
+            auto sharedStr = std::make_shared&lt;std::basic_string&lt;CharType&gt;&gt;(str);
+            return helper()-&gt;m_buffer.putn_nocopy(sharedStr-&gt;c_str(), sharedStr-&gt;size()).then([sharedStr](size_t size) {
+                return size;
+            });
+        }
+    }
+
+    /// &lt;summary&gt;
+    /// Write a value of type &lt;c&gt;T&lt;/c&gt; to the output stream.
+    /// &lt;/summary&gt;
+    /// &lt;typeparam name="T"&gt;
+    /// The data type of the object to be written to the stream
+    /// &lt;/typeparam&gt;
+    /// &lt;param name="val"&gt;Input object.&lt;/param&gt;
+    template&lt;typename T&gt;
+    pplx::task&lt;size_t&gt; print(const T&amp; val) const
+    {
+        pplx::task&lt;size_t&gt; result;
+        if (!_verify_and_return_task(details::_out_stream_msg, result)) return result;
+        // TODO in the future this could be improved to have Value2StringFormatter avoid another unnecessary copy
+        // by putting the string on the heap before calling the print string overload.
+        return print(details::Value2StringFormatter&lt;CharType&gt;::format(val));
+    }
+
+    /// &lt;summary&gt;
+    /// Write a value of type &lt;c&gt;T&lt;/c&gt; to the output stream and append a newline character.
+    /// &lt;/summary&gt;
+    /// &lt;typeparam name="T"&gt;
+    /// The data type of the object to be written to the stream
+    /// &lt;/typeparam&gt;
+    /// &lt;param name="val"&gt;Input object.&lt;/param&gt;
+    template&lt;typename T&gt;
+    pplx::task&lt;size_t&gt; print_line(const T&amp; val) const
+    {
+        pplx::task&lt;size_t&gt; result;
+        if (!_verify_and_return_task(details::_out_stream_msg, result)) return result;
+        auto str = details::Value2StringFormatter&lt;CharType&gt;::format(val);
+        str.push_back(CharType('\n'));
+        return print(str);
+    }
+
+    /// &lt;summary&gt;
+    /// Flush any buffered output data.
+    /// &lt;/summary&gt;
+    pplx::task&lt;void&gt; flush() const
+    {
+        pplx::task&lt;void&gt; result;
+        if (!_verify_and_return_task(details::_out_stream_msg, result)) return result;
+        return helper()-&gt;m_buffer.sync();
+    }
+
+    /// &lt;summary&gt;
+    /// Seeks to the specified write position.
+    /// &lt;/summary&gt;
+    /// &lt;param name="pos"&gt;An offset relative to the beginning of the stream.&lt;/param&gt;
+    /// &lt;returns&gt;The new position in the stream.&lt;/returns&gt;
+    pos_type seek(pos_type pos) const
+    {
+        _verify_and_throw(details::_out_stream_msg);
+        return helper()-&gt;m_buffer.seekpos(pos, std::ios_base::out);
+    }
+
+    /// &lt;summary&gt;
+    /// Seeks to the specified write position.
+    /// &lt;/summary&gt;
+    /// &lt;param name="off"&gt;An offset relative to the beginning, current write position, or the end of the stream.&lt;/param&gt;
+    /// &lt;param name="way"&gt;The starting point (beginning, current, end) for the seek.&lt;/param&gt;
+    /// &lt;returns&gt;The new position in the stream.&lt;/returns&gt;
+    pos_type seek(off_type off, std::ios_base::seekdir way) const
+    {
+        _verify_and_throw(details::_out_stream_msg);
+        return helper()-&gt;m_buffer.seekoff(off, way, std::ios_base::out);
+    }
+
+    /// &lt;summary&gt;
+    /// Get the current write position, i.e. the offset from the beginning of the stream.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The current write position.&lt;/returns&gt;
+    pos_type tell() const
+    {
+        _verify_and_throw(details::_out_stream_msg);
+        return helper()-&gt;m_buffer.getpos(std::ios_base::out);
+    }
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;can_seek&lt;c/&gt; is used to determine whether the stream supports seeking.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the stream supports seeking, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    bool can_seek() const { return is_valid() &amp;&amp; m_helper-&gt;m_buffer.can_seek(); }
+
+    /// &lt;summary&gt;
+    /// Test whether the stream has been initialized with a valid stream buffer.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the stream has been initialized with a valid stream buffer, &lt;c&gt;false&lt;/c&gt;
+    /// otherwise.&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool is_valid() const { return (m_helper != nullptr) &amp;&amp; ((bool)m_helper-&gt;m_buffer); }</span>
+
+    /// &lt;summary&gt;
+    /// Test whether the stream has been initialized or not.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    operator bool() const { return is_valid(); }</span>
+
+    /// &lt;summary&gt;
+    /// Test whether the stream is open for writing.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the stream is open for writing, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    bool is_open() const { return is_valid() &amp;&amp; m_helper-&gt;m_buffer.can_write(); }
+
+    /// &lt;summary&gt;
+    /// Get the underlying stream buffer.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The underlying stream buffer.&lt;/returns&gt;
+<span style = "background-color:#fdd">    concurrency::streams::streambuf&lt;CharType&gt; streambuf() const { return helper()-&gt;m_buffer; }</span>
+
+protected:
+    void set_helper(std::shared_ptr&lt;details::basic_ostream_helper&lt;CharType&gt;&gt; helper) { m_helper = helper; }
+
+private:
+    template&lt;typename T&gt;
+    bool _verify_and_return_task(const char* msg, pplx::task&lt;T&gt;&amp; tsk) const
+    {
+        auto buffer = helper()-&gt;m_buffer;
+        if (!(buffer.exception() == nullptr))
+        {
+            tsk = pplx::task_from_exception&lt;T&gt;(buffer.exception());
+            return false;
+        }
+        if (!buffer.can_write())
+        {
+            tsk = pplx::task_from_exception&lt;T&gt;(std::make_exception_ptr(std::runtime_error(msg)));
+            return false;
+        }
+        return true;
+    }
+
+    void _verify_and_throw(const char* msg) const
+<span style = "background-color:#fdd">    {
+        auto buffer = helper()-&gt;m_buffer;
+        if (!(buffer.exception() == nullptr)) std::rethrow_exception(buffer.exception());
+        if (!buffer.can_write()) throw std::runtime_error(msg);
+    }</span>
+
+    std::shared_ptr&lt;details::basic_ostream_helper&lt;CharType&gt;&gt; helper() const
+<span style = "background-color:#fdd">    {
+        if (!m_helper) throw std::logic_error("uninitialized stream object");
+        return m_helper;
+    }</span>
+
+    std::shared_ptr&lt;details::basic_ostream_helper&lt;CharType&gt;&gt; m_helper;
+};
+
+template&lt;typename int_type&gt;
+struct _type_parser_integral_traits
+{
+    typedef std::false_type _is_integral;
+    typedef std::false_type _is_unsigned;
+};
+
+#ifdef _WIN32
+#define _INT_TRAIT(_t, _low, _high)                                                                                    \
+    template&lt;&gt;                                                                                                         \
+    struct _type_parser_integral_traits&lt;_t&gt;                                                                            \
+    {                                                                                                                  \
+        typedef std::true_type _is_integral;                                                                           \
+        typedef std::false_type _is_unsigned;                                                                          \
+        static const int64_t _min = _low;                                                                              \
+        static const int64_t _max = _high;                                                                             \
+    };
+#define _UINT_TRAIT(_t, _low, _high)                                                                                   \
+    template&lt;&gt;                                                                                                         \
+    struct _type_parser_integral_traits&lt;_t&gt;                                                                            \
+    {                                                                                                                  \
+        typedef std::true_type _is_integral;                                                                           \
+        typedef std::true_type _is_unsigned;                                                                           \
+        static const uint64_t _max = _high;                                                                            \
+    };
+
+_INT_TRAIT(char, INT8_MIN, INT8_MAX)
+_INT_TRAIT(signed char, INT8_MIN, INT8_MAX)
+_INT_TRAIT(short, INT16_MIN, INT16_MAX)
+#if defined(_NATIVE_WCHAR_T_DEFINED)
+_INT_TRAIT(wchar_t, WCHAR_MIN, WCHAR_MAX)
+#endif
+_INT_TRAIT(int, INT32_MIN, INT32_MAX)
+_INT_TRAIT(long, LONG_MIN, LONG_MAX)
+_INT_TRAIT(long long, LLONG_MIN, LLONG_MAX)
+_UINT_TRAIT(unsigned char, UINT8_MIN, UINT8_MAX)
+_UINT_TRAIT(unsigned short, UINT16_MIN, UINT16_MAX)
+_UINT_TRAIT(unsigned int, UINT32_MIN, UINT32_MAX)
+_UINT_TRAIT(unsigned long, ULONG_MIN, ULONG_MAX)
+_UINT_TRAIT(unsigned long long, ULLONG_MIN, ULLONG_MAX)
+#else
+#define _INT_TRAIT(_t)                                                                                                 \
+    template&lt;&gt;                                                                                                         \
+    struct _type_parser_integral_traits&lt;_t&gt;                                                                            \
+    {                                                                                                                  \
+        typedef std::true_type _is_integral;                                                                           \
+        typedef std::false_type _is_unsigned;                                                                          \
+        static const int64_t _min = (std::numeric_limits&lt;_t&gt;::min)();                                                  \
+        static const int64_t _max = (std::numeric_limits&lt;_t&gt;::max)();                                                  \
+    };
+#define _UINT_TRAIT(_t)                                                                                                \
+    template&lt;&gt;                                                                                                         \
+    struct _type_parser_integral_traits&lt;_t&gt;                                                                            \
+    {                                                                                                                  \
+        typedef std::true_type _is_integral;                                                                           \
+        typedef std::true_type _is_unsigned;                                                                           \
+        static const uint64_t _max = (std::numeric_limits&lt;_t&gt;::max)();                                                 \
+    };
+
+_INT_TRAIT(char)
+_INT_TRAIT(signed char)
+_INT_TRAIT(short)
+_INT_TRAIT(utf16char)
+_INT_TRAIT(int)
+_INT_TRAIT(long)
+_INT_TRAIT(long long)
+_UINT_TRAIT(unsigned char)
+_UINT_TRAIT(unsigned short)
+_UINT_TRAIT(unsigned int)
+_UINT_TRAIT(unsigned long)
+_UINT_TRAIT(unsigned long long)
+#endif
+
+template&lt;typename CharType&gt;
+class _type_parser_base
+{
+public:
+    typedef char_traits&lt;CharType&gt; traits;
+    typedef typename traits::int_type int_type;
+
+    _type_parser_base() {}
+
+protected:
+    // Aid in parsing input: skipping whitespace characters.
+    static pplx::task&lt;void&gt; _skip_whitespace(streams::streambuf&lt;CharType&gt; buffer);
+
+    // Aid in parsing input: peek at a character at a time, call type-specific code to examine, extract value when done.
+    // &lt;remark&gt;AcceptFunctor should model std::function&lt;bool(std::shared_ptr&lt;X&gt;, int_type)&gt;&lt;/remark&gt;
+    // &lt;remark&gt;ExtractFunctor should model std::function&lt;pplx::task&lt;ReturnType&gt;(std::shared_ptr&lt;X&gt;)&gt;&lt;/remark&gt;
+    template&lt;typename StateType, typename ReturnType, typename AcceptFunctor, typename ExtractFunctor&gt;
+    static pplx::task&lt;ReturnType&gt; _parse_input(streams::streambuf&lt;CharType&gt; buffer,
+                                               AcceptFunctor accept_character,
+                                               ExtractFunctor extract);
+};
+
+/// &lt;summary&gt;
+/// Class used to handle asynchronous parsing for basic_istream::extract. To support new
+/// types create a new template specialization and implement the parse function.
+/// &lt;/summary&gt;
+template&lt;typename CharType, typename T&gt;
+class type_parser
+{
+public:
+    static pplx::task&lt;T&gt; parse(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        typedef typename _type_parser_integral_traits&lt;T&gt;::_is_integral ii;
+        typedef typename _type_parser_integral_traits&lt;T&gt;::_is_unsigned ui;
+
+        static_assert(ii::value || !ui::value, "type is not supported for extraction from a stream");
+
+        return _parse(buffer, ii {}, ui {});
+    }
+
+private:
+    static pplx::task&lt;T&gt; _parse(streams::streambuf&lt;CharType&gt; buffer, std::false_type, std::false_type)
+    {
+        _parse_floating_point(buffer);
+    }
+
+    static pplx::task&lt;T&gt; _parse(streams::streambuf&lt;CharType&gt; buffer, std::true_type, std::false_type)
+    {
+        return type_parser&lt;CharType, int64_t&gt;::parse(buffer).then([](pplx::task&lt;int64_t&gt; op) -&gt; T {
+            int64_t val = op.get();
+            if (val &lt;= _type_parser_integral_traits&lt;T&gt;::_max &amp;&amp; val &gt;= _type_parser_integral_traits&lt;T&gt;::_min)
+                return (T)val;
+            else
+                throw std::range_error("input out of range for target type");
+        });
+    }
+
+    static pplx::task&lt;T&gt; _parse(streams::streambuf&lt;CharType&gt; buffer, std::true_type, std::true_type)
+    {
+        return type_parser&lt;CharType, uint64_t&gt;::parse(buffer).then([](pplx::task&lt;uint64_t&gt; op) -&gt; T {
+            uint64_t val = op.get();
+            if (val &lt;= _type_parser_integral_traits&lt;T&gt;::_max)
+                return (T)val;
+            else
+                throw std::range_error("input out of range for target type");
+        });
+    }
+};
+
+/// &lt;summary&gt;
+/// Base interface for all asynchronous input streams.
+/// &lt;/summary&gt;
+template&lt;typename CharType&gt;
+class basic_istream
+{
+public:
+    typedef char_traits&lt;CharType&gt; traits;
+    typedef typename traits::int_type int_type;
+    typedef typename traits::pos_type pos_type;
+    typedef typename traits::off_type off_type;
+
+    /// &lt;summary&gt;
+    /// Default constructor
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    basic_istream() {}</span>
+
+    /// &lt;summary&gt;
+    /// Constructor
+    /// &lt;/summary&gt;
+    /// &lt;typeparam name="CharType"&gt;
+    /// The data type of the basic element of the stream.
+    /// &lt;/typeparam&gt;
+    /// &lt;param name="buffer"&gt;A stream buffer.&lt;/param&gt;
+    template&lt;class AlterCharType&gt;
+    basic_istream(streams::streambuf&lt;AlterCharType&gt; buffer)
+<span style = "background-color:#fdd">        : m_helper(std::make_shared&lt;details::basic_istream_helper&lt;CharType&gt;&gt;(std::move(buffer)))</span>
+    {
+<span style = "background-color:#fdd">        _verify_and_throw(details::_in_streambuf_msg);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Copy constructor
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;The source object&lt;/param&gt;
+<span style = "background-color:#fdd">    basic_istream(const basic_istream&amp; other) : m_helper(other.m_helper) {}</span>
+
+    /// &lt;summary&gt;
+    /// Assignment operator
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;The source object&lt;/param&gt;
+    /// &lt;returns&gt;A reference to the stream object that contains the result of the assignment.&lt;/returns&gt;
+    basic_istream&amp; operator=(const basic_istream&amp; other)
+<span style = "background-color:#fdd">    {
+        m_helper = other.m_helper;
+        return *this;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Close the stream, preventing further read operations.
+    /// &lt;/summary&gt;
+    pplx::task&lt;void&gt; close() const
+    {
+        return is_valid() ? helper()-&gt;m_buffer.close(std::ios_base::in) : pplx::task_from_result();
+    }
+
+    /// &lt;summary&gt;
+    /// Close the stream with exception, preventing further read operations.
+    /// &lt;/summary&gt;
+    /// &lt;param name="eptr"&gt;Pointer to the exception.&lt;/param&gt;
+    pplx::task&lt;void&gt; close(std::exception_ptr eptr) const
+    {
+        return is_valid() ? m_helper-&gt;m_buffer.close(std::ios_base::in, eptr) : pplx::task_from_result();
+    }
+
+    /// &lt;summary&gt;
+    /// Tests whether last read cause the stream reach EOF.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;True if the read head has reached the end of the stream, false otherwise.&lt;/returns&gt;
+    bool is_eof() const { return is_valid() ? m_helper-&gt;m_buffer.is_eof() : false; }
+
+    /// &lt;summary&gt;
+    /// Get the next character and return it as an int_type. Advance the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the next character as an &lt;c&gt;int_type&lt;/c&gt; on successful completion.&lt;/returns&gt;
+    pplx::task&lt;int_type&gt; read() const
+    {
+        pplx::task&lt;int_type&gt; result;
+        if (!_verify_and_return_task(details::_in_stream_msg, result)) return result;
+        return helper()-&gt;m_buffer.bumpc();
+    }
+
+    /// &lt;summary&gt;
+    /// Read a single value of "blittable" type T from the stream.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A value of type T.&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// This is not a replacement for a proper binary serialization solution, but it may
+    /// form the foundation for one. Reading data bit-wise to a stream is a primitive
+    /// operation of binary serialization.
+    /// Currently, no attention is paid to byte order. All data is read in the platform's
+    /// native byte order, which means little-endian on all platforms that have been tested.
+    /// This function is only available for streams using a single-byte character size.
+    /// &lt;/remarks&gt;
+    template&lt;typename T&gt;
+    CASABLANCA_DEPRECATED(
+        "Unsafe API that will be removed in future releases, use one of the other read overloads instead.")
+    pplx::task&lt;T&gt; read() const
+    {
+        static_assert(sizeof(CharType) == 1, "binary read is only supported for single-byte streams");
+        static_assert(std::is_trivial&lt;T&gt;::value, "unsafe to use with non-trivial types");
+
+        pplx::task&lt;T&gt; result;
+        if (!_verify_and_return_task(details::_in_stream_msg, result)) return result;
+
+        auto copy = std::make_shared&lt;T&gt;();
+        return helper()-&gt;m_buffer.getn((CharType*)copy.get(), sizeof(T)).then([copy](pplx::task&lt;size_t&gt;) -&gt; T {
+            return std::move(*copy);
+        });
+    }
+
+    /// &lt;summary&gt;
+    /// Reads up to &lt;c&gt;count&lt;/c&gt; characters and place into the provided buffer.
+    /// &lt;/summary&gt;
+    /// &lt;param name="target"&gt;An async stream buffer supporting write operations.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The maximum number of characters to read&lt;/param&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the number of characters read. This number is 0 if the end of the stream is
+    /// reached.&lt;/returns&gt;
+    pplx::task&lt;size_t&gt; read(streams::streambuf&lt;CharType&gt; target, size_t count) const
+<span style = "background-color:#fdd">    {
+        pplx::task&lt;size_t&gt; result;
+        if (!_verify_and_return_task(details::_in_stream_msg, result)) return result;
+        if (!target.can_write())
+            return pplx::task_from_exception&lt;size_t&gt;(</span>
+                std::make_exception_ptr(std::runtime_error("target not set up for output of data")));
+
+        // Capture 'buffer' rather than 'helper' here due to VC++ 2010 limitations.
+<span style = "background-color:#fdd">        auto buffer = helper()-&gt;m_buffer;</span>
+
+<span style = "background-color:#fdd">        auto data = target.alloc(count);</span>
+
+<span style = "background-color:#fdd">        if (data != nullptr)</span>
+        {
+<span style = "background-color:#fdd">            auto post_read = [target](pplx::task&lt;size_t&gt; op) -&gt; pplx::task&lt;size_t&gt; {
+                auto t = target;
+                t.commit(op.get());
+                return op;
+            };
+            return buffer.getn(data, count).then(post_read);
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            size_t available = 0;</span>
+
+<span style = "background-color:#fdd">            const bool acquired = buffer.acquire(data, available);
+            if (available &gt;= count)</span>
+            {
+<span style = "background-color:#fdd">                auto post_write = [buffer, data](pplx::task&lt;size_t&gt; op) -&gt; pplx::task&lt;size_t&gt; {
+                    auto b = buffer;
+                    b.release(data, op.get());
+                    return op;
+                };
+                return target.putn_nocopy(data, count).then(post_write);
+            }</span>
+            else
+            {
+                // Always have to release if acquire returned true.
+<span style = "background-color:#fdd">                if (acquired)</span>
+                {
+<span style = "background-color:#fdd">                    buffer.release(data, 0);</span>
+                }
+
+<span style = "background-color:#fdd">                std::shared_ptr&lt;CharType&gt; buf(new CharType[count], [](CharType* buf) { delete[] buf; });</span>
+
+<span style = "background-color:#fdd">                auto post_write = [buf](pplx::task&lt;size_t&gt; op) -&gt; pplx::task&lt;size_t&gt; { return op; };
+                auto post_read = [buf, target, post_write](pplx::task&lt;size_t&gt; op) -&gt; pplx::task&lt;size_t&gt; {
+                    auto trg = target;
+                    return trg.putn_nocopy(buf.get(), op.get()).then(post_write);
+                };</span>
+
+<span style = "background-color:#fdd">                return helper()-&gt;m_buffer.getn(buf.get(), count).then(post_read);</span>
+            }
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    /// &lt;summary&gt;
+    /// Get the next character and return it as an int_type. Do not advance the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the character, widened to an integer. This character is EOF when the peek
+    /// operation fails.&lt;/returns&gt;
+    pplx::task&lt;int_type&gt; peek() const
+    {
+        pplx::task&lt;int_type&gt; result;
+        if (!_verify_and_return_task(details::_in_stream_msg, result)) return result;
+        return helper()-&gt;m_buffer.getc();
+    }
+
+    /// &lt;summary&gt;
+    /// Read characters until a delimiter or EOF is found, and place them into the target.
+    /// Proceed past the delimiter, but don't include it in the target buffer.
+    /// &lt;/summary&gt;
+    /// &lt;param name="target"&gt;An async stream buffer supporting write operations.&lt;/param&gt;
+    /// &lt;param name="delim"&gt;The delimiting character to stop the read at.&lt;/param&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the number of characters read.&lt;/returns&gt;
+    pplx::task&lt;size_t&gt; read_to_delim(streams::streambuf&lt;CharType&gt; target, int_type delim) const
+    {
+        pplx::task&lt;size_t&gt; result;
+        if (!_verify_and_return_task(details::_in_stream_msg, result)) return result;
+        if (!target.can_write())
+            return pplx::task_from_exception&lt;size_t&gt;(
+                std::make_exception_ptr(std::runtime_error("target not set up for output of data")));
+
+        // Capture 'buffer' rather than 'helper' here due to VC++ 2010 limitations.
+        auto buffer = helper()-&gt;m_buffer;
+
+        int_type req_async = traits::requires_async();
+
+        std::shared_ptr&lt;_read_helper&gt; _locals = std::make_shared&lt;_read_helper&gt;();
+
+        auto flush = [=]() mutable {
+            return target.putn_nocopy(_locals-&gt;outbuf, _locals-&gt;write_pos).then([=](size_t wrote) mutable {
+                _locals-&gt;total += wrote;
+                _locals-&gt;write_pos = 0;
+                return target.sync();
+            });
+        };
+
+        auto update = [=](int_type ch) mutable {
+            if (ch == traits::eof()) return false;
+            if (ch == delim) return false;
+
+            _locals-&gt;outbuf[_locals-&gt;write_pos] = static_cast&lt;CharType&gt;(ch);
+            _locals-&gt;write_pos += 1;
+
+            if (_locals-&gt;is_full())
+            {
+                // Flushing synchronously because performance is terrible if we
+                // schedule an empty task. This isn't on a user's thread.
+                flush().get();
+            }
+
+            return true;
+        };
+
+        auto loop = pplx::details::_do_while([=]() mutable -&gt; pplx::task&lt;bool&gt; {
+            while (buffer.in_avail() &gt; 0)
+            {
+                int_type ch = buffer.sbumpc();
+
+                if (ch == req_async)
+                {
+                    break;
+                }
+
+                if (!update(ch))
+                {
+                    return pplx::task_from_result(false);
+                }
+            }
+            return buffer.bumpc().then(update);
+        });
+
+        return loop.then([=](bool) mutable { return flush().then([=] { return _locals-&gt;total; }); });
+    }
+
+    /// &lt;summary&gt;
+    /// Read until reaching a newline character. The newline is not included in the target.
+    /// &lt;/summary&gt;
+    /// &lt;param name="target"&gt;An asynchronous stream buffer supporting write operations.&lt;/param&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the number of characters read. This number is 0 if the end of the stream is
+    /// reached.&lt;/returns&gt;
+    pplx::task&lt;size_t&gt; read_line(streams::streambuf&lt;CharType&gt; target) const
+    {
+        pplx::task&lt;size_t&gt; result;
+        if (!_verify_and_return_task(details::_in_stream_msg, result)) return result;
+        if (!target.can_write())
+            return pplx::task_from_exception&lt;size_t&gt;(
+                std::make_exception_ptr(std::runtime_error("target not set up for receiving data")));
+
+        // Capture 'buffer' rather than 'helper' here due to VC++ 2010 limitations.
+        concurrency::streams::streambuf&lt;CharType&gt; buffer = helper()-&gt;m_buffer;
+
+        int_type req_async = traits::requires_async();
+
+        std::shared_ptr&lt;_read_helper&gt; _locals = std::make_shared&lt;_read_helper&gt;();
+
+        auto flush = [=]() mutable {
+            return target.putn_nocopy(_locals-&gt;outbuf, _locals-&gt;write_pos).then([=](size_t wrote) mutable {
+                _locals-&gt;total += wrote;
+                _locals-&gt;write_pos = 0;
+                return target.sync();
+            });
+        };
+
+        auto update = [=](int_type ch) mutable {
+            if (ch == traits::eof()) return false;
+            if (ch == '\n') return false;
+            if (ch == '\r')
+            {
+                _locals-&gt;saw_CR = true;
+                return true;
+            }
+
+            _locals-&gt;outbuf[_locals-&gt;write_pos] = static_cast&lt;CharType&gt;(ch);
+            _locals-&gt;write_pos += 1;
+
+            if (_locals-&gt;is_full())
+            {
+                // Flushing synchronously because performance is terrible if we
+                // schedule an empty task. This isn't on a user's thread.
+                flush().wait();
+            }
+
+            return true;
+        };
+
+        auto update_after_cr = [=](int_type ch) mutable -&gt; pplx::task&lt;bool&gt; {
+            if (ch == traits::eof()) return pplx::task_from_result(false);
+            if (ch == '\n')
+            {
+                return buffer.bumpc().then([](int_type) { return false; });
+            }
+            return pplx::task_from_result(false);
+        };
+
+        auto loop = pplx::details::_do_while([=]() mutable -&gt; pplx::task&lt;bool&gt; {
+            while (buffer.in_avail() &gt; 0)
+            {
+                int_type ch;
+
+                if (_locals-&gt;saw_CR)
+                {
+                    ch = buffer.sgetc();
+                    if (ch == '\n') buffer.sbumpc();
+                    return pplx::task_from_result(false);
+                }
+
+                ch = buffer.sbumpc();
+
+                if (ch == req_async) break;
+
+                if (!update(ch))
+                {
+                    return pplx::task_from_result(false);
+                }
+            }
+
+            if (_locals-&gt;saw_CR)
+            {
+                return buffer.getc().then(update_after_cr);
+            }
+            return buffer.bumpc().then(update);
+        });
+
+        return loop.then([=](bool) mutable { return flush().then([=] { return _locals-&gt;total; }); });
+    }
+
+    /// &lt;summary&gt;
+    /// Read until reaching the end of the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="target"&gt;An asynchronous stream buffer supporting write operations.&lt;/param&gt;
+    /// &lt;returns&gt;The number of characters read.&lt;/returns&gt;
+    pplx::task&lt;size_t&gt; read_to_end(streams::streambuf&lt;CharType&gt; target) const
+    {
+        pplx::task&lt;size_t&gt; result;
+        if (!_verify_and_return_task("stream not set up for output of data", result)) return result;
+        if (!target.can_write())
+            return pplx::task_from_exception&lt;size_t&gt;(
+                std::make_exception_ptr(std::runtime_error("source buffer not set up for input of data")));
+
+        auto l_buffer = helper()-&gt;m_buffer;
+        auto l_buf_size = this-&gt;buf_size;
+        std::shared_ptr&lt;_read_helper&gt; l_locals = std::make_shared&lt;_read_helper&gt;();
+
+        auto copy_to_target = [l_locals, target, l_buffer, l_buf_size]() mutable -&gt; pplx::task&lt;bool&gt; {
+            // We need to capture these, because the object itself may go away
+            // before we're done processing the data.
+            // auto locs = _locals;
+            // auto trg = target;
+
+            return l_buffer.getn(l_locals-&gt;outbuf, l_buf_size).then([=](size_t rd) mutable -&gt; pplx::task&lt;bool&gt; {
+                if (rd == 0) return pplx::task_from_result(false);
+
+                // Must be nested to capture rd
+                return target.putn_nocopy(l_locals-&gt;outbuf, rd)
+                    .then([target, l_locals, rd](size_t wr) mutable -&gt; pplx::task&lt;bool&gt; {
+                        l_locals-&gt;total += wr;
+
+                        if (rd != wr)
+                            // Number of bytes written is less than number of bytes received.
+                            throw std::runtime_error("failed to write all bytes");
+
+                        return target.sync().then([]() { return true; });
+                    });
+            });
+        };
+
+        auto loop = pplx::details::_do_while(copy_to_target);
+
+        return loop.then([=](bool) mutable -&gt; size_t { return l_locals-&gt;total; });
+    }
+
+    /// &lt;summary&gt;
+    /// Seeks to the specified write position.
+    /// &lt;/summary&gt;
+    /// &lt;param name="pos"&gt;An offset relative to the beginning of the stream.&lt;/param&gt;
+    /// &lt;returns&gt;The new position in the stream.&lt;/returns&gt;
+    pos_type seek(pos_type pos) const
+<span style = "background-color:#fdd">    {
+        _verify_and_throw(details::_in_stream_msg);
+        return helper()-&gt;m_buffer.seekpos(pos, std::ios_base::in);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Seeks to the specified write position.
+    /// &lt;/summary&gt;
+    /// &lt;param name="off"&gt;An offset relative to the beginning, current write position, or the end of the stream.&lt;/param&gt;
+    /// &lt;param name="way"&gt;The starting point (beginning, current, end) for the seek.&lt;/param&gt;
+    /// &lt;returns&gt;The new position in the stream.&lt;/returns&gt;
+    pos_type seek(off_type off, std::ios_base::seekdir way) const
+<span style = "background-color:#fdd">    {
+        _verify_and_throw(details::_in_stream_msg);
+        return helper()-&gt;m_buffer.seekoff(off, way, std::ios_base::in);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Get the current write position, i.e. the offset from the beginning of the stream.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The current write position.&lt;/returns&gt;
+    pos_type tell() const
+<span style = "background-color:#fdd">    {
+        _verify_and_throw(details::_in_stream_msg);
+        return helper()-&gt;m_buffer.getpos(std::ios_base::in);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;can_seek&lt;c/&gt; is used to determine whether the stream supports seeking.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the stream supports seeking, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool can_seek() const { return is_valid() &amp;&amp; m_helper-&gt;m_buffer.can_seek(); }</span>
+
+    /// &lt;summary&gt;
+    /// Test whether the stream has been initialized with a valid stream buffer.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    bool is_valid() const { return (m_helper != nullptr) &amp;&amp; ((bool)m_helper-&gt;m_buffer); }</span>
+
+    /// &lt;summary&gt;
+    /// Test whether the stream has been initialized or not.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    operator bool() const { return is_valid(); }</span>
+
+    /// &lt;summary&gt;
+    /// Test whether the stream is open for writing.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the stream is open for writing, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    bool is_open() const { return is_valid() &amp;&amp; m_helper-&gt;m_buffer.can_read(); }
+
+    /// &lt;summary&gt;
+    /// Get the underlying stream buffer.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    concurrency::streams::streambuf&lt;CharType&gt; streambuf() const { return helper()-&gt;m_buffer; }</span>
+
+    /// &lt;summary&gt;
+    /// Read a value of type &lt;c&gt;T&lt;/c&gt; from the stream.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;
+    /// Supports the C++ primitive types. Can be expanded to additional types
+    /// by adding template specializations for &lt;c&gt;type_parser&lt;/c&gt;.
+    /// &lt;/remarks&gt;
+    /// &lt;typeparam name="T"&gt;
+    /// The data type of the element to be read from the stream.
+    /// &lt;/typeparam&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the element read from the stream.&lt;/returns&gt;
+    template&lt;typename T&gt;
+    pplx::task&lt;T&gt; extract() const
+    {
+        pplx::task&lt;T&gt; result;
+        if (!_verify_and_return_task(details::_in_stream_msg, result)) return result;
+        return type_parser&lt;CharType, T&gt;::parse(helper()-&gt;m_buffer);
+    }
+
+private:
+    template&lt;typename T&gt;
+    bool _verify_and_return_task(const char* msg, pplx::task&lt;T&gt;&amp; tsk) const
+<span style = "background-color:#fdd">    {
+        auto buffer = helper()-&gt;m_buffer;
+        if (!(buffer.exception() == nullptr))</span>
+        {
+<span style = "background-color:#fdd">            tsk = pplx::task_from_exception&lt;T&gt;(buffer.exception());
+            return false;</span>
+        }
+<span style = "background-color:#fdd">        if (!buffer.can_read())</span>
+        {
+<span style = "background-color:#fdd">            tsk = pplx::task_from_exception&lt;T&gt;(std::make_exception_ptr(std::runtime_error(msg)));
+            return false;</span>
+        }
+<span style = "background-color:#fdd">        return true;
+    }</span>
+
+    void _verify_and_throw(const char* msg) const
+<span style = "background-color:#fdd">    {
+        auto buffer = helper()-&gt;m_buffer;
+        if (!(buffer.exception() == nullptr)) std::rethrow_exception(buffer.exception());
+        if (!buffer.can_read()) throw std::runtime_error(msg);
+    }</span>
+
+    std::shared_ptr&lt;details::basic_istream_helper&lt;CharType&gt;&gt; helper() const
+<span style = "background-color:#fdd">    {
+        if (!m_helper) throw std::logic_error("uninitialized stream object");
+        return m_helper;
+    }</span>
+
+    static const size_t buf_size = 16 * 1024;
+
+    struct _read_helper
+    {
+        size_t total;
+        CharType outbuf[buf_size];
+        size_t write_pos;
+        bool saw_CR;
+
+        bool is_full() const { return write_pos == buf_size; }
+
+        _read_helper() : total(0), write_pos(0), saw_CR(false) {}
+    };
+
+    std::shared_ptr&lt;details::basic_istream_helper&lt;CharType&gt;&gt; m_helper;
+};
+
+typedef basic_ostream&lt;uint8_t&gt; ostream;
+typedef basic_istream&lt;uint8_t&gt; istream;
+
+typedef basic_ostream&lt;utf16char&gt; wostream;
+typedef basic_istream&lt;utf16char&gt; wistream;
+
+template&lt;typename CharType&gt;
+pplx::task&lt;void&gt; _type_parser_base&lt;CharType&gt;::_skip_whitespace(streams::streambuf&lt;CharType&gt; buffer)
+{
+    int_type req_async = traits::requires_async();
+
+    auto update = [=](int_type ch) mutable {
+        if (isspace(ch))
+        {
+            if (buffer.sbumpc() == req_async)
+            {
+                // Synchronously because performance is terrible if we
+                // schedule an empty task. This isn't on a user's thread.
+                buffer.nextc().wait();
+            }
+            return true;
+        }
+
+        return false;
+    };
+
+    auto loop = pplx::details::_do_while([=]() mutable -&gt; pplx::task&lt;bool&gt; {
+        while (buffer.in_avail() &gt; 0)
+        {
+            int_type ch = buffer.sgetc();
+
+            if (ch == req_async) break;
+
+            if (!update(ch))
+            {
+                return pplx::task_from_result(false);
+            }
+        }
+        return buffer.getc().then(update);
+    });
+
+    return loop.then([=](pplx::task&lt;bool&gt; op) { op.wait(); });
+}
+
+template&lt;typename CharType&gt;
+template&lt;typename StateType, typename ReturnType, typename AcceptFunctor, typename ExtractFunctor&gt;
+pplx::task&lt;ReturnType&gt; _type_parser_base&lt;CharType&gt;::_parse_input(concurrency::streams::streambuf&lt;CharType&gt; buffer,
+                                                                 AcceptFunctor accept_character,
+                                                                 ExtractFunctor extract)
+{
+    std::shared_ptr&lt;StateType&gt; state = std::make_shared&lt;StateType&gt;();
+
+    auto update = [=](pplx::task&lt;int_type&gt; op) -&gt; pplx::task&lt;bool&gt; {
+        int_type ch = op.get();
+        if (ch == traits::eof()) return pplx::task_from_result(false);
+        bool accepted = accept_character(state, ch);
+        if (!accepted) return pplx::task_from_result(false);
+        // We peeked earlier, so now we must advance the position.
+        concurrency::streams::streambuf&lt;CharType&gt; buf = buffer;
+        return buf.bumpc().then([](int_type) { return true; });
+    };
+
+    auto peek_char = [=]() -&gt; pplx::task&lt;bool&gt; {
+        concurrency::streams::streambuf&lt;CharType&gt; buf = buffer;
+
+        // If task results are immediately available, there's little need to use ".then(),"
+        // so optimize for prompt values.
+
+        auto get_op = buf.getc();
+        while (get_op.is_done())
+        {
+            auto condition = update(get_op);
+            if (!condition.is_done() || !condition.get()) return condition;
+
+            get_op = buf.getc();
+        }
+
+        return get_op.then(update);
+    };
+
+    auto finish = [=](pplx::task&lt;bool&gt; op) -&gt; pplx::task&lt;ReturnType&gt; {
+        op.wait();
+        pplx::task&lt;ReturnType&gt; result = extract(state);
+        return result;
+    };
+
+    return _skip_whitespace(buffer).then([=](pplx::task&lt;void&gt; op) -&gt; pplx::task&lt;ReturnType&gt; {
+        op.wait();
+        return pplx::details::_do_while(peek_char).then(finish);
+    });
+}
+
+template&lt;typename CharType&gt;
+class type_parser&lt;CharType, std::basic_string&lt;CharType&gt;&gt; : public _type_parser_base&lt;CharType&gt;
+{
+    typedef _type_parser_base&lt;CharType&gt; base;
+
+public:
+    typedef typename base::traits traits;
+    typedef typename base::int_type int_type;
+
+    static pplx::task&lt;std::string&gt; parse(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        return base::template _parse_input&lt;std::basic_string&lt;CharType&gt;, std::string&gt;(
+            buffer, _accept_char, _extract_result);
+    }
+
+private:
+    static bool _accept_char(std::shared_ptr&lt;std::basic_string&lt;CharType&gt;&gt; state, int_type ch)
+    {
+        if (ch == traits::eof() || isspace(ch)) return false;
+        state-&gt;push_back(CharType(ch));
+        return true;
+    }
+    static pplx::task&lt;std::basic_string&lt;CharType&gt;&gt; _extract_result(std::shared_ptr&lt;std::basic_string&lt;CharType&gt;&gt; state)
+    {
+        return pplx::task_from_result(*state);
+    }
+};
+
+template&lt;typename CharType&gt;
+class type_parser&lt;CharType, int64_t&gt; : public _type_parser_base&lt;CharType&gt;
+{
+    typedef _type_parser_base&lt;CharType&gt; base;
+
+public:
+    typedef typename base::traits traits;
+    typedef typename base::int_type int_type;
+
+    static pplx::task&lt;int64_t&gt; parse(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        return base::template _parse_input&lt;_int64_state, int64_t&gt;(buffer, _accept_char, _extract_result);
+    }
+
+private:
+    struct _int64_state
+    {
+        _int64_state() : result(0), correct(false), minus(0) {}
+
+        int64_t result;
+        bool correct;
+        char minus; // 0 -- no sign, 1 -- plus, 2 -- minus
+    };
+
+    static bool _accept_char(std::shared_ptr&lt;_int64_state&gt; state, int_type ch)
+    {
+        if (ch == traits::eof()) return false;
+        if (state-&gt;minus == 0)
+        {
+            // OK to find a sign.
+            if (!::isdigit(ch) &amp;&amp; ch != int_type('+') &amp;&amp; ch != int_type('-')) return false;
+        }
+        else
+        {
+            if (!::isdigit(ch)) return false;
+        }
+
+        // At least one digit was found.
+        state-&gt;correct = true;
+
+        if (ch == int_type('+'))
+        {
+            state-&gt;minus = 1;
+        }
+        else if (ch == int_type('-'))
+        {
+            state-&gt;minus = 2;
+        }
+        else
+        {
+            if (state-&gt;minus == 0) state-&gt;minus = 1;
+
+            // Shift the existing value by 10, then add the new value.
+            bool positive = state-&gt;result &gt;= 0;
+
+            state-&gt;result *= 10;
+            state-&gt;result += int64_t(ch - int_type('0'));
+
+            if ((state-&gt;result &gt;= 0) != positive)
+            {
+                state-&gt;correct = false;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static pplx::task&lt;int64_t&gt; _extract_result(std::shared_ptr&lt;_int64_state&gt; state)
+    {
+        if (!state-&gt;correct) throw std::range_error("integer value is too large to fit in 64 bits");
+
+        int64_t result = (state-&gt;minus == 2) ? -state-&gt;result : state-&gt;result;
+        return pplx::task_from_result&lt;int64_t&gt;(result);
+    }
+};
+
+template&lt;typename FloatingPoint&gt;
+struct _double_state
+{
+    _double_state()
+        : result(0)
+        , minus(0)
+        , after_comma(0)
+        , exponent(false)
+        , exponent_number(0)
+        , exponent_minus(0)
+        , complete(false)
+        , p_exception_string()
+    {
+    }
+
+    FloatingPoint result;
+    char minus; // 0 -- no sign, 1 -- plus, 2 -- minus
+    int after_comma;
+    bool exponent;
+    int exponent_number;
+    char exponent_minus; // 0 -- no sign, 1 -- plus, 2 -- minus
+    bool complete;
+    std::string p_exception_string;
+};
+
+template&lt;typename FloatingPoint, typename int_type&gt;
+static std::string create_exception_message(int_type ch, bool exponent)
+{
+    std::string result;
+    if (exponent)
+    {
+        result.assign("Invalid character 'X' in exponent");
+    }
+    else
+    {
+        result.assign("Invalid character 'X'");
+    }
+
+    result[19] = static_cast&lt;char&gt;(ch);
+    return result;
+}
+
+template&lt;typename FloatingPoint, typename int_type&gt;
+static bool _accept_char(std::shared_ptr&lt;_double_state&lt;FloatingPoint&gt;&gt; state, int_type ch)
+{
+    if (state-&gt;minus == 0)
+    {
+        if (!::isdigit(ch) &amp;&amp; ch != int_type('.') &amp;&amp; ch != int_type('+') &amp;&amp; ch != int_type('-'))
+        {
+            if (!state-&gt;complete)
+                state-&gt;p_exception_string = create_exception_message&lt;FloatingPoint, int_type&gt;(ch, false);
+            return false;
+        }
+    }
+    else
+    {
+        if (!state-&gt;exponent &amp;&amp; !::isdigit(ch) &amp;&amp; ch != int_type('.') &amp;&amp; ch != int_type('E') &amp;&amp; ch != int_type('e'))
+        {
+            if (!state-&gt;complete)
+                state-&gt;p_exception_string = create_exception_message&lt;FloatingPoint, int_type&gt;(ch, false);
+            return false;
+        }
+
+        if (state-&gt;exponent &amp;&amp; !::isdigit(ch) &amp;&amp; ch != int_type('+') &amp;&amp; ch != int_type('-'))
+        {
+            if (!state-&gt;complete)
+                state-&gt;p_exception_string = create_exception_message&lt;FloatingPoint, int_type&gt;(ch, true);
+            return false;
+        }
+    }
+
+    switch (ch)
+    {
+        case int_type('+'):
+            state-&gt;complete = false;
+            if (state-&gt;exponent)
+            {
+                if (state-&gt;exponent_minus != 0)
+                {
+                    state-&gt;p_exception_string = "The exponent sign already set";
+                    return false;
+                }
+                state-&gt;exponent_minus = 1;
+            }
+            else
+            {
+                state-&gt;minus = 1;
+            }
+            break;
+        case int_type('-'):
+            state-&gt;complete = false;
+            if (state-&gt;exponent)
+            {
+                if (state-&gt;exponent_minus != 0)
+                {
+                    state-&gt;p_exception_string = "The exponent sign already set";
+                    return false;
+                }
+
+                state-&gt;exponent_minus = 2;
+            }
+            else
+            {
+                state-&gt;minus = 2;
+            }
+            break;
+        case int_type('.'):
+            state-&gt;complete = false;
+            if (state-&gt;after_comma &gt; 0) return false;
+
+            state-&gt;after_comma = 1;
+            break;
+        case int_type('E'):
+        case int_type('e'):
+            state-&gt;complete = false;
+            if (state-&gt;exponent) return false;
+            state-&gt;exponent_number = 0;
+            state-&gt;exponent = true;
+            break;
+        default:
+            state-&gt;complete = true;
+            if (!state-&gt;exponent)
+            {
+                if (state-&gt;minus == 0) state-&gt;minus = 1;
+
+                state-&gt;result *= 10;
+                state-&gt;result += int64_t(ch - int_type('0'));
+
+                if (state-&gt;after_comma &gt; 0) state-&gt;after_comma++;
+            }
+            else
+            {
+                if (state-&gt;exponent_minus == 0) state-&gt;exponent_minus = 1;
+                state-&gt;exponent_number *= 10;
+                state-&gt;exponent_number += int64_t(ch - int_type('0'));
+            }
+    }
+    return true;
+}
+
+template&lt;typename FloatingPoint&gt;
+static pplx::task&lt;FloatingPoint&gt; _extract_result(std::shared_ptr&lt;_double_state&lt;FloatingPoint&gt;&gt; state)
+{
+    if (state-&gt;p_exception_string.length() &gt; 0) throw std::runtime_error(state-&gt;p_exception_string.c_str());
+
+    if (!state-&gt;complete &amp;&amp; state-&gt;exponent) throw std::runtime_error("Incomplete exponent");
+
+    FloatingPoint result = static_cast&lt;FloatingPoint&gt;((state-&gt;minus == 2) ? -state-&gt;result : state-&gt;result);
+    if (state-&gt;exponent_minus == 2) state-&gt;exponent_number = 0 - state-&gt;exponent_number;
+
+    if (state-&gt;after_comma &gt; 0) state-&gt;exponent_number -= state-&gt;after_comma - 1;
+
+    if (state-&gt;exponent_number &gt;= 0)
+    {
+        result *= static_cast&lt;FloatingPoint&gt;(
+            std::pow(static_cast&lt;FloatingPoint&gt;(10.0), static_cast&lt;FloatingPoint&gt;(state-&gt;exponent_number)));
+
+#pragma push_macro("max")
+#undef max
+
+        if (result &gt; std::numeric_limits&lt;FloatingPoint&gt;::max() || result &lt; -std::numeric_limits&lt;FloatingPoint&gt;::max())
+            throw std::overflow_error("The value is too big");
+#pragma pop_macro("max")
+    }
+    else
+    {
+        bool is_zero = (result == 0);
+
+        result /= static_cast&lt;FloatingPoint&gt;(
+            std::pow(static_cast&lt;FloatingPoint&gt;(10.0), static_cast&lt;FloatingPoint&gt;(-state-&gt;exponent_number)));
+
+        if (!is_zero &amp;&amp; result &gt; -std::numeric_limits&lt;FloatingPoint&gt;::denorm_min() &amp;&amp;
+            result &lt; std::numeric_limits&lt;FloatingPoint&gt;::denorm_min())
+            throw std::underflow_error("The value is too small");
+    }
+
+    return pplx::task_from_result&lt;FloatingPoint&gt;(result);
+}
+
+template&lt;typename CharType&gt;
+class type_parser&lt;CharType, double&gt; : public _type_parser_base&lt;CharType&gt;
+{
+    typedef _type_parser_base&lt;CharType&gt; base;
+
+public:
+    typedef typename base::traits traits;
+    typedef typename base::int_type int_type;
+
+    static pplx::task&lt;double&gt; parse(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        return base::template _parse_input&lt;_double_state&lt;double&gt;, double&gt;(
+            buffer, _accept_char&lt;double, int_type&gt;, _extract_result&lt;double&gt;);
+    }
+
+protected:
+};
+
+template&lt;typename CharType&gt;
+class type_parser&lt;CharType, float&gt; : public _type_parser_base&lt;CharType&gt;
+{
+    typedef _type_parser_base&lt;CharType&gt; base;
+
+public:
+    typedef typename base::traits traits;
+    typedef typename base::int_type int_type;
+
+    static pplx::task&lt;float&gt; parse(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        return base::template _parse_input&lt;_double_state&lt;float&gt;, float&gt;(
+            buffer, _accept_char&lt;float, int_type&gt;, _extract_result&lt;float&gt;);
+    }
+
+protected:
+};
+
+template&lt;typename CharType&gt;
+class type_parser&lt;CharType, uint64_t&gt; : public _type_parser_base&lt;CharType&gt;
+{
+    typedef _type_parser_base&lt;CharType&gt; base;
+
+public:
+    typedef typename base::traits traits;
+    typedef typename base::int_type int_type;
+
+    static pplx::task&lt;uint64_t&gt; parse(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        return base::template _parse_input&lt;_uint64_state, uint64_t&gt;(buffer, _accept_char, _extract_result);
+    }
+
+private:
+    struct _uint64_state
+    {
+        _uint64_state() : result(0), correct(false) {}
+        uint64_t result;
+        bool correct;
+    };
+
+    static bool _accept_char(std::shared_ptr&lt;_uint64_state&gt; state, int_type ch)
+    {
+        if (!::isdigit(ch)) return false;
+
+        // At least one digit was found.
+        state-&gt;correct = true;
+
+        // Shift the existing value by 10, then add the new value.
+        state-&gt;result *= 10;
+        state-&gt;result += uint64_t(ch - int_type('0'));
+
+        return true;
+    }
+
+    static pplx::task&lt;uint64_t&gt; _extract_result(std::shared_ptr&lt;_uint64_state&gt; state)
+    {
+        if (!state-&gt;correct) throw std::range_error("integer value is too large to fit in 64 bits");
+        return pplx::task_from_result(state-&gt;result);
+    }
+};
+
+template&lt;typename CharType&gt;
+class type_parser&lt;CharType, bool&gt; : public _type_parser_base&lt;CharType&gt;
+{
+    typedef _type_parser_base&lt;CharType&gt; base;
+
+public:
+    typedef typename base::traits traits;
+    typedef typename base::int_type int_type;
+
+    static pplx::task&lt;bool&gt; parse(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        return base::template _parse_input&lt;_bool_state, bool&gt;(buffer, _accept_char, _extract_result);
+    }
+
+private:
+    struct _bool_state
+    {
+        _bool_state() : state(0) {}
+        // { 0 -- not started, 1 -- 't', 2 -- 'tr', 3 -- 'tru', 4 -- 'f', 5 -- 'fa', 6 -- 'fal', 7 -- 'fals', 8 --
+        // 'true', 9 -- 'false' }
+        short state;
+    };
+
+    static bool _accept_char(std::shared_ptr&lt;_bool_state&gt; state, int_type ch)
+    {
+        switch (state-&gt;state)
+        {
+            case 0:
+                if (ch == int_type('t'))
+                    state-&gt;state = 1;
+                else if (ch == int_type('f'))
+                    state-&gt;state = 4;
+                else if (ch == int_type('1'))
+                    state-&gt;state = 8;
+                else if (ch == int_type('0'))
+                    state-&gt;state = 9;
+                else
+                    return false;
+                break;
+            case 1:
+                if (ch == int_type('r'))
+                    state-&gt;state = 2;
+                else
+                    return false;
+                break;
+            case 2:
+                if (ch == int_type('u'))
+                    state-&gt;state = 3;
+                else
+                    return false;
+                break;
+            case 3:
+                if (ch == int_type('e'))
+                    state-&gt;state = 8;
+                else
+                    return false;
+                break;
+            case 4:
+                if (ch == int_type('a'))
+                    state-&gt;state = 5;
+                else
+                    return false;
+                break;
+            case 5:
+                if (ch == int_type('l'))
+                    state-&gt;state = 6;
+                else
+                    return false;
+                break;
+            case 6:
+                if (ch == int_type('s'))
+                    state-&gt;state = 7;
+                else
+                    return false;
+                break;
+            case 7:
+                if (ch == int_type('e'))
+                    state-&gt;state = 9;
+                else
+                    return false;
+                break;
+            case 8:
+            case 9: return false;
+        }
+        return true;
+    }
+    static pplx::task&lt;bool&gt; _extract_result(std::shared_ptr&lt;_bool_state&gt; state)
+    {
+        bool correct = (state-&gt;state == 8 || state-&gt;state == 9);
+        if (!correct)
+        {
+            std::runtime_error exc("cannot parse as Boolean value");
+            throw exc;
+        }
+        return pplx::task_from_result(state-&gt;state == 8);
+    }
+};
+
+template&lt;typename CharType&gt;
+class type_parser&lt;CharType, signed char&gt; : public _type_parser_base&lt;CharType&gt;
+{
+    typedef _type_parser_base&lt;CharType&gt; base;
+
+public:
+    typedef typename base::traits traits;
+    typedef typename base::int_type int_type;
+
+    static pplx::task&lt;signed char&gt; parse(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        return base::_skip_whitespace(buffer).then([=](pplx::task&lt;void&gt; op) -&gt; pplx::task&lt;signed char&gt; {
+            op.wait();
+            return type_parser&lt;CharType, signed char&gt;::_get_char(buffer);
+        });
+    }
+
+private:
+    static pplx::task&lt;signed char&gt; _get_char(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        concurrency::streams::streambuf&lt;CharType&gt; buf = buffer;
+        return buf.bumpc().then([=](pplx::task&lt;int_type&gt; op) -&gt; signed char {
+            int_type val = op.get();
+            if (val == traits::eof()) throw std::runtime_error("reached end-of-stream while constructing a value");
+            return static_cast&lt;signed char&gt;(val);
+        });
+    }
+};
+
+template&lt;typename CharType&gt;
+class type_parser&lt;CharType, unsigned char&gt; : public _type_parser_base&lt;CharType&gt;
+{
+    typedef _type_parser_base&lt;CharType&gt; base;
+
+public:
+    typedef typename base::traits traits;
+    typedef typename base::int_type int_type;
+
+    static pplx::task&lt;unsigned char&gt; parse(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        return base::_skip_whitespace(buffer).then([=](pplx::task&lt;void&gt; op) -&gt; pplx::task&lt;unsigned char&gt; {
+            op.wait();
+            return type_parser&lt;CharType, unsigned char&gt;::_get_char(buffer);
+        });
+    }
+
+private:
+    static pplx::task&lt;unsigned char&gt; _get_char(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        concurrency::streams::streambuf&lt;CharType&gt; buf = buffer;
+        return buf.bumpc().then([=](pplx::task&lt;int_type&gt; op) -&gt; unsigned char {
+            int_type val = op.get();
+            if (val == traits::eof()) throw std::runtime_error("reached end-of-stream while constructing a value");
+            return static_cast&lt;unsigned char&gt;(val);
+        });
+    }
+};
+
+template&lt;typename CharType&gt;
+class type_parser&lt;CharType, char&gt; : public _type_parser_base&lt;CharType&gt;
+{
+    typedef _type_parser_base&lt;CharType&gt; base;
+
+public:
+    typedef typename base::traits traits;
+    typedef typename base::int_type int_type;
+
+    static pplx::task&lt;char&gt; parse(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        return base::_skip_whitespace(buffer).then([=](pplx::task&lt;void&gt; op) -&gt; pplx::task&lt;char&gt; {
+            op.wait();
+            return _get_char(buffer);
+        });
+    }
+
+private:
+    static pplx::task&lt;char&gt; _get_char(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        concurrency::streams::streambuf&lt;CharType&gt; buf = buffer;
+        return buf.bumpc().then([=](pplx::task&lt;int_type&gt; op) -&gt; char {
+            int_type val = op.get();
+            if (val == traits::eof()) throw std::runtime_error("reached end-of-stream while constructing a value");
+            return char(val);
+        });
+    }
+};
+
+#ifdef _WIN32
+template&lt;class CharType&gt;
+class type_parser&lt;CharType, std::enable_if_t&lt;sizeof(CharType) == 1, std::basic_string&lt;wchar_t&gt;&gt;&gt;
+    : public _type_parser_base&lt;CharType&gt;
+{
+    typedef _type_parser_base&lt;CharType&gt; base;
+
+public:
+    typedef typename base::traits traits;
+    typedef typename base::int_type int_type;
+
+    static pplx::task&lt;std::wstring&gt; parse(streams::streambuf&lt;CharType&gt; buffer)
+    {
+        return base::template _parse_input&lt;std::basic_string&lt;char&gt;, std::basic_string&lt;wchar_t&gt;&gt;(
+            buffer, _accept_char, _extract_result);
+    }
+
+private:
+    static bool _accept_char(const std::shared_ptr&lt;std::basic_string&lt;char&gt;&gt;&amp; state, int_type ch)
+    {
+        if (ch == concurrency::streams::char_traits&lt;char&gt;::eof() || isspace(ch)) return false;
+        state-&gt;push_back(char(ch));
+        return true;
+    }
+    static pplx::task&lt;std::basic_string&lt;wchar_t&gt;&gt; _extract_result(std::shared_ptr&lt;std::basic_string&lt;char&gt;&gt; state)
+    {
+        return pplx::task_from_result(utility::conversions::utf8_to_utf16(*state));
+    }
+};
+#endif //_WIN32
+
+} // namespace streams
+} // namespace Concurrency
+
+#endif</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

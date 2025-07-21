@@ -1,0 +1,9 @@
+[
+  {
+    "color": "Red",
+    "id": "1",
+    "price": 999.99,
+    "productId": "prod1",
+    "size": "L"
+  }
+]

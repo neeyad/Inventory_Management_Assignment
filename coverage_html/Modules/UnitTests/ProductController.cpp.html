@@ -1,0 +1,126 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>ProductController.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+#include "ProductController.h"
+#include &lt;cpprest/json.h&gt;
+
+using namespace web;
+using namespace web::http;
+using namespace web::http::experimental::listener;
+
+ProductController::ProductController(const std::string&amp; baseUrl)
+<span style = "background-color:#dfd">    : listener(utility::conversions::to_string_t(baseUrl)) {
+    listener.support(methods::GET, std::bind(&amp;ProductController::handleGet, this, std::placeholders::_1));
+    listener.support(methods::POST, std::bind(&amp;ProductController::handlePost, this, std::placeholders::_1));
+    listener.support(methods::PUT, std::bind(&amp;ProductController::handlePut, this, std::placeholders::_1));
+    listener.support(methods::DEL, std::bind(&amp;ProductController::handleDelete, this, std::placeholders::_1));
+}</span>
+
+<span style = "background-color:#dfd">void ProductController::open() { listener.open().wait(); }
+void ProductController::close() { listener.close().wait(); }</span>
+
+<span style = "background-color:#fdd">void ProductController::handleGet(http_request request) {
+    auto products = handler.list();
+    json::value arr = json::value::array(products.size());
+    for (size_t i = 0; i &lt; products.size(); ++i) {
+        arr[i][U("id")] = json::value::string(utility::conversions::to_string_t(products[i].id));
+        arr[i][U("name")] = json::value::string(utility::conversions::to_string_t(products[i].name));
+        arr[i][U("description")] = json::value::string(utility::conversions::to_string_t(products[i].description));
+        arr[i][U("brand")] = json::value::string(utility::conversions::to_string_t(products[i].brand));
+        arr[i][U("categoryId")] = json::value::string(utility::conversions::to_string_t(products[i].categoryId));
+        arr[i][U("active")] = json::value::boolean(products[i].active);
+    }
+    json::value response;
+    response[U("success")] = json::value::boolean(true);
+    response[U("data")] = arr;
+    response[U("error")] = json::value::null();
+    request.reply(status_codes::OK, response);
+}</span>
+
+<span style = "background-color:#fdd">void ProductController::handlePost(http_request request) {
+    request.extract_json().then([this, request](json::value body) {
+        Product p;
+        p.id = utility::conversions::to_utf8string(body[U("id")].as_string());
+        p.name = utility::conversions::to_utf8string(body[U("name")].as_string());
+        p.description = utility::conversions::to_utf8string(body[U("description")].as_string());
+        p.brand = utility::conversions::to_utf8string(body[U("brand")].as_string());
+        p.categoryId = utility::conversions::to_utf8string(body[U("categoryId")].as_string());
+        p.active = body[U("active")].as_bool();
+        json::value response;
+        if (handler.create(p)) {
+            response[U("success")] = json::value::boolean(true);
+            response[U("data")] = json::value::string(U("Product created"));
+            response[U("error")] = json::value::null();
+            request.reply(status_codes::Created, response);
+        } else {
+            response[U("success")] = json::value::boolean(false);
+            response[U("data")] = json::value::null();
+            response[U("error")] = json::value::string(U("Validation failed"));
+            request.reply(status_codes::BadRequest, response);</span>
+        }
+<span style = "background-color:#fdd">    });
+}</span>
+
+<span style = "background-color:#fdd">void ProductController::handlePut(http_request request) {
+    request.extract_json().then([this, request](json::value body) {
+        Product p;
+        p.id = utility::conversions::to_utf8string(body[U("id")].as_string());
+        p.name = utility::conversions::to_utf8string(body[U("name")].as_string());
+        p.description = utility::conversions::to_utf8string(body[U("description")].as_string());
+        p.brand = utility::conversions::to_utf8string(body[U("brand")].as_string());
+        p.categoryId = utility::conversions::to_utf8string(body[U("categoryId")].as_string());
+        p.active = body[U("active")].as_bool();
+        json::value response;
+        if (handler.update(p)) {
+            response[U("success")] = json::value::boolean(true);
+            response[U("data")] = json::value::string(U("Product updated"));
+            response[U("error")] = json::value::null();
+            request.reply(status_codes::OK, response);
+        } else {
+            response[U("success")] = json::value::boolean(false);
+            response[U("data")] = json::value::null();
+            response[U("error")] = json::value::string(U("Update failed"));
+            request.reply(status_codes::BadRequest, response);</span>
+        }
+<span style = "background-color:#fdd">    });
+}</span>
+
+<span style = "background-color:#fdd">void ProductController::handleDelete(http_request request) {
+    auto id = utility::conversions::to_utf8string(request.relative_uri().path());
+    if (!id.empty() &amp;&amp; id.front() == '/') id = id.substr(1);
+    json::value response;
+    if (handler.remove(id)) {
+        response[U("success")] = json::value::boolean(true);
+        response[U("data")] = json::value::string(U("Product deleted"));
+        response[U("error")] = json::value::null();
+        request.reply(status_codes::OK, response);
+    } else {
+        response[U("success")] = json::value::boolean(false);
+        response[U("data")] = json::value::null();
+        response[U("error")] = json::value::string(U("Delete failed"));
+        request.reply(status_codes::BadRequest, response);</span>
+    }
+<span style = "background-color:#fdd">}</span></pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

@@ -1,0 +1,602 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>oauth1.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: Oauth 1.0
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#pragma once
+
+#ifndef CASA_OAUTH1_H
+#define CASA_OAUTH1_H
+
+#include "cpprest/details/web_utilities.h"
+#include "cpprest/http_msg.h"
+
+namespace web
+{
+namespace http
+{
+namespace client
+{
+// Forward declaration to avoid circular include dependency.
+class http_client_config;
+} // namespace client
+
+/// oAuth 1.0 library.
+namespace oauth1
+{
+namespace details
+{
+class oauth1_handler;
+
+// State currently used by oauth1_config to authenticate request.
+// The state varies for every request (due to timestamp and nonce).
+// The state also contains extra transmitted protocol parameters during
+// authorization flow (i.e. 'oauth_callback' or 'oauth_verifier').
+class oauth1_state
+{
+public:
+    oauth1_state(utility::string_t timestamp,
+                 utility::string_t nonce,
+                 utility::string_t extra_key = utility::string_t(),
+                 utility::string_t extra_value = utility::string_t())
+<span style = "background-color:#fdd">        : m_timestamp(std::move(timestamp))
+        , m_nonce(std::move(nonce))
+        , m_extra_key(std::move(extra_key))
+        , m_extra_value(std::move(extra_value))
+    {
+    }</span>
+
+<span style = "background-color:#fdd">    const utility::string_t&amp; timestamp() const { return m_timestamp; }</span>
+    void set_timestamp(utility::string_t timestamp) { m_timestamp = std::move(timestamp); }
+
+<span style = "background-color:#fdd">    const utility::string_t&amp; nonce() const { return m_nonce; }</span>
+    void set_nonce(utility::string_t nonce) { m_nonce = std::move(nonce); }
+
+<span style = "background-color:#fdd">    const utility::string_t&amp; extra_key() const { return m_extra_key; }</span>
+    void set_extra_key(utility::string_t key) { m_extra_key = std::move(key); }
+
+<span style = "background-color:#fdd">    const utility::string_t&amp; extra_value() const { return m_extra_value; }</span>
+    void set_extra_value(utility::string_t value) { m_extra_value = std::move(value); }
+
+private:
+    utility::string_t m_timestamp;
+    utility::string_t m_nonce;
+    utility::string_t m_extra_key;
+    utility::string_t m_extra_value;
+};
+
+// Constant strings for OAuth 1.0.
+typedef utility::string_t oauth1_string;
+class oauth1_strings
+{
+public:
+#define _OAUTH1_STRINGS
+#define DAT(a_, b_) _ASYNCRTIMP static const oauth1_string a_;
+#include "cpprest/details/http_constants.dat"
+#undef _OAUTH1_STRINGS
+#undef DAT
+};
+
+} // namespace details
+
+/// oAuth functionality is currently in beta.
+namespace experimental
+{
+/// &lt;summary&gt;
+/// Constant strings for OAuth 1.0 signature methods.
+/// &lt;/summary&gt;
+typedef utility::string_t oauth1_method;
+class oauth1_methods
+{
+public:
+#define _OAUTH1_METHODS
+#define DAT(a, b) _ASYNCRTIMP static const oauth1_method a;
+#include "cpprest/details/http_constants.dat"
+#undef _OAUTH1_METHODS
+#undef DAT
+};
+
+/// &lt;summary&gt;
+/// Exception type for OAuth 1.0 errors.
+/// &lt;/summary&gt;
+class oauth1_exception : public std::exception
+{
+public:
+<span style = "background-color:#fdd">    oauth1_exception(utility::string_t msg) : m_msg(utility::conversions::to_utf8string(std::move(msg))) {}
+    ~oauth1_exception() CPPREST_NOEXCEPT {}
+    const char* what() const CPPREST_NOEXCEPT { return m_msg.c_str(); }</span>
+
+private:
+    std::string m_msg;
+};
+
+/// &lt;summary&gt;
+/// OAuth 1.0 token and associated information.
+/// &lt;/summary&gt;
+class oauth1_token
+{
+public:
+    /// &lt;summary&gt;
+    /// Constructs an initially empty invalid access token.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    oauth1_token() {}</span>
+
+    /// &lt;summary&gt;
+    /// Constructs a OAuth1 token from a given access token and secret.
+    /// &lt;/summary&gt;
+    /// &lt;param name="access_token"&gt;Access token string.&lt;/param&gt;
+    /// &lt;param name="secret"&gt;Token secret string.&lt;/param&gt;
+    oauth1_token(utility::string_t access_token, utility::string_t secret)
+<span style = "background-color:#fdd">        : m_token(std::move(access_token)), m_secret(std::move(secret))
+    {
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Get access token validity state.
+    /// If true, token is a valid access token.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Access token validity state of the token.&lt;/returns&gt;
+    bool is_valid_access_token() const { return !(access_token().empty() || secret().empty()); }
+
+    /// &lt;summary&gt;
+    /// Get access token.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The access token string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; access_token() const { return m_token; }</span>
+
+    /// &lt;summary&gt;
+    /// Set access token.
+    /// &lt;/summary&gt;
+    /// &lt;param name="access_token"&gt;Access token string to set.&lt;/param&gt;
+    void set_access_token(utility::string_t&amp;&amp; access_token) { m_token = std::move(access_token); }
+
+    /// &lt;summary&gt;
+    /// Set access token.
+    /// &lt;/summary&gt;
+    /// &lt;param name="access_token"&gt;Access token string to set.&lt;/param&gt;
+    void set_access_token(const utility::string_t&amp; access_token) { m_token = access_token; }
+
+    /// &lt;summary&gt;
+    /// Get token secret.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Token secret string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; secret() const { return m_secret; }</span>
+
+    /// &lt;summary&gt;
+    /// Set token secret.
+    /// &lt;/summary&gt;
+    /// &lt;param name="secret"&gt;Token secret string to set.&lt;/param&gt;
+    void set_secret(utility::string_t&amp;&amp; secret) { m_secret = std::move(secret); }
+
+    /// &lt;summary&gt;
+    /// Set token secret.
+    /// &lt;/summary&gt;
+    /// &lt;param name="secret"&gt;Token secret string to set.&lt;/param&gt;
+    void set_secret(const utility::string_t&amp; secret) { m_secret = secret; }
+
+    /// &lt;summary&gt;
+    /// Retrieves any additional parameters.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A map containing the additional parameters.&lt;/returns&gt;
+    const std::map&lt;utility::string_t, utility::string_t&gt;&amp; additional_parameters() const
+    {
+        return m_additional_parameters;
+    }
+
+    /// &lt;summary&gt;
+    /// Sets a specific parameter additional parameter.
+    /// &lt;/summary&gt;
+    /// &lt;param name="paramName"&gt;Parameter name.&lt;/param&gt;
+    /// &lt;param name="paramValue"&gt;Parameter value.&lt;/param&gt;
+    void set_additional_parameter(utility::string_t&amp;&amp; paramName, utility::string_t&amp;&amp; paramValue)
+<span style = "background-color:#fdd">    {
+        m_additional_parameters[std::move(paramName)] = std::move(paramValue);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Sets a specific parameter additional parameter.
+    /// &lt;/summary&gt;
+    /// &lt;param name="paramName"&gt;Parameter name.&lt;/param&gt;
+    /// &lt;param name="paramValue"&gt;Parameter value.&lt;/param&gt;
+    void set_additional_parameter(const utility::string_t&amp; paramName, const utility::string_t&amp; paramValue)
+    {
+        m_additional_parameters[paramName] = paramValue;
+    }
+
+    /// &lt;summary&gt;
+    /// Clears all additional parameters.
+    /// &lt;/summary&gt;
+    void clear_additional_parameters() { m_additional_parameters.clear(); }
+
+private:
+    friend class oauth1_config;
+
+    utility::string_t m_token;
+    utility::string_t m_secret;
+    std::map&lt;utility::string_t, utility::string_t&gt; m_additional_parameters;
+};
+
+/// &lt;summary&gt;
+/// OAuth 1.0 configuration class.
+/// &lt;/summary&gt;
+class oauth1_config
+{
+public:
+    oauth1_config(utility::string_t consumer_key,
+                  utility::string_t consumer_secret,
+                  utility::string_t temp_endpoint,
+                  utility::string_t auth_endpoint,
+                  utility::string_t token_endpoint,
+                  utility::string_t callback_uri,
+                  oauth1_method method,
+                  utility::string_t realm = utility::string_t())
+        : m_consumer_key(std::move(consumer_key))
+        , m_consumer_secret(std::move(consumer_secret))
+        , m_temp_endpoint(std::move(temp_endpoint))
+        , m_auth_endpoint(std::move(auth_endpoint))
+        , m_token_endpoint(std::move(token_endpoint))
+        , m_callback_uri(std::move(callback_uri))
+        , m_realm(std::move(realm))
+        , m_method(std::move(method))
+        , m_is_authorization_completed(false)
+    {
+    }
+
+    /// &lt;summary&gt;
+    /// Builds an authorization URI to be loaded in a web browser/view.
+    /// The URI is built with auth_endpoint() as basis.
+    /// The method creates a task for HTTP request to first obtain a
+    /// temporary token. The authorization URI build based on this token.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Authorization URI to be loaded in a web browser/view.&lt;/returns&gt;
+    _ASYNCRTIMP pplx::task&lt;utility::string_t&gt; build_authorization_uri();
+
+    /// &lt;summary&gt;
+    /// Fetch an access token based on redirected URI.
+    /// The URI is expected to contain 'oauth_verifier'
+    /// parameter, which is then used to fetch an access token using the
+    /// token_from_verifier() method.
+    /// See: http://tools.ietf.org/html/rfc5849#section-2.2
+    /// The received 'oauth_token' is parsed and verified to match the current token().
+    /// When access token is successfully obtained, set_token() is called, and config is
+    /// ready for use by oauth1_handler.
+    /// &lt;/summary&gt;
+    /// &lt;param name="redirected_uri"&gt;The URI where web browser/view was redirected after resource owner's
+    /// authorization.&lt;/param&gt; &lt;returns&gt;Task that fetches the access token based on redirected URI.&lt;/returns&gt;
+    _ASYNCRTIMP pplx::task&lt;void&gt; token_from_redirected_uri(const web::http::uri&amp; redirected_uri);
+
+    /// &lt;summary&gt;
+    /// Creates a task with HTTP request to fetch an access token from the token endpoint.
+    /// The request exchanges a verifier code to an access token.
+    /// If successful, the resulting token is set as active via set_token().
+    /// See: http://tools.ietf.org/html/rfc5849#section-2.3
+    /// &lt;/summary&gt;
+    /// &lt;param name="verifier"&gt;Verifier received via redirect upon successful authorization.&lt;/param&gt;
+    /// &lt;returns&gt;Task that fetches the access token based on the verifier.&lt;/returns&gt;
+    pplx::task&lt;void&gt; token_from_verifier(utility::string_t verifier)
+<span style = "background-color:#fdd">    {
+        return _request_token(_generate_auth_state(details::oauth1_strings::verifier, std::move(verifier)), false);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Creates a task with HTTP request to fetch an access token from the token endpoint.
+    /// If successful, the resulting token is set as active via set_token().
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Task that fetches the access token based on the verifier.&lt;/returns&gt;
+    pplx::task&lt;void&gt; refresh_token(const utility::string_t&amp; key)
+    {
+        return _request_token(_generate_auth_state(key, m_token.additional_parameters().at(key)), false);
+    }
+
+    /// &lt;summary&gt;
+    /// Get consumer key used in authorization and authentication.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Consumer key string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; consumer_key() const { return m_consumer_key; }</span>
+    /// &lt;summary&gt;
+    /// Set consumer key used in authorization and authentication.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;Consumer key string to set.&lt;/param&gt;
+    void set_consumer_key(utility::string_t key) { m_consumer_key = std::move(key); }
+
+    /// &lt;summary&gt;
+    /// Get consumer secret used in authorization and authentication.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Consumer secret string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; consumer_secret() const { return m_consumer_secret; }</span>
+    /// &lt;summary&gt;
+    /// Set consumer secret used in authorization and authentication.
+    /// &lt;/summary&gt;
+    /// &lt;param name="secret"&gt;Consumer secret string to set.&lt;/param&gt;
+    void set_consumer_secret(utility::string_t secret) { m_consumer_secret = std::move(secret); }
+
+    /// &lt;summary&gt;
+    /// Get temporary token endpoint URI string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Temporary token endpoint URI string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; temp_endpoint() const { return m_temp_endpoint; }</span>
+    /// &lt;summary&gt;
+    /// Set temporary token endpoint URI string.
+    /// &lt;/summary&gt;
+    /// &lt;param name="temp_endpoint"&gt;Temporary token endpoint URI string to set.&lt;/param&gt;
+    void set_temp_endpoint(utility::string_t temp_endpoint) { m_temp_endpoint = std::move(temp_endpoint); }
+
+    /// &lt;summary&gt;
+    /// Get authorization endpoint URI string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Authorization endpoint URI string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; auth_endpoint() const { return m_auth_endpoint; }</span>
+    /// &lt;summary&gt;
+    /// Set authorization endpoint URI string.
+    /// &lt;/summary&gt;
+    /// &lt;param name="auth_endpoint"&gt;Authorization endpoint URI string to set.&lt;/param&gt;
+    void set_auth_endpoint(utility::string_t auth_endpoint) { m_auth_endpoint = std::move(auth_endpoint); }
+
+    /// &lt;summary&gt;
+    /// Get token endpoint URI string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Token endpoint URI string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; token_endpoint() const { return m_token_endpoint; }</span>
+    /// &lt;summary&gt;
+    /// Set token endpoint URI string.
+    /// &lt;/summary&gt;
+    /// &lt;param name="token_endpoint"&gt;Token endpoint URI string to set.&lt;/param&gt;
+    void set_token_endpoint(utility::string_t token_endpoint) { m_token_endpoint = std::move(token_endpoint); }
+
+    /// &lt;summary&gt;
+    /// Get callback URI string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Callback URI string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; callback_uri() const { return m_callback_uri; }</span>
+    /// &lt;summary&gt;
+    /// Set callback URI string.
+    /// &lt;/summary&gt;
+    /// &lt;param name="callback_uri"&gt;Callback URI string to set.&lt;/param&gt;
+    void set_callback_uri(utility::string_t callback_uri) { m_callback_uri = std::move(callback_uri); }
+
+    /// &lt;summary&gt;
+    /// Get token.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Token.&lt;/returns&gt;
+    _ASYNCRTIMP const oauth1_token&amp; token() const;
+
+    /// &lt;summary&gt;
+    /// Set token.
+    /// &lt;/summary&gt;
+    /// &lt;param name="token"&gt;Token to set.&lt;/param&gt;
+    void set_token(oauth1_token token)
+    {
+        m_token = std::move(token);
+        m_is_authorization_completed = true;
+    }
+
+    /// &lt;summary&gt;
+    /// Get signature method.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Signature method.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const oauth1_method&amp; method() const { return m_method; }</span>
+    /// &lt;summary&gt;
+    /// Set signature method.
+    /// &lt;/summary&gt;
+    /// &lt;param name="method"&gt;Signature method.&lt;/param&gt;
+    void set_method(oauth1_method method) { m_method = std::move(method); }
+
+    /// &lt;summary&gt;
+    /// Get authentication realm.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Authentication realm string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; realm() const { return m_realm; }</span>
+    /// &lt;summary&gt;
+    /// Set authentication realm.
+    /// &lt;/summary&gt;
+    /// &lt;param name="realm"&gt;Authentication realm string to set.&lt;/param&gt;
+    void set_realm(utility::string_t realm) { m_realm = std::move(realm); }
+
+    /// &lt;summary&gt;
+    /// Returns enabled state of the configuration.
+    /// The oauth1_handler will perform OAuth 1.0 authentication only if
+    /// this method returns true.
+    /// Return value is true if access token is valid (=fetched or manually set)
+    /// and both consumer_key() and consumer_secret() are set (=non-empty).
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The configuration enabled state.&lt;/returns&gt;
+    bool is_enabled() const
+    {
+        return token().is_valid_access_token() &amp;&amp; !(consumer_key().empty() || consumer_secret().empty());
+    }
+
+    // Builds signature base string according to:
+    // http://tools.ietf.org/html/rfc5849#section-3.4.1.1
+    _ASYNCRTIMP utility::string_t _build_signature_base_string(http_request request, details::oauth1_state state) const;
+
+    // Builds HMAC-SHA1 signature according to:
+    // http://tools.ietf.org/html/rfc5849#section-3.4.2
+    utility::string_t _build_hmac_sha1_signature(http_request request, details::oauth1_state state) const
+<span style = "background-color:#fdd">    {
+        auto text(_build_signature_base_string(std::move(request), std::move(state)));
+        auto digest(_hmac_sha1(_build_key(), std::move(text)));
+        auto signature(utility::conversions::to_base64(std::move(digest)));
+        return signature;
+    }</span>
+
+    // Builds PLAINTEXT signature according to:
+    // http://tools.ietf.org/html/rfc5849#section-3.4.4
+<span style = "background-color:#fdd">    utility::string_t _build_plaintext_signature() const { return _build_key(); }</span>
+
+    details::oauth1_state _generate_auth_state(utility::string_t extra_key, utility::string_t extra_value)
+<span style = "background-color:#fdd">    {
+        return details::oauth1_state(</span>
+            _generate_timestamp(), _generate_nonce(), std::move(extra_key), std::move(extra_value));
+<span style = "background-color:#fdd">    }</span>
+
+    details::oauth1_state _generate_auth_state()
+<span style = "background-color:#fdd">    {
+        return details::oauth1_state(_generate_timestamp(), _generate_nonce());
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Gets map of parameters to sign.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Map of parameters.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const std::map&lt;utility::string_t, utility::string_t&gt;&amp; parameters() const { return m_parameters_to_sign; }</span>
+
+    /// &lt;summary&gt;
+    /// Adds a key value parameter.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;Key as a string value.&lt;/param&gt;
+    /// &lt;param name="value"&gt;Value as a string value.&lt;/param&gt;
+    void add_parameter(const utility::string_t&amp; key, const utility::string_t&amp; value)
+    {
+        m_parameters_to_sign[key] = value;
+    }
+
+    /// &lt;summary&gt;
+    /// Adds a key value parameter.
+    /// &lt;/summary&gt;
+    /// &lt;param name="key"&gt;Key as a string value.&lt;/param&gt;
+    /// &lt;param name="value"&gt;Value as a string value.&lt;/param&gt;
+    void add_parameter(utility::string_t&amp;&amp; key, utility::string_t&amp;&amp; value)
+    {
+        m_parameters_to_sign[std::move(key)] = std::move(value);
+    }
+
+    /// &lt;summary&gt;
+    /// Sets entire map or parameters replacing all previously values.
+    /// &lt;/summary&gt;
+    /// &lt;param name="parameters"&gt;Map of values.&lt;/param&gt;
+    void set_parameters(const std::map&lt;utility::string_t, utility::string_t&gt;&amp; parameters)
+    {
+        m_parameters_to_sign.clear();
+        m_parameters_to_sign = parameters;
+    }
+
+    /// &lt;summary&gt;
+    /// Clears all parameters.
+    /// &lt;/summary&gt;
+    void clear_parameters() { m_parameters_to_sign.clear(); }
+
+    /// &lt;summary&gt;
+    /// Get the web proxy object
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A reference to the web proxy object.&lt;/returns&gt;
+    const web_proxy&amp; proxy() const { return m_proxy; }
+
+    /// &lt;summary&gt;
+    /// Set the web proxy object that will be used by token_from_code and token_from_refresh
+    /// &lt;/summary&gt;
+    /// &lt;param name="proxy"&gt;A reference to the web proxy object.&lt;/param&gt;
+    void set_proxy(const web_proxy&amp; proxy) { m_proxy = proxy; }
+
+private:
+    friend class web::http::client::http_client_config;
+    friend class web::http::oauth1::details::oauth1_handler;
+
+    oauth1_config() : m_is_authorization_completed(false) {}
+
+<span style = "background-color:#fdd">    utility::string_t _generate_nonce() { return m_nonce_generator.generate(); }</span>
+
+    static utility::string_t _generate_timestamp()
+<span style = "background-color:#fdd">    {
+        return utility::conversions::details::to_string_t(utility::datetime::utc_timestamp());
+    }</span>
+
+    _ASYNCRTIMP static std::vector&lt;unsigned char&gt; __cdecl _hmac_sha1(const utility::string_t&amp; key,
+                                                                     const utility::string_t&amp; data);
+
+    static utility::string_t _build_base_string_uri(const uri&amp; u);
+
+    utility::string_t _build_normalized_parameters(web::http::uri u, const details::oauth1_state&amp; state) const;
+
+    utility::string_t _build_signature(http_request request, details::oauth1_state state) const;
+
+    utility::string_t _build_key() const
+<span style = "background-color:#fdd">    {
+        return uri::encode_data_string(consumer_secret()) + _XPLATSTR("&amp;") + uri::encode_data_string(m_token.secret());
+    }</span>
+
+<span style = "background-color:#fdd">    void _authenticate_request(http_request&amp; req) { _authenticate_request(req, _generate_auth_state()); }</span>
+
+    _ASYNCRTIMP void _authenticate_request(http_request&amp; req, details::oauth1_state state);
+
+    _ASYNCRTIMP pplx::task&lt;void&gt; _request_token(details::oauth1_state state, bool is_temp_token_request);
+
+    utility::string_t m_consumer_key;
+    utility::string_t m_consumer_secret;
+    oauth1_token m_token;
+
+    utility::string_t m_temp_endpoint;
+    utility::string_t m_auth_endpoint;
+    utility::string_t m_token_endpoint;
+    utility::string_t m_callback_uri;
+    utility::string_t m_realm;
+    oauth1_method m_method;
+
+    std::map&lt;utility::string_t, utility::string_t&gt; m_parameters_to_sign;
+
+    web::web_proxy m_proxy;
+
+    utility::nonce_generator m_nonce_generator;
+    bool m_is_authorization_completed;
+};
+
+} // namespace experimental
+
+namespace details
+{
+class oauth1_handler : public http_pipeline_stage
+{
+public:
+<span style = "background-color:#fdd">    oauth1_handler(std::shared_ptr&lt;experimental::oauth1_config&gt; cfg) : m_config(std::move(cfg)) {}</span>
+
+    virtual pplx::task&lt;http_response&gt; propagate(http_request request) override
+<span style = "background-color:#fdd">    {
+        if (m_config)</span>
+        {
+<span style = "background-color:#fdd">            m_config-&gt;_authenticate_request(request);</span>
+        }
+<span style = "background-color:#fdd">        return next_stage()-&gt;propagate(request);
+    }</span>
+
+private:
+    std::shared_ptr&lt;experimental::oauth1_config&gt; m_config;
+};
+
+} // namespace details
+} // namespace oauth1
+} // namespace http
+} // namespace web
+
+#endif</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

@@ -1,0 +1,246 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>fileio.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * fileio.h
+ *
+ * Asynchronous I/O: stream buffer implementation details
+ *
+ * We're going to some lengths to avoid exporting C++ class member functions and implementation details across
+ * module boundaries, and the factoring requires that we keep the implementation details away from the main header
+ * files. The supporting functions, which are in this file, use C-like signatures to avoid as many issues as
+ * possible.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#pragma once
+
+#ifdef _WIN32
+#include &lt;cstdint&gt;
+#endif
+
+#include "cpprest/details/basic_types.h"
+#include "pplx/pplxtasks.h"
+
+namespace Concurrency
+{
+namespace streams
+{
+namespace details
+{
+/// &lt;summary&gt;
+/// A record containing the essential private data members of a file stream,
+/// in particular the parts that need to be shared between the public header
+/// file and the implementation in the implementation file.
+/// &lt;/summary&gt;
+struct _file_info
+{
+    _ASYNCRTIMP _file_info(std::ios_base::openmode mode, size_t buffer_size)
+<span style = "background-color:#fdd">        : m_rdpos(0)
+        , m_wrpos(0)
+        , m_atend(false)
+        , m_buffer_size(buffer_size)
+        , m_buffer(nullptr)
+        , m_bufoff(0)
+        , m_bufsize(0)
+        , m_buffill(0)
+        , m_mode(mode)
+    {
+    }</span>
+
+    // Positional data
+
+    size_t m_rdpos;
+    size_t m_wrpos;
+    bool m_atend;
+
+    // Input buffer
+
+    size_t m_buffer_size; // The intended size of the buffer to read into.
+    char* m_buffer;
+
+    size_t m_bufoff;                          // File position that the start of the buffer represents.
+    msl::safeint3::SafeInt&lt;size_t&gt; m_bufsize; // Buffer allocated size, as actually allocated.
+    size_t m_buffill;                         // Amount of file data actually in the buffer
+
+    std::ios_base::openmode m_mode;
+
+    pplx::extensibility::recursive_lock_t m_lock;
+};
+
+/// &lt;summary&gt;
+/// This interface provides the necessary callbacks for completion events.
+/// &lt;/summary&gt;
+class _filestream_callback
+{
+public:
+<span style = "background-color:#fdd">    virtual void on_opened(_In_ details::_file_info*) {}
+    virtual void on_closed() {}
+    virtual void on_error(const std::exception_ptr&amp;) {}
+    virtual void on_completed(size_t) {}</span>
+
+protected:
+<span style = "background-color:#fdd">    virtual ~_filestream_callback() {}</span>
+};
+
+} // namespace details
+} // namespace streams
+} // namespace Concurrency
+
+extern "C"
+{
+/// &lt;summary&gt;
+/// Open a file and create a streambuf instance to represent it.
+/// &lt;/summary&gt;
+/// &lt;param name="callback"&gt;A pointer to the callback interface to invoke when the file has been opened.&lt;/param&gt;
+/// &lt;param name="filename"&gt;The name of the file to open&lt;/param&gt;
+/// &lt;param name="mode"&gt;A creation mode for the stream buffer&lt;/param&gt;
+/// &lt;param name="prot"&gt;A file protection mode to use for the file stream (not supported on Linux)&lt;/param&gt;
+/// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the opening operation could be initiated, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+/// &lt;remarks&gt;
+/// True does not signal that the file will eventually be successfully opened, just that the process was started.
+/// &lt;/remarks&gt;
+#if !defined(__cplusplus_winrt)
+    _ASYNCRTIMP bool __cdecl _open_fsb_str(_In_ concurrency::streams::details::_filestream_callback* callback,
+                                           const utility::char_t* filename,
+                                           std::ios_base::openmode mode,
+                                           int prot);
+#endif
+
+/// &lt;summary&gt;
+/// Create a streambuf instance to represent a WinRT file.
+/// &lt;/summary&gt;
+/// &lt;param name="callback"&gt;A pointer to the callback interface to invoke when the file has been opened.&lt;/param&gt;
+/// &lt;param name="file"&gt;The file object&lt;/param&gt;
+/// &lt;param name="mode"&gt;A creation mode for the stream buffer&lt;/param&gt;
+/// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the opening operation could be initiated, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+/// &lt;remarks&gt;
+/// True does not signal that the file will eventually be successfully opened, just that the process was started.
+/// This is only available for WinRT.
+/// &lt;/remarks&gt;
+#if defined(__cplusplus_winrt)
+    _ASYNCRTIMP bool __cdecl _open_fsb_stf_str(_In_ concurrency::streams::details::_filestream_callback* callback,
+                                               ::Windows::Storage::StorageFile ^ file,
+                                               std::ios_base::openmode mode,
+                                               int prot);
+#endif
+
+    /// &lt;summary&gt;
+    /// Close a file stream buffer.
+    /// &lt;/summary&gt;
+    /// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+    /// &lt;param name="callback"&gt;A pointer to the callback interface to invoke when the file has been opened.&lt;/param&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the closing operation could be initiated, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// True does not signal that the file will eventually be successfully closed, just that the process was started.
+    /// &lt;/remarks&gt;
+    _ASYNCRTIMP bool __cdecl _close_fsb_nolock(_In_ concurrency::streams::details::_file_info** info,
+                                               _In_ concurrency::streams::details::_filestream_callback* callback);
+    _ASYNCRTIMP bool __cdecl _close_fsb(_In_ concurrency::streams::details::_file_info** info,
+                                        _In_ concurrency::streams::details::_filestream_callback* callback);
+
+    /// &lt;summary&gt;
+    /// Write data from a buffer into the file stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+    /// &lt;param name="callback"&gt;A pointer to the callback interface to invoke when the write request is
+    /// completed.&lt;/param&gt; &lt;param name="ptr"&gt;A pointer to a buffer where the data should be placed&lt;/param&gt; &lt;param
+    /// name="count"&gt;The size (in characters) of the buffer&lt;/param&gt; &lt;returns&gt;0 if the read request is still outstanding,
+    /// -1 if the request failed, otherwise the size of the data read into the buffer&lt;/returns&gt;
+    _ASYNCRTIMP size_t __cdecl _putn_fsb(_In_ concurrency::streams::details::_file_info* info,
+                                         _In_ concurrency::streams::details::_filestream_callback* callback,
+                                         const void* ptr,
+                                         size_t count,
+                                         size_t char_size);
+
+    /// &lt;summary&gt;
+    /// Read data from a file stream into a buffer
+    /// &lt;/summary&gt;
+    /// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+    /// &lt;param name="callback"&gt;A pointer to the callback interface to invoke when the write request is
+    /// completed.&lt;/param&gt; &lt;param name="ptr"&gt;A pointer to a buffer where the data should be placed&lt;/param&gt; &lt;param
+    /// name="count"&gt;The size (in characters) of the buffer&lt;/param&gt; &lt;returns&gt;0 if the read request is still outstanding,
+    /// -1 if the request failed, otherwise the size of the data read into the buffer&lt;/returns&gt;
+    _ASYNCRTIMP size_t __cdecl _getn_fsb(_In_ concurrency::streams::details::_file_info* info,
+                                         _In_ concurrency::streams::details::_filestream_callback* callback,
+                                         _Out_writes_(count) void* ptr,
+                                         _In_ size_t count,
+                                         size_t char_size);
+
+    /// &lt;summary&gt;
+    /// Flush all buffered data to the underlying file.
+    /// &lt;/summary&gt;
+    /// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+    /// &lt;param name="callback"&gt;A pointer to the callback interface to invoke when the write request is
+    /// completed.&lt;/param&gt; &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the request was initiated&lt;/returns&gt;
+    _ASYNCRTIMP bool __cdecl _sync_fsb(_In_ concurrency::streams::details::_file_info* info,
+                                       _In_ concurrency::streams::details::_filestream_callback* callback);
+
+    /// &lt;summary&gt;
+    /// Get the size of the underlying file.
+    /// &lt;/summary&gt;
+    /// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+    /// &lt;returns&gt;The file size&lt;/returns&gt;
+    _ASYNCRTIMP utility::size64_t __cdecl _get_size(_In_ concurrency::streams::details::_file_info* info,
+                                                    size_t char_size);
+
+    /// &lt;summary&gt;
+    /// Adjust the internal buffers and pointers when the application seeks to a new read location in the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+    /// &lt;param name="pos"&gt;The new position (offset from the start) in the file stream&lt;/param&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the request was initiated&lt;/returns&gt;
+    _ASYNCRTIMP size_t __cdecl _seekrdpos_fsb(_In_ concurrency::streams::details::_file_info* info,
+                                              size_t pos,
+                                              size_t char_size);
+
+    /// &lt;summary&gt;
+    /// Adjust the internal buffers and pointers when the application seeks to a new read location in the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+    /// &lt;param name="pos"&gt;The new position (offset from the start) in the file stream&lt;/param&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the request was initiated&lt;/returns&gt;
+    _ASYNCRTIMP size_t __cdecl _seekrdtoend_fsb(_In_ concurrency::streams::details::_file_info* info,
+                                                int64_t offset,
+                                                size_t char_size);
+
+    /// &lt;summary&gt;
+    /// Adjust the internal buffers and pointers when the application seeks to a new write location in the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+    /// &lt;param name="pos"&gt;The new position (offset from the start) in the file stream&lt;/param&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the request was initiated&lt;/returns&gt;
+    _ASYNCRTIMP size_t __cdecl _seekwrpos_fsb(_In_ concurrency::streams::details::_file_info* info,
+                                              size_t pos,
+                                              size_t char_size);
+}</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

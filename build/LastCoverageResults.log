@@ -1,0 +1,17 @@
+[2025-07-21 16:36:28] [info] Start Program:
+Path:".\\Debug\\UnitTests.exe"
+Arguments:
+Working directory: not set.
+Modules: Selected: * Excluded: 
+Sources: Selected: src Excluded: 
+Log Level: Normal
+Cover Children: 0
+Aggregate by file: 1
+Continue after C++ exception: 0
+Optimized build support: 0
+Export: html coverage_html 
+Input coverage: 
+Unified diff: 
+Excluded line regular expressions: 
+Substitute pdb source paths: 
+[2025-07-21 16:36:28] [error] Error: Cannot find path: .\Debug\UnitTests.exe

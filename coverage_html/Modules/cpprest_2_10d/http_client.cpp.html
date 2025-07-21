@@ -1,0 +1,452 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>http_client.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: Client-side APIs.
+ *
+ * This file contains shared code across all http_client implementations.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#include "stdafx.h"
+
+#include "http_client_impl.h"
+
+namespace web
+{
+namespace http
+{
+namespace client
+{
+// Helper function to check to make sure the uri is valid.
+static void verify_uri(const uri&amp; uri)
+<span style = "background-color:#fdd">{</span>
+    // Some things like proper URI schema are verified by the URI class.
+    // We only need to check certain things specific to HTTP.
+<span style = "background-color:#fdd">    if (uri.scheme() != _XPLATSTR("http") &amp;&amp; uri.scheme() != _XPLATSTR("https"))</span>
+    {
+<span style = "background-color:#fdd">        throw std::invalid_argument("URI scheme must be 'http' or 'https'");</span>
+    }
+
+<span style = "background-color:#fdd">    if (uri.host().empty())</span>
+    {
+<span style = "background-color:#fdd">        throw std::invalid_argument("URI must contain a hostname.");</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+namespace details
+{
+#if defined(_WIN32) || defined(CPPREST_FORCE_HTTP_CLIENT_WINHTTPPAL)
+const utility::char_t* get_with_body_err_msg =
+    _XPLATSTR("A GET or HEAD request should not have an entity body.");
+#endif
+
+void request_context::complete_headers()
+<span style = "background-color:#fdd">{</span>
+    // We have already read (and transmitted) the request body. Should we explicitly close the stream?
+    // Well, there are test cases that assumes that the istream is valid when t receives the response!
+    // For now, we will drop our reference which will close the stream if the user doesn't have one.
+<span style = "background-color:#fdd">    m_request.set_body(Concurrency::streams::istream());
+    m_request_completion.set(m_response);
+}</span>
+
+void request_context::complete_request(utility::size64_t body_size)
+<span style = "background-color:#fdd">{
+    m_response._get_impl()-&gt;_complete(body_size);</span>
+
+<span style = "background-color:#fdd">    finish();
+}</span>
+
+void request_context::report_error(unsigned long error_code, const std::string&amp; errorMessage)
+<span style = "background-color:#fdd">{
+    report_exception(http_exception(static_cast&lt;int&gt;(error_code), errorMessage));
+}</span>
+
+#if defined(_WIN32)
+void request_context::report_error(unsigned long error_code, const std::wstring&amp; errorMessage)
+<span style = "background-color:#fdd">{
+    report_exception(http_exception(static_cast&lt;int&gt;(error_code), errorMessage));
+}</span>
+#endif
+
+void request_context::report_exception(std::exception_ptr exceptionPtr)
+<span style = "background-color:#fdd">{
+    auto response_impl = m_response._get_impl();</span>
+
+    // If cancellation has been triggered then ignore any errors.
+<span style = "background-color:#fdd">    if (m_request._cancellation_token().is_canceled())</span>
+    {
+<span style = "background-color:#fdd">        exceptionPtr =</span>
+            std::make_exception_ptr(http_exception((int)std::errc::operation_canceled, std::generic_category()));
+    }
+
+    // First try to complete the headers with an exception.
+<span style = "background-color:#fdd">    if (m_request_completion.set_exception(exceptionPtr))</span>
+    {
+        // Complete the request with no msg body. The exception
+        // should only be propagated to one of the tce.
+<span style = "background-color:#fdd">        response_impl-&gt;_complete(0);
+    }</span>
+    else
+    {
+        // Complete the request with an exception
+<span style = "background-color:#fdd">        response_impl-&gt;_complete(0, exceptionPtr);</span>
+    }
+
+<span style = "background-color:#fdd">    finish();
+}</span>
+
+bool request_context::handle_compression()
+<span style = "background-color:#fdd">{</span>
+    // If the response body is compressed we will read the encoding header and create a decompressor object which will
+    // later decompress the body
+    try
+    {
+<span style = "background-color:#fdd">        utility::string_t encoding;
+        http_headers&amp; headers = m_response.headers();</span>
+
+        // Note that some headers, for example "Transfer-Encoding: chunked", may legitimately not produce a decompressor
+<span style = "background-color:#fdd">        if (m_http_client-&gt;client_config().request_compressed_response() &amp;&amp;</span>
+            headers.match(web::http::header_names::content_encoding, encoding))
+        {
+            // Note that, while Transfer-Encoding (chunked only) is valid with Content-Encoding,
+            // we don't need to look for it here because winhttp de-chunks for us in that case
+<span style = "background-color:#fdd">            m_decompressor = compression::details::get_decompressor_from_header(</span>
+                encoding, compression::details::header_types::content_encoding, m_request.decompress_factories());
+<span style = "background-color:#fdd">        }
+        else if (!m_request.decompress_factories().empty() &amp;&amp;</span>
+                 headers.match(web::http::header_names::transfer_encoding, encoding))
+        {
+<span style = "background-color:#fdd">            m_decompressor = compression::details::get_decompressor_from_header(</span>
+                encoding, compression::details::header_types::transfer_encoding, m_request.decompress_factories());
+        }
+<span style = "background-color:#fdd">    }</span>
+    catch (...)
+<span style = "background-color:#fdd">    {
+        report_exception(std::current_exception());
+        return false;
+    }</span>
+
+<span style = "background-color:#fdd">    return true;
+}</span>
+
+utility::string_t request_context::get_compression_header() const
+<span style = "background-color:#fdd">{
+    utility::string_t headers;</span>
+
+    // Add the correct header needed to request a compressed response if supported
+    // on this platform and it has been specified in the config and/or request
+<span style = "background-color:#fdd">    if (m_http_client-&gt;client_config().request_compressed_response())</span>
+    {
+<span style = "background-color:#fdd">        if (!m_request.decompress_factories().empty() || web::http::compression::builtin::supported())</span>
+        {
+            // Accept-Encoding -- request Content-Encoding from the server
+<span style = "background-color:#fdd">            headers.append(header_names::accept_encoding + U(": "));
+            headers.append(compression::details::build_supported_header(</span>
+                compression::details::header_types::accept_encoding, m_request.decompress_factories()));
+<span style = "background-color:#fdd">            headers.append(U("\r\n"));</span>
+        }
+<span style = "background-color:#fdd">    }
+    else if (!m_request.decompress_factories().empty())</span>
+    {
+        // TE -- request Transfer-Encoding from the server
+<span style = "background-color:#fdd">        headers.append(header_names::connection + U(": TE\r\n") + // Required by Section 4.3 of RFC-7230</span>
+                       header_names::te + U(": "));
+<span style = "background-color:#fdd">        headers.append(compression::details::build_supported_header(compression::details::header_types::te,</span>
+                                                                    m_request.decompress_factories()));
+<span style = "background-color:#fdd">        headers.append(U("\r\n"));</span>
+    }
+
+<span style = "background-color:#fdd">    return headers;
+}</span>
+
+concurrency::streams::streambuf&lt;uint8_t&gt; request_context::_get_readbuffer()
+<span style = "background-color:#fdd">{
+    auto instream = m_request.body();</span>
+
+<span style = "background-color:#fdd">    _ASSERTE((bool)instream);
+    return instream.streambuf();
+}</span>
+
+concurrency::streams::streambuf&lt;uint8_t&gt; request_context::_get_writebuffer()
+<span style = "background-color:#fdd">{
+    auto outstream = m_response._get_impl()-&gt;outstream();</span>
+
+<span style = "background-color:#fdd">    _ASSERTE((bool)outstream);
+    return outstream.streambuf();
+}</span>
+
+request_context::request_context(const std::shared_ptr&lt;_http_client_communicator&gt;&amp; client, const http_request&amp; request)
+<span style = "background-color:#fdd">    : m_http_client(client), m_request(request), m_uploaded(0), m_downloaded(0)
+{
+    auto responseImpl = m_response._get_impl();</span>
+
+    // Copy the user specified output stream over to the response
+<span style = "background-color:#fdd">    responseImpl-&gt;set_outstream(request._get_impl()-&gt;_response_stream(), false);</span>
+
+    // Prepare for receiving data from the network. Ideally, this should be done after
+    // we receive the headers and determine that there is a response body. We will do it here
+    // since it is not immediately apparent where that would be in the callback handler
+<span style = "background-color:#fdd">    responseImpl-&gt;_prepare_to_receive_data();
+}</span>
+
+void _http_client_communicator::async_send_request_impl(const std::shared_ptr&lt;request_context&gt;&amp; request)
+<span style = "background-color:#fdd">{
+    auto self = std::static_pointer_cast&lt;_http_client_communicator&gt;(this-&gt;shared_from_this());</span>
+    // Schedule a task to start sending.
+<span style = "background-color:#fdd">    pplx::create_task([self, request] {</span>
+        try
+        {
+<span style = "background-color:#fdd">            self-&gt;send_request(request);</span>
+        }
+        catch (...)
+<span style = "background-color:#fdd">        {
+            request-&gt;report_exception(std::current_exception());
+        }
+    });
+}</span>
+
+void _http_client_communicator::async_send_request(const std::shared_ptr&lt;request_context&gt;&amp; request)
+<span style = "background-color:#fdd">{
+    if (m_client_config.guarantee_order())</span>
+    {
+<span style = "background-color:#fdd">        pplx::extensibility::scoped_critical_section_t l(m_client_lock);</span>
+
+<span style = "background-color:#fdd">        if (m_outstanding)</span>
+        {
+<span style = "background-color:#fdd">            m_requests_queue.push(request);
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            async_send_request_impl(request);
+            m_outstanding = true;</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        async_send_request_impl(request);</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+void _http_client_communicator::finish_request()
+<span style = "background-color:#fdd">{</span>
+    // If guarantee order is specified we don't need to do anything.
+<span style = "background-color:#fdd">    if (m_client_config.guarantee_order())</span>
+    {
+<span style = "background-color:#fdd">        pplx::extensibility::scoped_critical_section_t l(m_client_lock);</span>
+
+<span style = "background-color:#fdd">        if (m_requests_queue.empty())</span>
+        {
+<span style = "background-color:#fdd">            m_outstanding = false;
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            auto request = m_requests_queue.front();
+            m_requests_queue.pop();</span>
+
+<span style = "background-color:#fdd">            async_send_request_impl(request);
+        }
+    }
+}</span>
+
+<span style = "background-color:#fdd">const http_client_config&amp; _http_client_communicator::client_config() const { return m_client_config; }</span>
+
+<span style = "background-color:#fdd">const uri&amp; _http_client_communicator::base_uri() const { return m_uri; }</span>
+
+_http_client_communicator::_http_client_communicator(http::uri&amp;&amp; address, http_client_config&amp;&amp; client_config)
+<span style = "background-color:#fdd">    : m_uri(std::move(address)), m_client_config(std::move(client_config)), m_outstanding(false)
+{
+}</span>
+
+inline void request_context::finish()
+<span style = "background-color:#fdd">{</span>
+    // If cancellation is enabled and registration was performed, unregister.
+<span style = "background-color:#fdd">    if (m_cancellationRegistration != pplx::cancellation_token_registration())</span>
+    {
+<span style = "background-color:#fdd">        _ASSERTE(m_request._cancellation_token() != pplx::cancellation_token::none());
+        m_request._cancellation_token().deregister_callback(m_cancellationRegistration);</span>
+    }
+
+<span style = "background-color:#fdd">    m_http_client-&gt;finish_request();
+}</span>
+
+} // namespace details
+
+/// &lt;summary&gt;
+/// Private implementation of http_client. Manages the http request processing pipeline.
+/// &lt;/summary&gt;
+class http_pipeline
+{
+public:
+<span style = "background-color:#fdd">    http_pipeline(std::shared_ptr&lt;details::_http_client_communicator&gt; last) : m_last_stage(std::move(last)) {}</span>
+
+    // pplx::extensibility::recursive_lock_t does not support move/copy, but does not delete the functions either.
+    http_pipeline(const http_pipeline&amp;) = delete;
+    http_pipeline(http_pipeline&amp;&amp;) = delete;
+    http_pipeline&amp; operator=(const http_pipeline&amp;) = delete;
+    http_pipeline&amp; operator=(http_pipeline&amp;&amp;) = delete;
+
+    /// &lt;summary&gt;
+    /// Initiate an http request into the pipeline
+    /// &lt;/summary&gt;
+    /// &lt;param name="request"&gt;Http request&lt;/param&gt;
+    pplx::task&lt;http_response&gt; propagate(http_request request)
+<span style = "background-color:#fdd">    {
+        std::shared_ptr&lt;http_pipeline_stage&gt; first;</span>
+        {
+<span style = "background-color:#fdd">            pplx::extensibility::scoped_recursive_lock_t l(m_lock);
+            first = (m_stages.size() &gt; 0) ? m_stages[0] : m_last_stage;
+        }
+        return first-&gt;propagate(request);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Adds an HTTP pipeline stage to the pipeline.
+    /// &lt;/summary&gt;
+    /// &lt;param name="stage"&gt;A pipeline stage.&lt;/param&gt;
+    void append(const std::shared_ptr&lt;http_pipeline_stage&gt;&amp; stage)
+<span style = "background-color:#fdd">    {
+        pplx::extensibility::scoped_recursive_lock_t l(m_lock);</span>
+
+<span style = "background-color:#fdd">        if (m_stages.size() &gt; 0)</span>
+        {
+<span style = "background-color:#fdd">            std::shared_ptr&lt;http_pipeline_stage&gt; penultimate = m_stages[m_stages.size() - 1];
+            penultimate-&gt;set_next_stage(stage);
+        }
+        stage-&gt;set_next_stage(m_last_stage);</span>
+
+<span style = "background-color:#fdd">        m_stages.push_back(stage);
+    }</span>
+
+    // The last stage is always set up by the client or listener and cannot
+    // be changed. All application-defined stages are executed before the
+    // last stage, which is typically a send or dispatch.
+    const std::shared_ptr&lt;details::_http_client_communicator&gt; m_last_stage;
+
+private:
+    // The vector of pipeline stages.
+    std::vector&lt;std::shared_ptr&lt;http_pipeline_stage&gt;&gt; m_stages;
+
+    pplx::extensibility::recursive_lock_t m_lock;
+};
+
+void http_client::add_handler(
+    const std::function&lt;pplx::task&lt;http_response&gt; __cdecl(http_request, std::shared_ptr&lt;http::http_pipeline_stage&gt;)&gt;&amp;
+        handler)
+<span style = "background-color:#fdd">{</span>
+    class function_pipeline_wrapper : public http::http_pipeline_stage
+    {
+    public:
+        function_pipeline_wrapper(const std::function&lt;pplx::task&lt;http_response&gt; __cdecl(
+                                      http_request, std::shared_ptr&lt;http::http_pipeline_stage&gt;)&gt;&amp; handler)
+<span style = "background-color:#fdd">            : m_handler(handler)
+        {
+        }</span>
+
+        virtual pplx::task&lt;http_response&gt; propagate(http_request request) override
+<span style = "background-color:#fdd">        {
+            return m_handler(std::move(request), next_stage());
+        }</span>
+
+    private:
+        std::function&lt;pplx::task&lt;http_response&gt;(http_request, std::shared_ptr&lt;http::http_pipeline_stage&gt;)&gt; m_handler;
+    };
+
+<span style = "background-color:#fdd">    m_pipeline-&gt;append(std::make_shared&lt;function_pipeline_wrapper&gt;(handler));
+}</span>
+
+<span style = "background-color:#fdd">void http_client::add_handler(const std::shared_ptr&lt;http::http_pipeline_stage&gt;&amp; stage) { m_pipeline-&gt;append(stage); }</span>
+
+<span style = "background-color:#fdd">http_client::http_client(const uri&amp; base_uri) : http_client(base_uri, http_client_config()) {}</span>
+
+http_client::http_client(const uri&amp; base_uri, const http_client_config&amp; client_config)
+<span style = "background-color:#fdd">{
+    std::shared_ptr&lt;details::_http_client_communicator&gt; final_pipeline_stage;</span>
+
+<span style = "background-color:#fdd">    if (base_uri.scheme().empty())</span>
+    {
+<span style = "background-color:#fdd">        auto uribuilder = uri_builder(base_uri);
+        uribuilder.set_scheme(_XPLATSTR("http"));
+        uri uriWithScheme = uribuilder.to_uri();
+        verify_uri(uriWithScheme);
+        final_pipeline_stage =</span>
+            details::create_platform_final_pipeline_stage(std::move(uriWithScheme), http_client_config(client_config));
+<span style = "background-color:#fdd">    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        verify_uri(base_uri);
+        final_pipeline_stage =</span>
+            details::create_platform_final_pipeline_stage(uri(base_uri), http_client_config(client_config));
+    }
+
+<span style = "background-color:#fdd">    m_pipeline = std::make_shared&lt;http_pipeline&gt;(std::move(final_pipeline_stage));</span>
+
+#if _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+<span style = "background-color:#fdd">    add_handler(std::static_pointer_cast&lt;http::http_pipeline_stage&gt;(</span>
+        std::make_shared&lt;oauth1::details::oauth1_handler&gt;(client_config.oauth1())));
+#endif
+
+<span style = "background-color:#fdd">    add_handler(std::static_pointer_cast&lt;http::http_pipeline_stage&gt;(</span>
+        std::make_shared&lt;oauth2::details::oauth2_handler&gt;(client_config.oauth2())));
+<span style = "background-color:#fdd">}</span>
+
+<span style = "background-color:#fdd">http_client::~http_client() CPPREST_NOEXCEPT {}</span>
+
+<span style = "background-color:#fdd">const http_client_config&amp; http_client::client_config() const { return m_pipeline-&gt;m_last_stage-&gt;client_config(); }</span>
+
+<span style = "background-color:#fdd">const uri&amp; http_client::base_uri() const { return m_pipeline-&gt;m_last_stage-&gt;base_uri(); }</span>
+
+// Macros to help build string at compile time and avoid overhead.
+#define STRINGIFY(x) _XPLATSTR(#x)
+#define TOSTRING(x) STRINGIFY(x)
+#define USERAGENT                                                                                                      \
+    _XPLATSTR("cpprestsdk/")                                                                                           \
+    TOSTRING(CPPREST_VERSION_MAJOR)                                                                                    \
+    _XPLATSTR(".") TOSTRING(CPPREST_VERSION_MINOR) _XPLATSTR(".") TOSTRING(CPPREST_VERSION_REVISION)
+
+pplx::task&lt;http_response&gt; http_client::request(http_request request, const pplx::cancellation_token&amp; token)
+<span style = "background-color:#fdd">{
+    if (!request.headers().has(header_names::user_agent))</span>
+    {
+<span style = "background-color:#fdd">        request.headers().add(header_names::user_agent, USERAGENT);</span>
+    }
+
+<span style = "background-color:#fdd">    request._set_base_uri(base_uri());
+    request._set_cancellation_token(token);
+    return m_pipeline-&gt;propagate(request);
+}</span>
+
+} // namespace client
+} // namespace http
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

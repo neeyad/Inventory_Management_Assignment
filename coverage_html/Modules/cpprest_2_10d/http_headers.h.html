@@ -1,0 +1,348 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>http_headers.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#pragma once
+
+#include "cpprest/asyncrt_utils.h"
+#include &lt;map&gt;
+#include &lt;memory&gt;
+#include &lt;string&gt;
+#include &lt;system_error&gt;
+#include &lt;vector&gt;
+
+namespace web
+{
+namespace http
+{
+/// &lt;summary&gt;
+/// Binds an individual reference to a string value.
+/// &lt;/summary&gt;
+/// &lt;typeparam name="key_type"&gt;The type of string value.&lt;/typeparam&gt;
+/// &lt;typeparam name="_t"&gt;The type of the value to bind to.&lt;/typeparam&gt;
+/// &lt;param name="text"&gt;The string value.&lt;/param&gt;
+/// &lt;param name="ref"&gt;The value to bind to.&lt;/param&gt;
+/// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the binding succeeds, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+template&lt;typename key_type, typename _t&gt;
+CASABLANCA_DEPRECATED("This API is deprecated and will be removed in a future release, std::istringstream instead.")
+bool bind(const key_type&amp; text, _t&amp; ref) // const
+{
+    utility::istringstream_t iss(text);
+    iss &gt;&gt; ref;
+    if (iss.fail() || !iss.eof())
+    {
+        return false;
+    }
+
+    return true;
+}
+
+/// &lt;summary&gt;
+/// Binds an individual reference to a string value.
+/// This specialization is need because &lt;c&gt;istringstream::&amp;gt;&amp;gt;&lt;/c&gt; delimits on whitespace.
+/// &lt;/summary&gt;
+/// &lt;typeparam name="key_type"&gt;The type of the string value.&lt;/typeparam&gt;
+/// &lt;param name="text"&gt;The string value.&lt;/param&gt;
+/// &lt;param name="ref"&gt;The value to bind to.&lt;/param&gt;
+/// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the binding succeeds, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+template&lt;typename key_type&gt;
+CASABLANCA_DEPRECATED("This API is deprecated and will be removed in a future release.")
+bool bind(const key_type&amp; text, utility::string_t&amp; ref) // const
+{
+    ref = text;
+    return true;
+}
+
+namespace details
+{
+template&lt;typename key_type, typename _t&gt;
+bool bind_impl(const key_type&amp; text, _t&amp; ref)
+<span style = "background-color:#fdd">{
+    utility::istringstream_t iss(text);
+    iss.imbue(std::locale::classic());
+    iss &gt;&gt; ref;
+    if (iss.fail() || !iss.eof())</span>
+    {
+<span style = "background-color:#fdd">        return false;</span>
+    }
+
+<span style = "background-color:#fdd">    return true;
+}</span>
+
+template&lt;typename key_type&gt;
+bool bind_impl(const key_type&amp; text, utf16string&amp; ref)
+<span style = "background-color:#fdd">{
+    ref = utility::conversions::to_utf16string(text);
+    return true;
+}</span>
+
+template&lt;typename key_type&gt;
+bool bind_impl(const key_type&amp; text, std::string&amp; ref)
+{
+    ref = utility::conversions::to_utf8string(text);
+    return true;
+}
+} // namespace details
+
+/// &lt;summary&gt;
+/// Represents HTTP headers, acts like a map.
+/// &lt;/summary&gt;
+class http_headers
+{
+public:
+    /// Function object to perform case insensitive comparison of wstrings.
+    struct _case_insensitive_cmp
+    {
+        bool operator()(const utility::string_t&amp; str1, const utility::string_t&amp; str2) const
+<span style = "background-color:#fdd">        {
+            return utility::details::str_iless(str1, str2);
+        }</span>
+    };
+
+private:
+    typedef std::map&lt;utility::string_t, utility::string_t, _case_insensitive_cmp&gt; inner_container;
+
+public:
+    /// &lt;summary&gt;
+    /// STL-style typedefs
+    /// &lt;/summary&gt;
+    typedef inner_container::key_type key_type;
+    typedef inner_container::key_compare key_compare;
+    typedef inner_container::allocator_type allocator_type;
+    typedef inner_container::size_type size_type;
+    typedef inner_container::difference_type difference_type;
+    typedef inner_container::pointer pointer;
+    typedef inner_container::const_pointer const_pointer;
+    typedef inner_container::reference reference;
+    typedef inner_container::const_reference const_reference;
+    typedef inner_container::iterator iterator;
+    typedef inner_container::const_iterator const_iterator;
+    typedef inner_container::reverse_iterator reverse_iterator;
+    typedef inner_container::const_reverse_iterator const_reverse_iterator;
+
+    /// &lt;summary&gt;
+    /// Constructs an empty set of HTTP headers.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    http_headers() {}</span>
+
+    /// &lt;summary&gt;
+    /// Copy constructor.
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;An &lt;c&gt;http_headers&lt;/c&gt; object to copy from.&lt;/param&gt;
+    http_headers(const http_headers&amp; other) : m_headers(other.m_headers) {}
+
+    /// &lt;summary&gt;
+    /// Assignment operator.
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;An &lt;c&gt;http_headers&lt;/c&gt; object to copy from.&lt;/param&gt;
+    http_headers&amp; operator=(const http_headers&amp; other)
+    {
+        if (this != &amp;other)
+        {
+            m_headers = other.m_headers;
+        }
+        return *this;
+    }
+
+    /// &lt;summary&gt;
+    /// Move constructor.
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;An &lt;c&gt;http_headers&lt;/c&gt; object to move.&lt;/param&gt;
+    http_headers(http_headers&amp;&amp; other) : m_headers(std::move(other.m_headers)) {}
+
+    /// &lt;summary&gt;
+    /// Move assignment operator.
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;An &lt;c&gt;http_headers&lt;/c&gt; object to move.&lt;/param&gt;
+    http_headers&amp; operator=(http_headers&amp;&amp; other)
+    {
+        if (this != &amp;other)
+        {
+            m_headers = std::move(other.m_headers);
+        }
+        return *this;
+    }
+
+    /// &lt;summary&gt;
+    /// Adds a header field using the '&amp;lt;&amp;lt;' operator.
+    /// &lt;/summary&gt;
+    /// &lt;param name="name"&gt;The name of the header field.&lt;/param&gt;
+    /// &lt;param name="value"&gt;The value of the header field.&lt;/param&gt;
+    /// &lt;remarks&gt;If the header field exists, the value will be combined as comma separated string.&lt;/remarks&gt;
+    template&lt;typename _t1&gt;
+    void add(const key_type&amp; name, const _t1&amp; value)
+<span style = "background-color:#fdd">    {
+        auto printedValue = utility::conversions::details::print_string(value);
+        auto&amp; mapVal = m_headers[name];
+        if (mapVal.empty())</span>
+        {
+<span style = "background-color:#fdd">            mapVal = std::move(printedValue);
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            mapVal.append(_XPLATSTR(", ")).append(std::move(printedValue));</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    /// &lt;summary&gt;
+    /// Removes a header field.
+    /// &lt;/summary&gt;
+    /// &lt;param name="name"&gt;The name of the header field.&lt;/param&gt;
+<span style = "background-color:#fdd">    void remove(const key_type&amp; name) { m_headers.erase(name); }</span>
+
+    /// &lt;summary&gt;
+    /// Removes all elements from the headers.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    void clear() { m_headers.clear(); }</span>
+
+    /// &lt;summary&gt;
+    /// Checks if there is a header with the given key.
+    /// &lt;/summary&gt;
+    /// &lt;param name="name"&gt;The name of the header field.&lt;/param&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if there is a header with the given name, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+<span style = "background-color:#fdd">    bool has(const key_type&amp; name) const { return m_headers.find(name) != m_headers.end(); }</span>
+
+    /// &lt;summary&gt;
+    /// Returns the number of header fields.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Number of header fields.&lt;/returns&gt;
+<span style = "background-color:#fdd">    size_type size() const { return m_headers.size(); }</span>
+
+    /// &lt;summary&gt;
+    /// Tests to see if there are any header fields.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if there are no headers, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    bool empty() const { return m_headers.empty(); }
+
+    /// &lt;summary&gt;
+    /// Returns a reference to header field with given name, if there is no header field one is inserted.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    utility::string_t&amp; operator[](const key_type&amp; name) { return m_headers[name]; }</span>
+
+    /// &lt;summary&gt;
+    /// Checks if a header field exists with given name and returns an iterator if found. Otherwise
+    /// and iterator to end is returned.
+    /// &lt;/summary&gt;
+    /// &lt;param name="name"&gt;The name of the header field.&lt;/param&gt;
+    /// &lt;returns&gt;An iterator to where the HTTP header is found.&lt;/returns&gt;
+<span style = "background-color:#fdd">    iterator find(const key_type&amp; name) { return m_headers.find(name); }</span>
+    const_iterator find(const key_type&amp; name) const { return m_headers.find(name); }
+
+    /// &lt;summary&gt;
+    /// Attempts to match a header field with the given name using the '&gt;&gt;' operator.
+    /// &lt;/summary&gt;
+    /// &lt;param name="name"&gt;The name of the header field.&lt;/param&gt;
+    /// &lt;param name="value"&gt;The value of the header field.&lt;/param&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if header field was found and successfully stored in value parameter.&lt;/returns&gt;
+    template&lt;typename _t1&gt;
+    bool match(const key_type&amp; name, _t1&amp; value) const
+<span style = "background-color:#fdd">    {
+        auto iter = m_headers.find(name);
+        if (iter == m_headers.end())</span>
+        {
+<span style = "background-color:#fdd">            return false;</span>
+        }
+
+<span style = "background-color:#fdd">        return web::http::details::bind_impl(iter-&gt;second, value) || iter-&gt;second.empty();
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Returns an iterator referring to the first header field.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An iterator to the beginning of the HTTP headers&lt;/returns&gt;
+<span style = "background-color:#fdd">    iterator begin() { return m_headers.begin(); }
+    const_iterator begin() const { return m_headers.begin(); }</span>
+
+    /// &lt;summary&gt;
+    /// Returns an iterator referring to the past-the-end header field.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An iterator to the element past the end of the HTTP headers.&lt;/returns&gt;
+<span style = "background-color:#fdd">    iterator end() { return m_headers.end(); }
+    const_iterator end() const { return m_headers.end(); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the content length of the message.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The length of the content.&lt;/returns&gt;
+    _ASYNCRTIMP utility::size64_t content_length() const;
+
+    /// &lt;summary&gt;
+    /// Sets the content length of the message.
+    /// &lt;/summary&gt;
+    /// &lt;param name="length"&gt;The length of the content.&lt;/param&gt;
+    _ASYNCRTIMP void set_content_length(utility::size64_t length);
+
+    /// &lt;summary&gt;
+    /// Gets the content type of the message.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The content type of the body.&lt;/returns&gt;
+    _ASYNCRTIMP utility::string_t content_type() const;
+
+    /// &lt;summary&gt;
+    /// Sets the content type of the message.
+    /// &lt;/summary&gt;
+    /// &lt;param name="type"&gt;The content type of the body.&lt;/param&gt;
+    _ASYNCRTIMP void set_content_type(utility::string_t type);
+
+    /// &lt;summary&gt;
+    /// Gets the cache control header of the message.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The cache control header value.&lt;/returns&gt;
+    _ASYNCRTIMP utility::string_t cache_control() const;
+
+    /// &lt;summary&gt;
+    /// Sets the cache control header of the message.
+    /// &lt;/summary&gt;
+    /// &lt;param name="control"&gt;The cache control header value.&lt;/param&gt;
+    _ASYNCRTIMP void set_cache_control(utility::string_t control);
+
+    /// &lt;summary&gt;
+    /// Gets the date header of the message.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The date header value.&lt;/returns&gt;
+    _ASYNCRTIMP utility::string_t date() const;
+
+    /// &lt;summary&gt;
+    /// Sets the date header of the message.
+    /// &lt;/summary&gt;
+    /// &lt;param name="date"&gt;The date header value.&lt;/param&gt;
+    _ASYNCRTIMP void set_date(const utility::datetime&amp; date);
+
+private:
+    // Headers are stored in a map with case insensitive key.
+    inner_container m_headers;
+};
+} // namespace http
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

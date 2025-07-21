@@ -1,0 +1,10 @@
+[
+  {
+    "active": true,
+    "brand": "Apple",
+    "categoryId": "cat1",
+    "description": "Latest model",
+    "id": "1",
+    "name": "iPhone 15"
+  }
+]

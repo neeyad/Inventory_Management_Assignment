@@ -1,0 +1,321 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>uri_builder.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * Builder style class for creating URIs.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#pragma once
+
+#include "cpprest/base_uri.h"
+#include &lt;string&gt;
+
+namespace web
+{
+/// &lt;summary&gt;
+/// Builder for constructing URIs incrementally.
+/// &lt;/summary&gt;
+class uri_builder
+{
+public:
+    /// &lt;summary&gt;
+    /// Creates a builder with an initially empty URI.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    uri_builder() = default;</span>
+
+    /// &lt;summary&gt;
+    /// Creates a builder with a existing URI object.
+    /// &lt;/summary&gt;
+    /// &lt;param name="uri_str"&gt;Encoded string containing the URI.&lt;/param&gt;
+<span style = "background-color:#fdd">    uri_builder(const uri&amp; uri_str) : m_uri(uri_str.m_components) {}</span>
+
+    /// &lt;summary&gt;
+    /// Get the scheme component of the URI as an encoded string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI scheme as a string.&lt;/returns&gt;
+    const utility::string_t&amp; scheme() const { return m_uri.m_scheme; }
+
+    /// &lt;summary&gt;
+    /// Get the user information component of the URI as an encoded string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI user information as a string.&lt;/returns&gt;
+    const utility::string_t&amp; user_info() const { return m_uri.m_user_info; }
+
+    /// &lt;summary&gt;
+    /// Get the host component of the URI as an encoded string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI host as a string.&lt;/returns&gt;
+    const utility::string_t&amp; host() const { return m_uri.m_host; }
+
+    /// &lt;summary&gt;
+    /// Get the port component of the URI. Returns -1 if no port is specified.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI port as an integer.&lt;/returns&gt;
+    int port() const { return m_uri.m_port; }
+
+    /// &lt;summary&gt;
+    /// Get the path component of the URI as an encoded string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI path as a string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; path() const { return m_uri.m_path; }</span>
+
+    /// &lt;summary&gt;
+    /// Get the query component of the URI as an encoded string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI query as a string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; query() const { return m_uri.m_query; }</span>
+
+    /// &lt;summary&gt;
+    /// Get the fragment component of the URI as an encoded string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI fragment as a string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; fragment() const { return m_uri.m_fragment; }</span>
+
+    /// &lt;summary&gt;
+    /// Set the scheme of the URI.
+    /// &lt;/summary&gt;
+    /// &lt;param name="scheme"&gt;Uri scheme.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to this &lt;c&gt;uri_builder&lt;/c&gt; to support chaining.&lt;/returns&gt;
+    uri_builder&amp; set_scheme(const utility::string_t&amp; scheme)
+<span style = "background-color:#fdd">    {
+        m_uri.m_scheme = scheme;
+        return *this;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Set the user info component of the URI.
+    /// &lt;/summary&gt;
+    /// &lt;param name="user_info"&gt;User info as a decoded string.&lt;/param&gt;
+    /// &lt;param name="do_encoding"&gt;Specify whether to apply URI encoding to the given string.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to this &lt;c&gt;uri_builder&lt;/c&gt; to support chaining.&lt;/returns&gt;
+    uri_builder&amp; set_user_info(const utility::string_t&amp; user_info, bool do_encoding = false)
+<span style = "background-color:#fdd">    {
+        if (do_encoding)</span>
+        {
+<span style = "background-color:#fdd">            m_uri.m_user_info = uri::encode_uri(user_info, uri::components::user_info);
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            m_uri.m_user_info = user_info;</span>
+        }
+
+<span style = "background-color:#fdd">        return *this;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Set the host component of the URI.
+    /// &lt;/summary&gt;
+    /// &lt;param name="host"&gt;Host as a decoded string.&lt;/param&gt;
+    /// &lt;param name="do_encoding"&gt;Specify whether to apply URI encoding to the given string.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to this &lt;c&gt;uri_builder&lt;/c&gt; to support chaining.&lt;/returns&gt;
+    uri_builder&amp; set_host(const utility::string_t&amp; host, bool do_encoding = false)
+<span style = "background-color:#fdd">    {
+        if (do_encoding)</span>
+        {
+<span style = "background-color:#fdd">            m_uri.m_host = uri::encode_uri(host, uri::components::host);
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            m_uri.m_host = host;</span>
+        }
+
+<span style = "background-color:#fdd">        return *this;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Set the port component of the URI.
+    /// &lt;/summary&gt;
+    /// &lt;param name="port"&gt;Port as an integer.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to this &lt;c&gt;uri_builder&lt;/c&gt; to support chaining.&lt;/returns&gt;
+    uri_builder&amp; set_port(int port)
+<span style = "background-color:#fdd">    {
+        m_uri.m_port = port;
+        return *this;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Set the port component of the URI.
+    /// &lt;/summary&gt;
+    /// &lt;param name="port"&gt;Port as a string.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to this &lt;c&gt;uri_builder&lt;/c&gt; to support chaining.&lt;/returns&gt;
+    /// &lt;remarks&gt;When string can't be converted to an integer the port is left unchanged.&lt;/remarks&gt;
+    _ASYNCRTIMP uri_builder&amp; set_port(const utility::string_t&amp; port);
+
+    /// &lt;summary&gt;
+    /// Set the path component of the URI.
+    /// &lt;/summary&gt;
+    /// &lt;param name="path"&gt;Path as a decoded string.&lt;/param&gt;
+    /// &lt;param name="do_encoding"&gt;Specify whether to apply URI encoding to the given string.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to this &lt;c&gt;uri_builder&lt;/c&gt; to support chaining.&lt;/returns&gt;
+    uri_builder&amp; set_path(const utility::string_t&amp; path, bool do_encoding = false)
+<span style = "background-color:#fdd">    {
+        if (do_encoding)</span>
+        {
+<span style = "background-color:#fdd">            m_uri.m_path = uri::encode_uri(path, uri::components::path);
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            m_uri.m_path = path;</span>
+        }
+
+<span style = "background-color:#fdd">        return *this;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Set the query component of the URI.
+    /// &lt;/summary&gt;
+    /// &lt;param name="query"&gt;Query as a decoded string.&lt;/param&gt;
+    /// &lt;param name="do_encoding"&gt;Specify whether apply URI encoding to the given string.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to this &lt;c&gt;uri_builder&lt;/c&gt; to support chaining.&lt;/returns&gt;
+    uri_builder&amp; set_query(const utility::string_t&amp; query, bool do_encoding = false)
+<span style = "background-color:#fdd">    {
+        if (do_encoding)</span>
+        {
+<span style = "background-color:#fdd">            m_uri.m_query = uri::encode_uri(query, uri::components::query);
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            m_uri.m_query = query;</span>
+        }
+
+<span style = "background-color:#fdd">        return *this;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Set the fragment component of the URI.
+    /// &lt;/summary&gt;
+    /// &lt;param name="fragment"&gt;Fragment as a decoded string.&lt;/param&gt;
+    /// &lt;param name="do_encoding"&gt;Specify whether to apply URI encoding to the given string.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to this &lt;c&gt;uri_builder&lt;/c&gt; to support chaining.&lt;/returns&gt;
+    uri_builder&amp; set_fragment(const utility::string_t&amp; fragment, bool do_encoding = false)
+<span style = "background-color:#fdd">    {
+        if (do_encoding)</span>
+        {
+<span style = "background-color:#fdd">            m_uri.m_fragment = uri::encode_uri(fragment, uri::components::fragment);
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            m_uri.m_fragment = fragment;</span>
+        }
+
+<span style = "background-color:#fdd">        return *this;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Clears all components of the underlying URI in this uri_builder.
+    /// &lt;/summary&gt;
+    void clear() { m_uri = details::uri_components(); }
+
+    /// &lt;summary&gt;
+    /// Appends another path to the path of this uri_builder.
+    /// &lt;/summary&gt;
+    /// &lt;param name="path"&gt;Path to append as a already encoded string.&lt;/param&gt;
+    /// &lt;param name="do_encoding"&gt;Specify whether to apply URI encoding to the given string.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to this uri_builder to support chaining.&lt;/returns&gt;
+    _ASYNCRTIMP uri_builder&amp; append_path(const utility::string_t&amp; path, bool do_encoding = false);
+
+    /// &lt;summary&gt;
+    /// Appends the raw contents of the path argument to the path of this uri_builder with no separator de-duplication.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;
+    /// The path argument is appended after adding a '/' separator without regards to the contents of path. If an empty
+    /// string is provided, this function will immediately return without changes to the stored path value. For example:
+    /// if the current contents are "/abc" and path="/xyz", the result will be "/abc//xyz".
+    /// &lt;/remarks&gt;
+    /// &lt;param name="path"&gt;Path to append as a already encoded string.&lt;/param&gt;
+    /// &lt;param name="do_encoding"&gt;Specify whether to apply URI encoding to the given string.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to this uri_builder to support chaining.&lt;/returns&gt;
+    _ASYNCRTIMP uri_builder&amp; append_path_raw(const utility::string_t&amp; path, bool do_encoding = false);
+
+    /// &lt;summary&gt;
+    /// Appends another query to the query of this uri_builder.
+    /// &lt;/summary&gt;
+    /// &lt;param name="query"&gt;Query to append as a decoded string.&lt;/param&gt;
+    /// &lt;param name="do_encoding"&gt;Specify whether to apply URI encoding to the given string.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to this uri_builder to support chaining.&lt;/returns&gt;
+    _ASYNCRTIMP uri_builder&amp; append_query(const utility::string_t&amp; query, bool do_encoding = false);
+
+    /// &lt;summary&gt;
+    /// Appends an relative uri (Path, Query and fragment) at the end of the current uri.
+    /// &lt;/summary&gt;
+    /// &lt;param name="relative_uri"&gt;The relative uri to append.&lt;/param&gt;
+    /// &lt;returns&gt;A reference to this uri_builder to support chaining.&lt;/returns&gt;
+    _ASYNCRTIMP uri_builder&amp; append(const uri&amp; relative_uri);
+
+    /// &lt;summary&gt;
+    /// Appends another query to the query of this uri_builder, encoding it first. This overload is useful when building
+    /// a query segment of the form "element=10", where the right hand side of the query is stored as a type other than
+    /// a string, for instance, an integral type.
+    /// &lt;/summary&gt;
+    /// &lt;param name="name"&gt;The name portion of the query string&lt;/param&gt;
+    /// &lt;param name="value"&gt;The value portion of the query string&lt;/param&gt;
+    /// &lt;returns&gt;A reference to this uri_builder to support chaining.&lt;/returns&gt;
+    template&lt;typename T&gt;
+    uri_builder&amp; append_query(const utility::string_t&amp; name, const T&amp; value, bool do_encoding = true)
+<span style = "background-color:#fdd">    {
+        if (do_encoding)
+            append_query_encode_impl(name, utility::conversions::details::print_utf8string(value));</span>
+        else
+<span style = "background-color:#fdd">            append_query_no_encode_impl(name, utility::conversions::details::print_string(value));
+        return *this;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Combine and validate the URI components into a encoded string. An exception will be thrown if the URI is
+    /// invalid.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The created URI as a string.&lt;/returns&gt;
+    _ASYNCRTIMP utility::string_t to_string() const;
+
+    /// &lt;summary&gt;
+    /// Combine and validate the URI components into a URI class instance. An exception will be thrown if the URI is
+    /// invalid.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The create URI as a URI class instance.&lt;/returns&gt;
+    _ASYNCRTIMP uri to_uri() const;
+
+    /// &lt;summary&gt;
+    /// Validate the generated URI from all existing components of this uri_builder.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Whether the URI is valid.&lt;/returns&gt;
+    _ASYNCRTIMP bool is_valid();
+
+private:
+    _ASYNCRTIMP void append_query_encode_impl(const utility::string_t&amp; name, const utf8string&amp; value);
+    _ASYNCRTIMP void append_query_no_encode_impl(const utility::string_t&amp; name, const utility::string_t&amp; value);
+
+    details::uri_components m_uri;
+};
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

@@ -1,0 +1,994 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>fileio_win32.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * Asynchronous I/O: stream buffer implementation details
+ *
+ * We're going to some lengths to avoid exporting C++ class member functions and implementation details across
+ * module boundaries, and the factoring requires that we keep the implementation details away from the main header
+ * files. The supporting functions, which are in this file, use C-like signatures to avoid as many issues as
+ * possible.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#include "stdafx.h"
+
+#include "cpprest/details/fileio.h"
+
+using namespace web;
+using namespace utility;
+using namespace concurrency;
+using namespace utility::conversions;
+
+namespace Concurrency
+{
+namespace streams
+{
+namespace details
+{
+/***
+ * ==++==
+ *
+ * Implementation details of the file stream buffer
+ *
+ * =-=-=-
+ ****/
+
+/// &lt;summary&gt;
+/// The public parts of the file information record contain only what is implementation-
+/// independent. The actual allocated record is larger and has details that the implementation
+/// require in order to function.
+/// &lt;/summary&gt;
+struct _file_info_impl : _file_info
+{
+    _file_info_impl(HANDLE handle, _In_ void* io_ctxt, std::ios_base::openmode mode, size_t buffer_size)
+<span style = "background-color:#fdd">        : _file_info(mode, buffer_size), m_io_context(io_ctxt), m_handle(handle)
+    {
+    }</span>
+
+    /// &lt;summary&gt;
+    /// The Win32 file handle of the file
+    /// &lt;/summary&gt;
+    HANDLE m_handle;
+
+    /// &lt;summary&gt;
+    /// A Win32 I/O context, used by the thread pool to scheduler work.
+    /// &lt;/summary&gt;
+    void* m_io_context;
+};
+
+} // namespace details
+} // namespace streams
+} // namespace Concurrency
+
+using namespace streams::details;
+
+/// &lt;summary&gt;
+/// Our extended OVERLAPPED record.
+/// &lt;/summary&gt;
+/// &lt;remarks&gt;
+/// The standard OVERLAPPED structure doesn't have any fields for application-specific
+/// data, so we must extend it.
+/// &lt;/remarks&gt;
+struct EXTENDED_OVERLAPPED : OVERLAPPED
+{
+    EXTENDED_OVERLAPPED(LPOVERLAPPED_COMPLETION_ROUTINE func, streams::details::_filestream_callback* cb)
+<span style = "background-color:#fdd">        : callback(cb), func(func)
+    {
+        ZeroMemory(this, sizeof(OVERLAPPED));
+    }</span>
+
+    streams::details::_filestream_callback* callback;
+    LPOVERLAPPED_COMPLETION_ROUTINE func;
+};
+
+#if _WIN32_WINNT &lt; _WIN32_WINNT_VISTA
+void CALLBACK IoCompletionCallback(DWORD dwErrorCode, DWORD dwNumberOfBytesTransfered, LPOVERLAPPED pOverlapped)
+{
+    EXTENDED_OVERLAPPED* pExtOverlapped = static_cast&lt;EXTENDED_OVERLAPPED*&gt;(pOverlapped);
+
+    ////If dwErrorCode is 0xc0000011, it means STATUS_END_OF_FILE.
+    ////Map this error code to system error code:ERROR_HANDLE_EOF
+    if (dwErrorCode == 0xc0000011) dwErrorCode = ERROR_HANDLE_EOF;
+    pExtOverlapped-&gt;func(dwErrorCode, dwNumberOfBytesTransfered, pOverlapped);
+    delete pOverlapped;
+}
+#else
+void CALLBACK IoCompletionCallback(PTP_CALLBACK_INSTANCE instance,
+                                   PVOID ctxt,
+                                   PVOID pOverlapped,
+                                   ULONG result,
+                                   ULONG_PTR numberOfBytesTransferred,
+                                   PTP_IO io)
+<span style = "background-color:#fdd">{</span>
+    (void)io;
+    (void)ctxt;
+    (void)instance;
+
+<span style = "background-color:#fdd">    EXTENDED_OVERLAPPED* pExtOverlapped = static_cast&lt;EXTENDED_OVERLAPPED*&gt;(pOverlapped);
+    pExtOverlapped-&gt;func(result, static_cast&lt;DWORD&gt;(numberOfBytesTransferred), static_cast&lt;LPOVERLAPPED&gt;(pOverlapped));
+    delete pExtOverlapped;
+}</span>
+#endif
+
+/// &lt;summary&gt;
+/// Translate from C++ STL file open modes to Win32 flags.
+/// &lt;/summary&gt;
+/// &lt;param name="mode"&gt;The C++ file open mode&lt;/param&gt;
+/// &lt;param name="prot"&gt;The C++ file open protection&lt;/param&gt;
+/// &lt;param name="dwDesiredAccess"&gt;A pointer to a DWORD that will hold the desired access flags&lt;/param&gt;
+/// &lt;param name="dwCreationDisposition"&gt;A pointer to a DWORD that will hold the creation disposition&lt;/param&gt;
+/// &lt;param name="dwShareMode"&gt;A pointer to a DWORD that will hold the share mode&lt;/param&gt;
+void _get_create_flags(
+    std::ios_base::openmode mode, int prot, DWORD&amp; dwDesiredAccess, DWORD&amp; dwCreationDisposition, DWORD&amp; dwShareMode)
+<span style = "background-color:#fdd">{
+    dwDesiredAccess = 0x0;
+    if (mode &amp; std::ios_base::in) dwDesiredAccess |= GENERIC_READ;
+    if (mode &amp; std::ios_base::out) dwDesiredAccess |= GENERIC_WRITE;</span>
+
+<span style = "background-color:#fdd">    if (mode &amp; std::ios_base::in)</span>
+    {
+<span style = "background-color:#fdd">        if (mode &amp; std::ios_base::out)
+            dwCreationDisposition = OPEN_ALWAYS;</span>
+        else
+<span style = "background-color:#fdd">            dwCreationDisposition = OPEN_EXISTING;
+    }
+    else if (mode &amp; std::ios_base::trunc)</span>
+    {
+<span style = "background-color:#fdd">        dwCreationDisposition = CREATE_ALWAYS;
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        dwCreationDisposition = OPEN_ALWAYS;</span>
+    }
+
+    // C++ specifies what permissions to deny, Windows which permissions to give,
+<span style = "background-color:#fdd">    dwShareMode = 0x3;
+    switch (prot)</span>
+    {
+<span style = "background-color:#fdd">        case _SH_DENYRW: dwShareMode = 0x0; break;
+        case _SH_DENYWR: dwShareMode = 0x1; break;
+        case _SH_DENYRD: dwShareMode = 0x2; break;</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+/// &lt;summary&gt;
+/// Perform post-CreateFile processing.
+/// &lt;/summary&gt;
+/// &lt;param name="fh"&gt;The Win32 file handle&lt;/param&gt;
+/// &lt;param name="callback"&gt;The callback interface pointer&lt;/param&gt;
+/// &lt;param name="mode"&gt;The C++ file open mode&lt;/param&gt;
+void _finish_create(HANDLE fh, _In_ _filestream_callback* callback, std::ios_base::openmode mode, int prot)
+<span style = "background-color:#fdd">{
+    if (fh == INVALID_HANDLE_VALUE)</span>
+    {
+<span style = "background-color:#fdd">        callback-&gt;on_error(std::make_exception_ptr(utility::details::create_system_error(GetLastError())));
+        return;</span>
+    }
+
+<span style = "background-color:#fdd">    void* io_ctxt = nullptr;</span>
+#if _WIN32_WINNT &lt; _WIN32_WINNT_VISTA
+    if (!BindIoCompletionCallback(fh, IoCompletionCallback, 0))
+    {
+        callback-&gt;on_error(std::make_exception_ptr(utility::details::create_system_error(GetLastError())));
+        return;
+    }
+#else
+<span style = "background-color:#fdd">    io_ctxt = CreateThreadpoolIo(fh, IoCompletionCallback, nullptr, nullptr);
+    if (io_ctxt == nullptr)</span>
+    {
+<span style = "background-color:#fdd">        callback-&gt;on_error(std::make_exception_ptr(utility::details::create_system_error(GetLastError())));
+        return;</span>
+    }
+
+<span style = "background-color:#fdd">    if (!SetFileCompletionNotificationModes(fh, FILE_SKIP_COMPLETION_PORT_ON_SUCCESS))</span>
+    {
+<span style = "background-color:#fdd">        CloseThreadpoolIo(static_cast&lt;PTP_IO&gt;(io_ctxt));
+        callback-&gt;on_error(std::make_exception_ptr(utility::details::create_system_error(GetLastError())));
+        return;</span>
+    }
+#endif
+
+    // Buffer reads internally if and only if we're just reading (not also writing) and
+    // if the file is opened exclusively. If either is false, we're better off just
+    // letting the OS do its buffering, even if it means that prompt reads won't
+    // happen.
+<span style = "background-color:#fdd">    bool buffer = (mode == std::ios_base::in) &amp;&amp; (prot == _SH_DENYRW);</span>
+
+<span style = "background-color:#fdd">    auto info = new _file_info_impl(fh, io_ctxt, mode, buffer ? 512 : 0);</span>
+
+<span style = "background-color:#fdd">    if (mode &amp; std::ios_base::app || mode &amp; std::ios_base::ate)</span>
+    {
+<span style = "background-color:#fdd">        info-&gt;m_wrpos = static_cast&lt;size_t&gt;(-1); // Start at the end of the file.</span>
+    }
+
+<span style = "background-color:#fdd">    callback-&gt;on_opened(info);
+}</span>
+
+/// &lt;summary&gt;
+/// Open a file and create a streambuf instance to represent it.
+/// &lt;/summary&gt;
+/// &lt;param name="callback"&gt;A pointer to the callback interface to invoke when the file has been opened.&lt;/param&gt;
+/// &lt;param name="filename"&gt;The name of the file to open&lt;/param&gt;
+/// &lt;param name="mode"&gt;A creation mode for the stream buffer&lt;/param&gt;
+/// &lt;param name="prot"&gt;A file protection mode to use for the file stream&lt;/param&gt;
+/// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the opening operation could be initiated, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+/// &lt;remarks&gt;
+/// True does not signal that the file will eventually be successfully opened, just that the process was started.
+/// &lt;/remarks&gt;
+bool __cdecl _open_fsb_str(_In_ _filestream_callback* callback,
+                           const utility::char_t* filename,
+                           std::ios_base::openmode mode,
+                           int prot)
+<span style = "background-color:#fdd">{
+    _ASSERTE(callback != nullptr);
+    _ASSERTE(filename != nullptr);</span>
+
+<span style = "background-color:#fdd">    std::wstring name(filename);</span>
+
+<span style = "background-color:#fdd">    pplx::create_task([=]() {</span>
+        DWORD dwDesiredAccess, dwCreationDisposition, dwShareMode;
+<span style = "background-color:#fdd">        _get_create_flags(mode, prot, dwDesiredAccess, dwCreationDisposition, dwShareMode);</span>
+
+<span style = "background-color:#fdd">        HANDLE fh = ::CreateFileW(</span>
+            name.c_str(), dwDesiredAccess, dwShareMode, nullptr, dwCreationDisposition, FILE_FLAG_OVERLAPPED, 0);
+
+<span style = "background-color:#fdd">        _finish_create(fh, callback, mode, prot);
+    });</span>
+
+<span style = "background-color:#fdd">    return true;
+}</span>
+
+/// &lt;summary&gt;
+/// Close a file stream buffer.
+/// &lt;/summary&gt;
+/// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+/// &lt;param name="callback"&gt;A pointer to the callback interface to invoke when the file has been opened.&lt;/param&gt;
+/// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the closing operation could be initiated, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+/// &lt;remarks&gt;
+/// True does not signal that the file will eventually be successfully closed, just that the process was started.
+/// &lt;/remarks&gt;
+bool __cdecl _close_fsb_nolock(_In_ _file_info** info, _In_ streams::details::_filestream_callback* callback)
+<span style = "background-color:#fdd">{
+    _ASSERTE(callback != nullptr);
+    _ASSERTE(info != nullptr);
+    _ASSERTE(*info != nullptr);</span>
+
+<span style = "background-color:#fdd">    _file_info_impl* fInfo = static_cast&lt;_file_info_impl*&gt;(*info);</span>
+
+<span style = "background-color:#fdd">    if (fInfo-&gt;m_handle == INVALID_HANDLE_VALUE) return false;</span>
+
+    // Since closing a file may involve waiting for outstanding writes which can take some time
+    // if the file is on a network share, the close action is done in a separate task, as
+    // CloseHandle doesn't have I/O completion events.
+<span style = "background-color:#fdd">    pplx::create_task([=]() {
+        bool result = false;</span>
+
+        {
+<span style = "background-color:#fdd">            pplx::extensibility::scoped_recursive_lock_t lck(fInfo-&gt;m_lock);</span>
+
+<span style = "background-color:#fdd">            if (fInfo-&gt;m_handle != INVALID_HANDLE_VALUE)</span>
+            {
+#if _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+<span style = "background-color:#fdd">                CloseThreadpoolIo(static_cast&lt;PTP_IO&gt;(fInfo-&gt;m_io_context));</span>
+#endif // _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+
+<span style = "background-color:#fdd">                result = CloseHandle(fInfo-&gt;m_handle) != FALSE;</span>
+            }
+
+<span style = "background-color:#fdd">            delete fInfo-&gt;m_buffer;
+        }</span>
+
+<span style = "background-color:#fdd">        delete fInfo;</span>
+
+<span style = "background-color:#fdd">        if (result)
+            callback-&gt;on_closed();</span>
+        else
+<span style = "background-color:#fdd">            callback-&gt;on_error(std::make_exception_ptr(utility::details::create_system_error(GetLastError())));
+    });</span>
+
+<span style = "background-color:#fdd">    *info = nullptr;</span>
+
+<span style = "background-color:#fdd">    return true;
+}</span>
+
+bool __cdecl _close_fsb(_In_ _file_info** info, _In_ streams::details::_filestream_callback* callback)
+<span style = "background-color:#fdd">{
+    _ASSERTE(callback != nullptr);
+    _ASSERTE(info != nullptr);
+    _ASSERTE(*info != nullptr);</span>
+
+<span style = "background-color:#fdd">    return _close_fsb_nolock(info, callback);
+}</span>
+
+/// &lt;summary&gt;
+/// The completion routine used when a write request finishes.
+/// &lt;/summary&gt;
+/// &lt;remarks&gt;
+/// The signature is the standard IO completion signature, documented on MSDN
+/// &lt;/remarks&gt;
+template&lt;typename InfoType&gt;
+VOID CALLBACK _WriteFileCompletionRoutine(DWORD dwErrorCode, DWORD dwNumberOfBytesTransfered, LPOVERLAPPED lpOverlapped)
+<span style = "background-color:#fdd">{
+    EXTENDED_OVERLAPPED* pOverlapped = static_cast&lt;EXTENDED_OVERLAPPED*&gt;(lpOverlapped);</span>
+
+<span style = "background-color:#fdd">    if (dwErrorCode != ERROR_SUCCESS &amp;&amp; dwErrorCode != ERROR_HANDLE_EOF)</span>
+    {
+<span style = "background-color:#fdd">        pOverlapped-&gt;callback-&gt;on_error(std::make_exception_ptr(utility::details::create_system_error(dwErrorCode)));
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        pOverlapped-&gt;callback-&gt;on_completed(static_cast&lt;size_t&gt;(dwNumberOfBytesTransfered));</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+/// &lt;summary&gt;
+/// The completion routine used when a read request finishes.
+/// &lt;/summary&gt;
+/// &lt;remarks&gt;
+/// The signature is the standard IO completion signature, documented on MSDN
+/// &lt;/remarks&gt;
+template&lt;typename InfoType&gt;
+VOID CALLBACK _ReadFileCompletionRoutine(DWORD dwErrorCode, DWORD dwNumberOfBytesTransfered, LPOVERLAPPED lpOverlapped)
+<span style = "background-color:#fdd">{
+    EXTENDED_OVERLAPPED* pOverlapped = static_cast&lt;EXTENDED_OVERLAPPED*&gt;(lpOverlapped);</span>
+
+<span style = "background-color:#fdd">    if (dwErrorCode != ERROR_SUCCESS &amp;&amp; dwErrorCode != ERROR_HANDLE_EOF)</span>
+    {
+<span style = "background-color:#fdd">        pOverlapped-&gt;callback-&gt;on_error(std::make_exception_ptr(utility::details::create_system_error(dwErrorCode)));
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        pOverlapped-&gt;callback-&gt;on_completed(static_cast&lt;size_t&gt;(dwNumberOfBytesTransfered));</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+/// &lt;summary&gt;
+/// Initiate an asynchronous (overlapped) write to the file stream.
+/// &lt;/summary&gt;
+/// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+/// &lt;param name="callback"&gt;A pointer to the callback interface to invoke when the write request is completed.&lt;/param&gt;
+/// &lt;param name="ptr"&gt;A pointer to the data to write&lt;/param&gt;
+/// &lt;param name="count"&gt;The size (in bytes) of the data&lt;/param&gt;
+/// &lt;returns&gt;0 if the write request is still outstanding, -1 if the request failed, otherwise the size of the data
+/// written&lt;/returns&gt;
+size_t _write_file_async(_In_ streams::details::_file_info_impl* fInfo,
+                         _In_ streams::details::_filestream_callback* callback,
+                         const void* ptr,
+                         size_t count,
+                         size_t position)
+<span style = "background-color:#fdd">{
+    auto pOverlapped = std::unique_ptr&lt;EXTENDED_OVERLAPPED&gt;(</span>
+        new EXTENDED_OVERLAPPED(_WriteFileCompletionRoutine&lt;streams::details::_file_info_impl&gt;, callback));
+
+<span style = "background-color:#fdd">    if (position == static_cast&lt;size_t&gt;(-1))</span>
+    {
+<span style = "background-color:#fdd">        pOverlapped-&gt;Offset = 0xFFFFFFFF;
+        pOverlapped-&gt;OffsetHigh = 0xFFFFFFFF;
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        pOverlapped-&gt;Offset = static_cast&lt;DWORD&gt;(position);</span>
+#ifdef _WIN64
+<span style = "background-color:#fdd">        pOverlapped-&gt;OffsetHigh = static_cast&lt;DWORD&gt;(position &gt;&gt; 32);</span>
+#else
+        pOverlapped-&gt;OffsetHigh = 0;
+#endif
+    }
+
+#if _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+<span style = "background-color:#fdd">    StartThreadpoolIo(static_cast&lt;PTP_IO&gt;(fInfo-&gt;m_io_context));</span>
+
+<span style = "background-color:#fdd">    BOOL wrResult = WriteFile(fInfo-&gt;m_handle, ptr, static_cast&lt;DWORD&gt;(count), nullptr, pOverlapped.get());
+    DWORD error = GetLastError();</span>
+
+    // WriteFile will return false when a) the operation failed, or b) when the request is still
+    // pending. The error code will tell us which is which.
+<span style = "background-color:#fdd">    if (wrResult == FALSE &amp;&amp; error == ERROR_IO_PENDING)</span>
+    {
+        // Overlapped is deleted in the threadpool callback.
+<span style = "background-color:#fdd">        pOverlapped.release();
+        return 0;</span>
+    }
+
+<span style = "background-color:#fdd">    CancelThreadpoolIo(static_cast&lt;PTP_IO&gt;(fInfo-&gt;m_io_context));</span>
+
+<span style = "background-color:#fdd">    size_t result = static_cast&lt;size_t&gt;(-1);</span>
+
+<span style = "background-color:#fdd">    if (wrResult)</span>
+    {
+        // If WriteFile returned true, it must be because the operation completed immediately.
+        // However, we didn't pass in an address for the number of bytes written, so
+        // we have to retrieve it using 'GetOverlappedResult,' which may, in turn, fail.
+<span style = "background-color:#fdd">        DWORD written = 0;
+        result = GetOverlappedResult(fInfo-&gt;m_handle, pOverlapped.get(), &amp;written, FALSE) ? static_cast&lt;size_t&gt;(written)</span>
+                                                                                          : static_cast&lt;size_t&gt;(-1);
+    }
+
+<span style = "background-color:#fdd">    if (result == static_cast&lt;size_t&gt;(-1))
+        callback-&gt;on_error(std::make_exception_ptr(utility::details::create_system_error(error)));</span>
+
+<span style = "background-color:#fdd">    return result;</span>
+#else
+    BOOL wrResult = WriteFile(fInfo-&gt;m_handle, ptr, (DWORD)count, nullptr, pOverlapped.get());
+    DWORD error = GetLastError();
+
+    // 1. If WriteFile returned true, it must be because the operation completed immediately.
+    // The xp threadpool immediately creates a workerthread to run "_WriteFileCompletionRoutine".
+    // If this function return value &gt; 0, the condition "if (written == sizeof(_CharType))" in the filestreams.h
+    // "_getcImpl()" function will be satisfied. The main thread will delete the input "callback", while the threadpool
+    // workerthread is accessing this "callback"; there will be a race condition and AV error. We directly return 0 and
+    // leave all the completion callbacks working on the workerthread. We do not need to call GetOverlappedResult, the
+    // workerthread will call the "on_error()" if the WriteFaile failed. "req" is deleted in
+    // "_WriteFileCompletionRoutine, "pOverlapped" is deleted in io_scheduler::FileIOCompletionRoutine.
+    if (wrResult == TRUE)
+    {
+        pOverlapped.release();
+        return 0;
+    }
+
+    // 2. If WriteFile returned false and GetLastError is ERROR_IO_PENDING, return 0,
+    //    The xp threadpool will create a workerthread to run "_WriteFileCompletionRoutine" after the operation
+    //    completed.
+    if (wrResult == FALSE &amp;&amp; error == ERROR_IO_PENDING)
+    {
+        // Overlapped is deleted in the threadpool callback.
+        pOverlapped.release();
+        return 0;
+    }
+
+    // 3. If ReadFile returned false and GetLastError is not ERROR_IO_PENDING, we must call "callback-&gt;on_error()".
+    //    The threadpools will not start the workerthread.
+    callback-&gt;on_error(std::make_exception_ptr(utility::details::create_system_error(error)));
+
+    return static_cast&lt;size_t&gt;(-1);
+#endif // _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+<span style = "background-color:#fdd">}</span>
+
+/// &lt;summary&gt;
+/// Initiate an asynchronous (overlapped) read from the file stream.
+/// &lt;/summary&gt;
+/// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+/// &lt;param name="callback"&gt;A pointer to the callback interface to invoke when the write request is completed.&lt;/param&gt;
+/// &lt;param name="ptr"&gt;A pointer to a buffer where the data should be placed&lt;/param&gt;
+/// &lt;param name="count"&gt;The size (in bytes) of the buffer&lt;/param&gt;
+/// &lt;param name="offset"&gt;The offset in the file to read from&lt;/param&gt;
+/// &lt;returns&gt;0 if the read request is still outstanding, -1 if the request failed, otherwise the size of the data read
+/// into the buffer&lt;/returns&gt;
+size_t _read_file_async(_In_ streams::details::_file_info_impl* fInfo,
+                        _In_ streams::details::_filestream_callback* callback,
+                        _Out_writes_(count) void* ptr,
+                        _In_ size_t count,
+                        size_t offset)
+<span style = "background-color:#fdd">{
+    auto pOverlapped = std::unique_ptr&lt;EXTENDED_OVERLAPPED&gt;(</span>
+        new EXTENDED_OVERLAPPED(_ReadFileCompletionRoutine&lt;streams::details::_file_info_impl&gt;, callback));
+<span style = "background-color:#fdd">    pOverlapped-&gt;Offset = static_cast&lt;DWORD&gt;(offset);</span>
+#ifdef _WIN64
+<span style = "background-color:#fdd">    pOverlapped-&gt;OffsetHigh = static_cast&lt;DWORD&gt;(offset &gt;&gt; 32);</span>
+#else
+    pOverlapped-&gt;OffsetHigh = 0;
+#endif
+
+#if _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+<span style = "background-color:#fdd">    StartThreadpoolIo((PTP_IO)fInfo-&gt;m_io_context);</span>
+
+<span style = "background-color:#fdd">    BOOL wrResult = ReadFile(fInfo-&gt;m_handle, ptr, static_cast&lt;DWORD&gt;(count), nullptr, pOverlapped.get());
+    DWORD error = GetLastError();</span>
+
+    // ReadFile will return false when a) the operation failed, or b) when the request is still
+    // pending. The error code will tell us which is which.
+<span style = "background-color:#fdd">    if (wrResult == FALSE &amp;&amp; error == ERROR_IO_PENDING)</span>
+    {
+        // Overlapped is deleted in the threadpool callback.
+<span style = "background-color:#fdd">        pOverlapped.release();
+        return 0;</span>
+    }
+
+    // We find ourselves here because there was a synchronous completion, either with an error or
+    // success. Either way, we don't need the thread pool I/O request here, or the request and
+    // overlapped structures.
+<span style = "background-color:#fdd">    CancelThreadpoolIo(static_cast&lt;PTP_IO&gt;(fInfo-&gt;m_io_context));</span>
+
+<span style = "background-color:#fdd">    size_t result = static_cast&lt;size_t&gt;(-1);</span>
+
+<span style = "background-color:#fdd">    if (wrResult)</span>
+    {
+        // If ReadFile returned true, it must be because the operation completed immediately.
+        // However, we didn't pass in an address for the number of bytes written, so
+        // we have to retrieve it using 'GetOverlappedResult,' which may, in turn, fail.
+<span style = "background-color:#fdd">        DWORD read = 0;
+        result = GetOverlappedResult(fInfo-&gt;m_handle, pOverlapped.get(), &amp;read, FALSE) ? static_cast&lt;size_t&gt;(read)</span>
+                                                                                       : static_cast&lt;size_t&gt;(-1);
+    }
+
+<span style = "background-color:#fdd">    if (wrResult == FALSE &amp;&amp; error == ERROR_HANDLE_EOF)</span>
+    {
+<span style = "background-color:#fdd">        callback-&gt;on_completed(0);
+        return 0;</span>
+    }
+
+<span style = "background-color:#fdd">    if (result == static_cast&lt;size_t&gt;(-1))
+        callback-&gt;on_error(std::make_exception_ptr(utility::details::create_system_error(error)));</span>
+
+<span style = "background-color:#fdd">    return result;</span>
+#else
+    BOOL wrResult = ReadFile(fInfo-&gt;m_handle, ptr, static_cast&lt;DWORD&gt;(count), nullptr, pOverlapped.get());
+    DWORD error = GetLastError();
+
+    // 1. If ReadFile returned true, it must be because the operation completed immediately.
+    // The xp threadpool immediately creates a workerthread to run "_WriteFileCompletionRoutine".
+    // If this function return value &gt; 0, the condition "if ( ch == sizeof(_CharType) )" in the filestreams.h
+    // "_getcImpl()" function will be satisfied. The main thread will delete the input "callback", while the threadpool
+    // workerthread is accessing this "callback"; there will be a race condition and AV error. We can directly return 0
+    // and leave all the completion callbacks working on the workerthread. We do not need to call GetOverlappedResult,
+    // the workerthread will call the "on_error()" if the ReadFile failed. "req" is deleted in
+    // "_ReadFileCompletionRoutine, "pOverlapped" is deleted in io_scheduler::FileIOCompletionRoutine.
+    if (wrResult == TRUE)
+    {
+        pOverlapped.release();
+        return 0;
+    }
+
+    // 2. If ReadFile returned false and GetLastError is ERROR_IO_PENDING, return 0.
+    //    The xp threadpool will create a workerthread to run "_WriteFileCompletionRoutine" after the operation
+    //    completed.
+    if (wrResult == FALSE &amp;&amp; error == ERROR_IO_PENDING)
+    {
+        // Overlapped is deleted in the threadpool callback.
+        pOverlapped.release();
+        return 0;
+    }
+
+    // 3. If ReadFile returned false and GetLastError is ERROR_HANDLE_EOF, we must call "callback-&gt;on_completed(0)".
+    //    The threadpool will not start the workerthread.
+    if (wrResult == FALSE &amp;&amp; error == ERROR_HANDLE_EOF)
+    {
+        callback-&gt;on_completed(0);
+        return 0;
+    }
+
+    // 4. If ReadFile returned false and GetLastError is not a valid error code, we must call "callback-&gt;on_error()".
+    //    The threadpool will not start the workerthread.
+    callback-&gt;on_error(std::make_exception_ptr(utility::details::create_system_error(error)));
+
+    return static_cast&lt;size_t&gt;(-1);
+#endif // _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+<span style = "background-color:#fdd">}</span>
+
+template&lt;typename Func&gt;
+class _filestream_callback_fill_buffer : public _filestream_callback
+{
+public:
+<span style = "background-color:#fdd">    _filestream_callback_fill_buffer(_In_ _file_info* info, const Func&amp; func) : m_func(func), m_info(info) {}</span>
+
+    virtual void on_completed(size_t result)
+<span style = "background-color:#fdd">    {
+        m_func(result);
+        delete this;
+    }</span>
+
+private:
+    _file_info* m_info;
+    Func m_func;
+};
+
+template&lt;typename Func&gt;
+_filestream_callback_fill_buffer&lt;Func&gt;* create_callback(_In_ _file_info* info, const Func&amp; func)
+<span style = "background-color:#fdd">{
+    return new _filestream_callback_fill_buffer&lt;Func&gt;(info, func);
+}</span>
+
+size_t _fill_buffer_fsb(_In_ _file_info_impl* fInfo,
+                        _In_ _filestream_callback* callback,
+                        size_t count,
+                        size_t char_size)
+<span style = "background-color:#fdd">{
+    msl::safeint3::SafeInt&lt;size_t&gt; safeCount = count;</span>
+
+<span style = "background-color:#fdd">    if (fInfo-&gt;m_buffer == nullptr || safeCount &gt; fInfo-&gt;m_bufsize)</span>
+    {
+<span style = "background-color:#fdd">        if (fInfo-&gt;m_buffer != nullptr) delete fInfo-&gt;m_buffer;</span>
+
+<span style = "background-color:#fdd">        fInfo-&gt;m_bufsize = safeCount.Max(fInfo-&gt;m_buffer_size);
+        fInfo-&gt;m_buffer = new char[fInfo-&gt;m_bufsize * char_size];
+        fInfo-&gt;m_bufoff = fInfo-&gt;m_rdpos;</span>
+
+<span style = "background-color:#fdd">        auto cb = create_callback(fInfo, [=](size_t result) {
+            pplx::extensibility::scoped_recursive_lock_t lck(fInfo-&gt;m_lock);
+            fInfo-&gt;m_buffill = result / char_size;
+            callback-&gt;on_completed(result);
+        });</span>
+
+<span style = "background-color:#fdd">        auto read = _read_file_async(fInfo,</span>
+                                     cb,
+                                     reinterpret_cast&lt;uint8_t*&gt;(fInfo-&gt;m_buffer),
+                                     fInfo-&gt;m_bufsize * char_size,
+                                     fInfo-&gt;m_rdpos * char_size);
+
+<span style = "background-color:#fdd">        switch (read)</span>
+        {
+            case 0:
+                // pending
+<span style = "background-color:#fdd">                return read;</span>
+
+            case ((size_t)(-1)):
+                // error
+<span style = "background-color:#fdd">                delete cb;
+                return read;</span>
+
+            default:
+                // operation is complete. The pattern of returning synchronously
+                // has the expectation that we duplicate the callback code here...
+                // Do the expedient thing for now.
+<span style = "background-color:#fdd">                cb-&gt;on_completed(read);</span>
+
+                // return pending
+<span style = "background-color:#fdd">                return 0;</span>
+        };
+    }
+
+    // First, we need to understand how far into the buffer we have already read
+    // and how much remains.
+
+<span style = "background-color:#fdd">    size_t bufpos = fInfo-&gt;m_rdpos - fInfo-&gt;m_bufoff;
+    size_t bufrem = fInfo-&gt;m_buffill - bufpos;</span>
+
+    // We have four different scenarios:
+    //  1. The read position is before the start of the buffer, in which case we will just reuse the buffer.
+    //  2. The read position is in the middle of the buffer, and we need to read some more.
+    //  3. The read position is beyond the end of the buffer. Do as in #1.
+    //  4. We have everything we need.
+
+<span style = "background-color:#fdd">    if ((fInfo-&gt;m_rdpos &lt; fInfo-&gt;m_bufoff) || (fInfo-&gt;m_rdpos &gt;= (fInfo-&gt;m_bufoff + fInfo-&gt;m_buffill)))</span>
+    {
+        // Reuse the existing buffer.
+
+<span style = "background-color:#fdd">        fInfo-&gt;m_bufoff = fInfo-&gt;m_rdpos;</span>
+
+<span style = "background-color:#fdd">        auto cb = create_callback(fInfo, [=](size_t result) {
+            pplx::extensibility::scoped_recursive_lock_t lck(fInfo-&gt;m_lock);
+            fInfo-&gt;m_buffill = result / char_size;
+            callback-&gt;on_completed(bufrem * char_size + result);
+        });</span>
+
+<span style = "background-color:#fdd">        auto read = _read_file_async(fInfo,</span>
+                                     cb,
+                                     reinterpret_cast&lt;uint8_t*&gt;(fInfo-&gt;m_buffer),
+                                     fInfo-&gt;m_bufsize * char_size,
+                                     fInfo-&gt;m_rdpos * char_size);
+
+<span style = "background-color:#fdd">        switch (read)</span>
+        {
+            case 0:
+                // pending
+<span style = "background-color:#fdd">                return read;</span>
+
+            case ((size_t)(-1)):
+                // error
+<span style = "background-color:#fdd">                delete cb;
+                return read;</span>
+
+            default:
+                // operation is complete. The pattern of returning synchronously
+                // has the expectation that we duplicate the callback code here...
+                // Do the expedient thing for now.
+<span style = "background-color:#fdd">                cb-&gt;on_completed(read);</span>
+
+                // return pending
+<span style = "background-color:#fdd">                return 0;</span>
+        };
+<span style = "background-color:#fdd">    }
+    else if (bufrem &lt; count)</span>
+    {
+<span style = "background-color:#fdd">        fInfo-&gt;m_bufsize = safeCount.Max(fInfo-&gt;m_buffer_size);</span>
+
+        // Then, we allocate a new buffer.
+
+<span style = "background-color:#fdd">        char* newbuf = new char[fInfo-&gt;m_bufsize * char_size];</span>
+
+        // Then, we copy the unread part to the new buffer and delete the old buffer
+
+<span style = "background-color:#fdd">        if (bufrem &gt; 0) memcpy(newbuf, fInfo-&gt;m_buffer + bufpos * char_size, bufrem * char_size);</span>
+
+<span style = "background-color:#fdd">        delete fInfo-&gt;m_buffer;
+        fInfo-&gt;m_buffer = newbuf;</span>
+
+        // Then, we read the remainder of the count into the new buffer
+<span style = "background-color:#fdd">        fInfo-&gt;m_bufoff = fInfo-&gt;m_rdpos;</span>
+
+<span style = "background-color:#fdd">        auto cb = create_callback(fInfo, [=](size_t result) {
+            pplx::extensibility::scoped_recursive_lock_t lck(fInfo-&gt;m_lock);
+            fInfo-&gt;m_buffill = result / char_size;
+            callback-&gt;on_completed(bufrem * char_size + result);
+        });</span>
+
+<span style = "background-color:#fdd">        auto read = _read_file_async(fInfo,</span>
+                                     cb,
+                                     reinterpret_cast&lt;uint8_t*&gt;(fInfo-&gt;m_buffer) + bufrem * char_size,
+                                     (fInfo-&gt;m_bufsize - bufrem) * char_size,
+                                     (fInfo-&gt;m_rdpos + bufrem) * char_size);
+
+<span style = "background-color:#fdd">        switch (read)</span>
+        {
+            case 0:
+                // pending
+<span style = "background-color:#fdd">                return read;</span>
+
+            case ((size_t)(-1)):
+                // error
+<span style = "background-color:#fdd">                delete cb;
+                return read;</span>
+
+            default:
+                // operation is complete. The pattern of returning synchronously
+                // has the expectation that we duplicate the callback code here...
+                // Do the expedient thing for now.
+<span style = "background-color:#fdd">                cb-&gt;on_completed(read);</span>
+
+                // return pending
+<span style = "background-color:#fdd">                return 0;</span>
+        };
+<span style = "background-color:#fdd">    }</span>
+    else
+    {
+        // If we are here, it means that we didn't need to read, we already have enough data in the buffer
+<span style = "background-color:#fdd">        return count * char_size;</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+/// &lt;summary&gt;
+/// Read data from a file stream into a buffer
+/// &lt;/summary&gt;
+/// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+/// &lt;param name="callback"&gt;A pointer to the callback interface to invoke when the write request is completed.&lt;/param&gt;
+/// &lt;param name="ptr"&gt;A pointer to a buffer where the data should be placed&lt;/param&gt;
+/// &lt;param name="count"&gt;The size (in characters) of the buffer&lt;/param&gt;
+/// &lt;returns&gt;0 if the read request is still outstanding, -1 if the request failed, otherwise the size of the data read
+/// into the buffer&lt;/returns&gt;
+size_t __cdecl _getn_fsb(_In_ streams::details::_file_info* info,
+                         _In_ streams::details::_filestream_callback* callback,
+                         _Out_writes_(count) void* ptr,
+                         _In_ size_t count,
+                         size_t char_size)
+<span style = "background-color:#fdd">{
+    _ASSERTE(callback != nullptr);
+    _ASSERTE(info != nullptr);</span>
+
+<span style = "background-color:#fdd">    _file_info_impl* fInfo = static_cast&lt;_file_info_impl*&gt;(info);</span>
+
+<span style = "background-color:#fdd">    pplx::extensibility::scoped_recursive_lock_t lck(info-&gt;m_lock);</span>
+
+<span style = "background-color:#fdd">    if (fInfo-&gt;m_handle == INVALID_HANDLE_VALUE)</span>
+    {
+<span style = "background-color:#fdd">        callback-&gt;on_error(std::make_exception_ptr(utility::details::create_system_error(ERROR_INVALID_HANDLE)));
+        return (size_t)-1;</span>
+    }
+
+<span style = "background-color:#fdd">    if (fInfo-&gt;m_buffer_size &gt; 0)</span>
+    {
+<span style = "background-color:#fdd">        auto cb = create_callback(fInfo, [=](size_t read) {
+            auto sz = count * char_size;
+            auto copy = (read &lt; sz) ? read : sz;
+            auto bufoff = fInfo-&gt;m_rdpos - fInfo-&gt;m_bufoff;
+            memcpy(ptr, fInfo-&gt;m_buffer + bufoff * char_size, copy);
+            fInfo-&gt;m_atend = copy &lt; sz;
+            callback-&gt;on_completed(copy);
+        });</span>
+
+<span style = "background-color:#fdd">        size_t read = _fill_buffer_fsb(fInfo, cb, count, char_size);</span>
+
+<span style = "background-color:#fdd">        if (read &gt; 0)</span>
+        {
+<span style = "background-color:#fdd">            auto sz = count * char_size;
+            auto copy = (read &lt; sz) ? read : sz;
+            auto bufoff = fInfo-&gt;m_rdpos - fInfo-&gt;m_bufoff;
+            memcpy(ptr, fInfo-&gt;m_buffer + bufoff * char_size, copy);
+            fInfo-&gt;m_atend = copy &lt; sz;
+            return copy;</span>
+        }
+
+<span style = "background-color:#fdd">        return read;
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        return _read_file_async(fInfo, callback, ptr, count * char_size, fInfo-&gt;m_rdpos * char_size);</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+/// &lt;summary&gt;
+/// Write data from a buffer into the file stream.
+/// &lt;/summary&gt;
+/// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+/// &lt;param name="callback"&gt;A pointer to the callback interface to invoke when the write request is completed.&lt;/param&gt;
+/// &lt;param name="ptr"&gt;A pointer to a buffer where the data should be placed&lt;/param&gt;
+/// &lt;param name="count"&gt;The size (in characters) of the buffer&lt;/param&gt;
+/// &lt;returns&gt;0 if the read request is still outstanding, -1 if the request failed, otherwise the size of the data read
+/// into the buffer&lt;/returns&gt;
+size_t __cdecl _putn_fsb(_In_ streams::details::_file_info* info,
+                         _In_ streams::details::_filestream_callback* callback,
+                         const void* ptr,
+                         size_t count,
+                         size_t char_size)
+<span style = "background-color:#fdd">{
+    _ASSERTE(info != nullptr);</span>
+
+<span style = "background-color:#fdd">    _file_info_impl* fInfo = static_cast&lt;_file_info_impl*&gt;(info);</span>
+
+<span style = "background-color:#fdd">    pplx::extensibility::scoped_recursive_lock_t lck(fInfo-&gt;m_lock);</span>
+
+<span style = "background-color:#fdd">    if (fInfo-&gt;m_handle == INVALID_HANDLE_VALUE)</span>
+    {
+<span style = "background-color:#fdd">        callback-&gt;on_error(std::make_exception_ptr(utility::details::create_system_error(ERROR_INVALID_HANDLE)));
+        return static_cast&lt;size_t&gt;(-1);</span>
+    }
+
+    // To preserve the async write order, we have to move the write head before read.
+<span style = "background-color:#fdd">    auto lastPos = fInfo-&gt;m_wrpos;
+    if (fInfo-&gt;m_wrpos != static_cast&lt;size_t&gt;(-1))</span>
+    {
+<span style = "background-color:#fdd">        fInfo-&gt;m_wrpos += count;
+        lastPos *= char_size;</span>
+    }
+<span style = "background-color:#fdd">    return _write_file_async(fInfo, callback, ptr, count * char_size, lastPos);
+}</span>
+
+/// &lt;summary&gt;
+/// Flush all buffered data to the underlying file.
+/// &lt;/summary&gt;
+/// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+/// &lt;param name="callback"&gt;A pointer to the callback interface to invoke when the write request is completed.&lt;/param&gt;
+/// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the request was initiated&lt;/returns&gt;
+bool __cdecl _sync_fsb(_In_ streams::details::_file_info*, _In_ streams::details::_filestream_callback* callback)
+<span style = "background-color:#fdd">{
+    _ASSERTE(callback != nullptr);</span>
+
+    // Writes are not cached
+<span style = "background-color:#fdd">    callback-&gt;on_completed(0);</span>
+
+<span style = "background-color:#fdd">    return true;
+}</span>
+
+/// &lt;summary&gt;
+/// Adjust the internal buffers and pointers when the application seeks to a new read location in the stream.
+/// &lt;/summary&gt;
+/// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+/// &lt;param name="pos"&gt;The new position (offset from the start) in the file stream&lt;/param&gt;
+/// &lt;returns&gt;New file position or -1 if error&lt;/returns&gt;
+size_t __cdecl _seekrdpos_fsb(_In_ streams::details::_file_info* info, size_t pos, size_t)
+<span style = "background-color:#fdd">{
+    _ASSERTE(info != nullptr);</span>
+
+<span style = "background-color:#fdd">    _file_info_impl* fInfo = static_cast&lt;_file_info_impl*&gt;(info);</span>
+
+<span style = "background-color:#fdd">    pplx::extensibility::scoped_recursive_lock_t lck(info-&gt;m_lock);</span>
+
+<span style = "background-color:#fdd">    if (fInfo-&gt;m_handle == INVALID_HANDLE_VALUE) return static_cast&lt;size_t&gt;(-1);</span>
+
+<span style = "background-color:#fdd">    if (pos &lt; fInfo-&gt;m_bufoff || pos &gt; (fInfo-&gt;m_bufoff + fInfo-&gt;m_buffill))</span>
+    {
+<span style = "background-color:#fdd">        delete fInfo-&gt;m_buffer;
+        fInfo-&gt;m_buffer = nullptr;
+        fInfo-&gt;m_bufoff = fInfo-&gt;m_buffill = fInfo-&gt;m_bufsize = 0;</span>
+    }
+
+<span style = "background-color:#fdd">    fInfo-&gt;m_rdpos = pos;
+    return fInfo-&gt;m_rdpos;
+}</span>
+
+/// &lt;summary&gt;
+/// Adjust the internal buffers and pointers when the application seeks to a new read location in the stream.
+/// &lt;/summary&gt;
+/// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+/// &lt;param name="offset"&gt;The new position (offset from the end of the stream) in the file stream&lt;/param&gt;
+/// &lt;param name="char_size"&gt;The size of the character type used for this stream&lt;/param&gt;
+/// &lt;returns&gt;New file position or -1 if error&lt;/returns&gt;
+size_t __cdecl _seekrdtoend_fsb(_In_ streams::details::_file_info* info, int64_t offset, size_t char_size)
+<span style = "background-color:#fdd">{
+    _ASSERTE(info != nullptr);</span>
+
+<span style = "background-color:#fdd">    _file_info_impl* fInfo = static_cast&lt;_file_info_impl*&gt;(info);</span>
+
+<span style = "background-color:#fdd">    pplx::extensibility::scoped_recursive_lock_t lck(info-&gt;m_lock);</span>
+
+<span style = "background-color:#fdd">    if (fInfo-&gt;m_handle == INVALID_HANDLE_VALUE) return static_cast&lt;size_t&gt;(-1);</span>
+
+<span style = "background-color:#fdd">    if (fInfo-&gt;m_buffer != nullptr)</span>
+    {
+        // Clear the internal buffer.
+<span style = "background-color:#fdd">        delete fInfo-&gt;m_buffer;
+        fInfo-&gt;m_buffer = nullptr;
+        fInfo-&gt;m_bufoff = fInfo-&gt;m_buffill = fInfo-&gt;m_bufsize = 0;</span>
+    }
+
+#ifdef _WIN64
+    LARGE_INTEGER filesize;
+<span style = "background-color:#fdd">    filesize.QuadPart = 0;</span>
+
+<span style = "background-color:#fdd">    BOOL result = GetFileSizeEx(fInfo-&gt;m_handle, &amp;filesize);
+    if (FALSE == result)</span>
+    {
+<span style = "background-color:#fdd">        return static_cast&lt;size_t&gt;(-1);
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        fInfo-&gt;m_rdpos = static_cast&lt;size_t&gt;(filesize.QuadPart) / char_size;</span>
+    }
+#else
+    auto newpos = SetFilePointer(fInfo-&gt;m_handle, (LONG)(offset * char_size), nullptr, FILE_END);
+
+    if (newpos == INVALID_SET_FILE_POINTER) return static_cast&lt;size_t&gt;(-1);
+
+    fInfo-&gt;m_rdpos = static_cast&lt;size_t&gt;(newpos) / char_size;
+#endif
+
+<span style = "background-color:#fdd">    return fInfo-&gt;m_rdpos;
+}</span>
+
+utility::size64_t __cdecl _get_size(_In_ concurrency::streams::details::_file_info* info, size_t char_size)
+<span style = "background-color:#fdd">{
+    _ASSERTE(info != nullptr);</span>
+
+<span style = "background-color:#fdd">    _file_info_impl* fInfo = static_cast&lt;_file_info_impl*&gt;(info);</span>
+
+<span style = "background-color:#fdd">    pplx::extensibility::scoped_recursive_lock_t lck(info-&gt;m_lock);</span>
+
+<span style = "background-color:#fdd">    if (fInfo-&gt;m_handle == INVALID_HANDLE_VALUE) return (utility::size64_t)-1;</span>
+
+    LARGE_INTEGER size;
+
+<span style = "background-color:#fdd">    if (GetFileSizeEx(fInfo-&gt;m_handle, &amp;size))
+        return utility::size64_t(size.QuadPart / char_size);</span>
+    else
+<span style = "background-color:#fdd">        return 0;
+}</span>
+
+/// &lt;summary&gt;
+/// Adjust the internal buffers and pointers when the application seeks to a new write location in the stream.
+/// &lt;/summary&gt;
+/// &lt;param name="info"&gt;The file info record of the file&lt;/param&gt;
+/// &lt;param name="pos"&gt;The new position (offset from the start) in the file stream&lt;/param&gt;
+/// &lt;returns&gt;New file position or -1 if error&lt;/returns&gt;
+size_t __cdecl _seekwrpos_fsb(_In_ streams::details::_file_info* info, size_t pos, size_t)
+<span style = "background-color:#fdd">{
+    _ASSERTE(info != nullptr);</span>
+
+<span style = "background-color:#fdd">    _file_info_impl* fInfo = static_cast&lt;_file_info_impl*&gt;(info);</span>
+
+<span style = "background-color:#fdd">    pplx::extensibility::scoped_recursive_lock_t lck(info-&gt;m_lock);</span>
+
+<span style = "background-color:#fdd">    if (fInfo-&gt;m_handle == INVALID_HANDLE_VALUE) return static_cast&lt;size_t&gt;(-1);</span>
+
+<span style = "background-color:#fdd">    fInfo-&gt;m_wrpos = pos;
+    return fInfo-&gt;m_wrpos;
+}</span></pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

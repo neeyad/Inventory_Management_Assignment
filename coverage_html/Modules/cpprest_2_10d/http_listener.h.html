@@ -1,0 +1,368 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>http_listener.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: HTTP listener (server-side) APIs
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#pragma once
+
+#ifndef CASA_HTTP_LISTENER_H
+#define CASA_HTTP_LISTENER_H
+
+#include "cpprest/http_msg.h"
+#include &lt;functional&gt;
+#include &lt;limits&gt;
+#if !defined(_WIN32) &amp;&amp; !defined(__cplusplus_winrt) || defined(CPPREST_FORCE_HTTP_LISTENER_ASIO)
+#include &lt;boost/asio/ssl.hpp&gt;
+#endif
+
+#if !defined(_WIN32) || (_WIN32_WINNT &gt;= _WIN32_WINNT_VISTA &amp;&amp; !defined(__cplusplus_winrt)) ||                         \
+    defined(CPPREST_FORCE_HTTP_LISTENER_ASIO)
+
+namespace web
+{
+namespace http
+{
+/// HTTP listener is currently in beta.
+namespace experimental
+{
+/// HTTP server side library.
+namespace listener
+{
+/// &lt;summary&gt;
+/// Configuration class used to set various options when constructing and http_listener instance.
+/// &lt;/summary&gt;
+class http_listener_config
+{
+public:
+    /// &lt;summary&gt;
+    /// Create an http_listener configuration with default options.
+    /// &lt;/summary&gt;
+<span style = "background-color:#dfd">    http_listener_config() : m_timeout(utility::seconds(120)), m_backlog(0) {}</span>
+
+    /// &lt;summary&gt;
+    /// Copy constructor.
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;http_listener_config to copy.&lt;/param&gt;
+    http_listener_config(const http_listener_config&amp; other)
+        : m_timeout(other.m_timeout)
+        , m_backlog(other.m_backlog)
+#if !defined(_WIN32) || defined(CPPREST_FORCE_HTTP_LISTENER_ASIO)
+        , m_ssl_context_callback(other.m_ssl_context_callback)
+#endif
+    {
+    }
+
+    /// &lt;summary&gt;
+    /// Move constructor.
+    /// &lt;summary&gt;
+    /// &lt;param name="other"&gt;http_listener_config to move from.&lt;/param&gt;
+    http_listener_config(http_listener_config&amp;&amp; other)
+<span style = "background-color:#fdd">        : m_timeout(std::move(other.m_timeout))
+        , m_backlog(std::move(other.m_backlog))</span>
+#if !defined(_WIN32) || defined(CPPREST_FORCE_HTTP_LISTENER_ASIO)
+        , m_ssl_context_callback(std::move(other.m_ssl_context_callback))
+#endif
+<span style = "background-color:#fdd">    {
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Assignment operator.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;http_listener_config instance.&lt;/returns&gt;
+    http_listener_config&amp; operator=(const http_listener_config&amp; rhs)
+    {
+        if (this != &amp;rhs)
+        {
+            m_timeout = rhs.m_timeout;
+            m_backlog = rhs.m_backlog;
+#if !defined(_WIN32) || defined(CPPREST_FORCE_HTTP_LISTENER_ASIO)
+            m_ssl_context_callback = rhs.m_ssl_context_callback;
+#endif
+        }
+        return *this;
+    }
+
+    /// &lt;summary&gt;
+    /// Assignment operator.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;http_listener_config instance.&lt;/returns&gt;
+    http_listener_config&amp; operator=(http_listener_config&amp;&amp; rhs)
+    {
+        if (this != &amp;rhs)
+        {
+            m_timeout = std::move(rhs.m_timeout);
+            m_backlog = std::move(rhs.m_backlog);
+#if !defined(_WIN32) || defined(CPPREST_FORCE_HTTP_LISTENER_ASIO)
+            m_ssl_context_callback = std::move(rhs.m_ssl_context_callback);
+#endif
+        }
+        return *this;
+    }
+
+    /// &lt;summary&gt;
+    /// Get the timeout
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The timeout (in seconds).&lt;/returns&gt;
+<span style = "background-color:#dfd">    utility::seconds timeout() const { return m_timeout; }</span>
+
+    /// &lt;summary&gt;
+    /// Set the timeout
+    /// &lt;/summary&gt;
+    /// &lt;param name="timeout"&gt;The timeout (in seconds) used for each send and receive operation on the client.&lt;/param&gt;
+    void set_timeout(utility::seconds timeout) { m_timeout = std::move(timeout); }
+
+    /// &lt;summary&gt;
+    /// Get the listen backlog
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The maximum length of the queue of pending connections, or zero for the implementation
+    /// default.&lt;/returns&gt; &lt;remarks&gt;The implementation may not honour this value.&lt;/remarks&gt;
+    int backlog() const { return m_backlog; }
+
+    /// &lt;summary&gt;
+    /// Set the listen backlog
+    /// &lt;/summary&gt;
+    /// &lt;param name="backlog"&gt;The maximum length of the queue of pending connections, or zero for the implementation
+    /// default.&lt;/param&gt; &lt;remarks&gt;The implementation may not honour this value.&lt;/remarks&gt;
+    void set_backlog(int backlog) { m_backlog = backlog; }
+
+#if !defined(_WIN32) || defined(CPPREST_FORCE_HTTP_LISTENER_ASIO)
+    /// &lt;summary&gt;
+    /// Get the callback of ssl context
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The function defined by the user of http_listener_config to configure a ssl context.&lt;/returns&gt;
+    const std::function&lt;void(boost::asio::ssl::context&amp;)&gt;&amp; get_ssl_context_callback() const
+    {
+        return m_ssl_context_callback;
+    }
+
+    /// &lt;summary&gt;
+    /// Set the callback of ssl context
+    /// &lt;/summary&gt;
+    /// &lt;param name="ssl_context_callback"&gt;The function to configure a ssl context which will setup https
+    /// connections.&lt;/param&gt;
+    void set_ssl_context_callback(const std::function&lt;void(boost::asio::ssl::context&amp;)&gt;&amp; ssl_context_callback)
+    {
+        m_ssl_context_callback = ssl_context_callback;
+    }
+#endif
+
+private:
+    utility::seconds m_timeout;
+    int m_backlog;
+#if !defined(_WIN32) || defined(CPPREST_FORCE_HTTP_LISTENER_ASIO)
+    std::function&lt;void(boost::asio::ssl::context&amp;)&gt; m_ssl_context_callback;
+#endif
+};
+
+namespace details
+{
+/// &lt;summary&gt;
+/// Internal class for pointer to implementation design pattern.
+/// &lt;/summary&gt;
+class http_listener_impl
+{
+public:
+    http_listener_impl() : m_closed(true), m_close_task(pplx::task_from_result()) {}
+
+    _ASYNCRTIMP http_listener_impl(http::uri address);
+    _ASYNCRTIMP http_listener_impl(http::uri address, http_listener_config config);
+
+    _ASYNCRTIMP pplx::task&lt;void&gt; open();
+    _ASYNCRTIMP pplx::task&lt;void&gt; close();
+
+    /// &lt;summary&gt;
+    /// Handler for all requests. The HTTP host uses this to dispatch a message to the pipeline.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;Only HTTP server implementations should call this API.&lt;/remarks&gt;
+    _ASYNCRTIMP void handle_request(http::http_request msg);
+
+<span style = "background-color:#dfd">    const http::uri&amp; uri() const { return m_uri; }</span>
+
+<span style = "background-color:#dfd">    const http_listener_config&amp; configuration() const { return m_config; }</span>
+
+    // Handlers
+    std::function&lt;void(http::http_request)&gt; m_all_requests;
+    std::map&lt;http::method, std::function&lt;void(http::http_request)&gt;&gt; m_supported_methods;
+
+private:
+    // Default implementation for TRACE and OPTIONS.
+    void handle_trace(http::http_request message);
+    void handle_options(http::http_request message);
+
+    // Gets a comma separated string containing the methods supported by this listener.
+    utility::string_t get_supported_methods() const;
+
+    http::uri m_uri;
+    http_listener_config m_config;
+
+    // Used to record that the listener is closed.
+    bool m_closed;
+    pplx::task&lt;void&gt; m_close_task;
+};
+
+} // namespace details
+
+/// &lt;summary&gt;
+/// A class for listening and processing HTTP requests at a specific URI.
+/// &lt;/summary&gt;
+class http_listener
+{
+public:
+    /// &lt;summary&gt;
+    /// Create a listener from a URI.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;The listener will not have been opened when returned.&lt;/remarks&gt;
+    /// &lt;param name="address"&gt;URI at which the listener should accept requests.&lt;/param&gt;
+    http_listener(http::uri address)
+        : m_impl(utility::details::make_unique&lt;details::http_listener_impl&gt;(std::move(address)))
+    {
+    }
+
+    /// &lt;summary&gt;
+    /// Create a listener with specified URI and configuration.
+    /// &lt;/summary&gt;
+    /// &lt;param name="address"&gt;URI at which the listener should accept requests.&lt;/param&gt;
+    /// &lt;param name="config"&gt;Configuration to create listener with.&lt;/param&gt;
+    http_listener(http::uri address, http_listener_config config)
+        : m_impl(utility::details::make_unique&lt;details::http_listener_impl&gt;(std::move(address), std::move(config)))
+    {
+    }
+
+    /// &lt;summary&gt;
+    /// Default constructor.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;The resulting listener cannot be used for anything, but is useful to initialize a variable
+    /// that will later be overwritten with a real listener instance.&lt;/remarks&gt;
+    http_listener() : m_impl(utility::details::make_unique&lt;details::http_listener_impl&gt;()) {}
+
+    /// &lt;summary&gt;
+    /// Destructor frees any held resources.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;Call close() before allowing a listener to be destroyed.&lt;/remarks&gt;
+    ~http_listener()
+    {
+        if (m_impl)
+        {
+            // As a safe guard close the listener if not already done.
+            // Users are required to call close, but this is just a safeguard.
+            try
+            {
+                m_impl-&gt;close().wait();
+            }
+            catch (...)
+            {
+            }
+        }
+    }
+
+    /// &lt;summary&gt;
+    /// Asynchronously open the listener, i.e. start accepting requests.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A task that will be completed once this listener is actually opened, accepting requests.&lt;/returns&gt;
+    pplx::task&lt;void&gt; open() { return m_impl-&gt;open(); }
+
+    /// &lt;summary&gt;
+    /// Asynchronously stop accepting requests and close all connections.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A task that will be completed once this listener is actually closed, no longer accepting
+    /// requests.&lt;/returns&gt; &lt;remarks&gt; This function will stop accepting requests and wait for all outstanding handler
+    /// calls to finish before completing the task. Waiting on the task returned from close() within a handler and
+    /// blocking waiting for its result will result in a deadlock.
+    ///
+    /// Call close() before allowing a listener to be destroyed.
+    /// &lt;/remarks&gt;
+    pplx::task&lt;void&gt; close() { return m_impl-&gt;close(); }
+
+    /// &lt;summary&gt;
+    /// Add a general handler to support all requests.
+    /// &lt;/summary&gt;
+    /// &lt;param name="handler"&gt;Function object to be called for all requests.&lt;/param&gt;
+    void support(const std::function&lt;void(http_request)&gt;&amp; handler) { m_impl-&gt;m_all_requests = handler; }
+
+    /// &lt;summary&gt;
+    /// Add support for a specific HTTP method.
+    /// &lt;/summary&gt;
+    /// &lt;param name="method"&gt;An HTTP method.&lt;/param&gt;
+    /// &lt;param name="handler"&gt;Function object to be called for all requests for the given HTTP method.&lt;/param&gt;
+    void support(const http::method&amp; method, const std::function&lt;void(http_request)&gt;&amp; handler)
+    {
+        m_impl-&gt;m_supported_methods[method] = handler;
+    }
+
+    /// &lt;summary&gt;
+    /// Get the URI of the listener.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI this listener is for.&lt;/returns&gt;
+    const http::uri&amp; uri() const { return m_impl-&gt;uri(); }
+
+    /// &lt;summary&gt;
+    /// Get the configuration of this listener.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Configuration this listener was constructed with.&lt;/returns&gt;
+    const http_listener_config&amp; configuration() const { return m_impl-&gt;configuration(); }
+
+    /// &lt;summary&gt;
+    /// Move constructor.
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;http_listener instance to construct this one from.&lt;/param&gt;
+    http_listener(http_listener&amp;&amp; other) : m_impl(std::move(other.m_impl)) {}
+
+    /// &lt;summary&gt;
+    /// Move assignment operator.
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;http_listener to replace this one with.&lt;/param&gt;
+    http_listener&amp; operator=(http_listener&amp;&amp; other)
+    {
+        if (this != &amp;other)
+        {
+            m_impl = std::move(other.m_impl);
+        }
+        return *this;
+    }
+
+private:
+    // No copying of listeners.
+    http_listener(const http_listener&amp; other);
+    http_listener&amp; operator=(const http_listener&amp; other);
+
+    std::unique_ptr&lt;details::http_listener_impl&gt; m_impl;
+};
+
+} // namespace listener
+} // namespace experimental
+} // namespace http
+} // namespace web
+
+#endif
+#endif</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

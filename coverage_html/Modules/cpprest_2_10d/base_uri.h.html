@@ -1,0 +1,418 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>base_uri.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * Protocol independent support for URIs.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#pragma once
+
+#include "cpprest/asyncrt_utils.h"
+#include "cpprest/details/basic_types.h"
+#include &lt;map&gt;
+#include &lt;string&gt;
+#include &lt;utility&gt;
+#include &lt;vector&gt;
+
+namespace web
+{
+namespace details
+{
+struct uri_components
+{
+<span style = "background-color:#dfd">    uri_components() : m_path(_XPLATSTR("/")), m_port(-1) {}</span>
+
+<span style = "background-color:#dfd">    uri_components(const uri_components&amp;) = default;</span>
+<span style = "background-color:#fdd">    uri_components&amp; operator=(const uri_components&amp;) = default;</span>
+
+    // This is for VS2013 compatibility -- replace with '= default' when VS2013 is completely dropped.
+<span style = "background-color:#dfd">    uri_components(uri_components&amp;&amp; other) CPPREST_NOEXCEPT : m_scheme(std::move(other.m_scheme)),
+                                                              m_host(std::move(other.m_host)),
+                                                              m_user_info(std::move(other.m_user_info)),
+                                                              m_path(std::move(other.m_path)),
+                                                              m_query(std::move(other.m_query)),
+                                                              m_fragment(std::move(other.m_fragment)),
+                                                              m_port(other.m_port)
+    {
+    }</span>
+
+    // This is for VS2013 compatibility -- replace with '= default' when VS2013 is completely dropped.
+    uri_components&amp; operator=(uri_components&amp;&amp; other) CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">    {
+        if (this != &amp;other)</span>
+        {
+<span style = "background-color:#fdd">            m_scheme = std::move(other.m_scheme);
+            m_host = std::move(other.m_host);
+            m_user_info = std::move(other.m_user_info);
+            m_path = std::move(other.m_path);
+            m_query = std::move(other.m_query);
+            m_fragment = std::move(other.m_fragment);
+            m_port = other.m_port;</span>
+        }
+<span style = "background-color:#fdd">        return *this;
+    }</span>
+
+    _ASYNCRTIMP utility::string_t join();
+
+    utility::string_t m_scheme;
+    utility::string_t m_host;
+    utility::string_t m_user_info;
+    utility::string_t m_path;
+    utility::string_t m_query;
+    utility::string_t m_fragment;
+    int m_port;
+};
+} // namespace details
+
+/// &lt;summary&gt;
+/// A single exception type to represent errors in parsing, encoding, and decoding URIs.
+/// &lt;/summary&gt;
+class uri_exception : public std::exception
+{
+public:
+<span style = "background-color:#fdd">    uri_exception(std::string msg) : m_msg(std::move(msg)) {}</span>
+
+<span style = "background-color:#fdd">    ~uri_exception() CPPREST_NOEXCEPT {}</span>
+
+<span style = "background-color:#fdd">    const char* what() const CPPREST_NOEXCEPT { return m_msg.c_str(); }</span>
+
+private:
+    std::string m_msg;
+};
+
+/// &lt;summary&gt;
+/// A flexible, protocol independent URI implementation.
+///
+/// URI instances are immutable. Querying the various fields on an empty URI will return empty strings. Querying
+/// various diagnostic members on an empty URI will return false.
+/// &lt;/summary&gt;
+/// &lt;remarks&gt;
+/// This implementation accepts both URIs ('http://msn.com/path') and URI relative-references
+/// ('/path?query#frag').
+///
+/// This implementation does not provide any scheme-specific handling -- an example of this
+/// would be the following: 'http://path1/path'. This is a valid URI, but it's not a valid
+/// http-uri -- that is, it's syntactically correct but does not conform to the requirements
+/// of the http scheme (http requires a host).
+/// We could provide this by allowing a pluggable 'scheme' policy-class, which would provide
+/// extra capability for validating and canonicalizing a URI according to scheme, and would
+/// introduce a layer of type-safety for URIs of differing schemes, and thus differing semantics.
+///
+/// One issue with implementing a scheme-independent URI facility is that of comparing for equality.
+/// For instance, these URIs are considered equal 'http://msn.com', 'http://msn.com:80'. That is --
+/// the 'default' port can be either omitted or explicit. Since we don't have a way to map a scheme
+/// to it's default port, we don't have a way to know these are equal. This is just one of a class of
+/// issues with regard to scheme-specific behavior.
+/// &lt;/remarks&gt;
+class uri
+{
+public:
+    /// &lt;summary&gt;
+    /// The various components of a URI. This enum is used to indicate which
+    /// URI component is being encoded to the encode_uri_component. This allows
+    /// specific encoding to be performed.
+    ///
+    /// Scheme and port don't allow '%' so they don't need to be encoded.
+    /// &lt;/summary&gt;
+    class components
+    {
+    public:
+        enum component
+        {
+            user_info,
+            host,
+            path,
+            query,
+            fragment,
+            full_uri
+        };
+    };
+
+    /// &lt;summary&gt;
+    /// Encodes a URI component according to RFC 3986.
+    /// Note if a full URI is specified instead of an individual URI component all
+    /// characters not in the unreserved set are escaped.
+    /// &lt;/summary&gt;
+    /// &lt;param name="raw"&gt;The URI as a string.&lt;/param&gt;
+    /// &lt;returns&gt;The encoded string.&lt;/returns&gt;
+    _ASYNCRTIMP static utility::string_t __cdecl encode_uri(const utility::string_t&amp; raw,
+                                                            uri::components::component = components::full_uri);
+
+    /// &lt;summary&gt;
+    /// Encodes a string by converting all characters except for RFC 3986 unreserved characters to their
+    /// hexadecimal representation.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The encoded string.&lt;/returns&gt;
+    _ASYNCRTIMP static utility::string_t __cdecl encode_data_string(const utility::string_t&amp; data);
+
+    /// &lt;summary&gt;
+    /// Decodes an encoded string.
+    /// &lt;/summary&gt;
+    /// &lt;param name="encoded"&gt;The URI as a string.&lt;/param&gt;
+    /// &lt;returns&gt;The decoded string.&lt;/returns&gt;
+    _ASYNCRTIMP static utility::string_t __cdecl decode(const utility::string_t&amp; encoded);
+
+    /// &lt;summary&gt;
+    /// Splits a path into its hierarchical components.
+    /// &lt;/summary&gt;
+    /// &lt;param name="path"&gt;The path as a string&lt;/param&gt;
+    /// &lt;returns&gt;A &lt;c&gt;std::vector&amp;lt;utility::string_t&amp;gt;&lt;/c&gt; containing the segments in the path.&lt;/returns&gt;
+    _ASYNCRTIMP static std::vector&lt;utility::string_t&gt; __cdecl split_path(const utility::string_t&amp; path);
+
+    /// &lt;summary&gt;
+    /// Splits a query into its key-value components.
+    /// &lt;/summary&gt;
+    /// &lt;param name="query"&gt;The query string&lt;/param&gt;
+    /// &lt;returns&gt;A &lt;c&gt;std::map&amp;lt;utility::string_t, utility::string_t&amp;gt;&lt;/c&gt; containing the key-value components of
+    /// the query.&lt;/returns&gt;
+    _ASYNCRTIMP static std::map&lt;utility::string_t, utility::string_t&gt; __cdecl split_query(
+        const utility::string_t&amp; query);
+
+    /// &lt;summary&gt;
+    /// Validates a string as a URI.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;
+    /// This function accepts both uris ('http://msn.com') and uri relative-references ('path1/path2?query').
+    /// &lt;/remarks&gt;
+    /// &lt;param name="uri_string"&gt;The URI string to be validated.&lt;/param&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the given string represents a valid URI, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    _ASYNCRTIMP static bool __cdecl validate(const utility::string_t&amp; uri_string);
+
+    /// &lt;summary&gt;
+    /// Creates an empty uri
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    uri() : m_uri(_XPLATSTR("/")) {}</span>
+
+    /// &lt;summary&gt;
+    /// Creates a URI from the given encoded string. This will throw an exception if the string
+    /// does not contain a valid URI. Use uri::validate if processing user-input.
+    /// &lt;/summary&gt;
+    /// &lt;param name="uri_string"&gt;A pointer to an encoded string to create the URI instance.&lt;/param&gt;
+    _ASYNCRTIMP uri(const utility::char_t* uri_string);
+
+    /// &lt;summary&gt;
+    /// Creates a URI from the given encoded string. This will throw an exception if the string
+    /// does not contain a valid URI. Use uri::validate if processing user-input.
+    /// &lt;/summary&gt;
+    /// &lt;param name="uri_string"&gt;An encoded URI string to create the URI instance.&lt;/param&gt;
+    _ASYNCRTIMP uri(const utility::string_t&amp; uri_string);
+
+    /// &lt;summary&gt;
+    /// Copy constructor.
+    /// &lt;/summary&gt;
+<span style = "background-color:#dfd">    uri(const uri&amp;) = default;</span>
+
+    /// &lt;summary&gt;
+    /// Copy assignment operator.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    uri&amp; operator=(const uri&amp;) = default;</span>
+
+    /// &lt;summary&gt;
+    /// Move constructor.
+    /// &lt;/summary&gt;
+    // This is for VS2013 compatibility -- replace with '= default' when VS2013 is completely dropped.
+<span style = "background-color:#dfd">    uri(uri&amp;&amp; other) CPPREST_NOEXCEPT : m_uri(std::move(other.m_uri)), m_components(std::move(other.m_components)) {}</span>
+
+    /// &lt;summary&gt;
+    /// Move assignment operator
+    /// &lt;/summary&gt;
+    // This is for VS2013 compatibility -- replace with '= default' when VS2013 is completely dropped.
+    uri&amp; operator=(uri&amp;&amp; other) CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">    {
+        if (this != &amp;other)</span>
+        {
+<span style = "background-color:#fdd">            m_uri = std::move(other.m_uri);
+            m_components = std::move(other.m_components);</span>
+        }
+<span style = "background-color:#fdd">        return *this;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Get the scheme component of the URI as an encoded string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI scheme as a string.&lt;/returns&gt;
+<span style = "background-color:#dfd">    const utility::string_t&amp; scheme() const { return m_components.m_scheme; }</span>
+
+    /// &lt;summary&gt;
+    /// Get the user information component of the URI as an encoded string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI user information as a string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; user_info() const { return m_components.m_user_info; }</span>
+
+    /// &lt;summary&gt;
+    /// Get the host component of the URI as an encoded string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI host as a string.&lt;/returns&gt;
+<span style = "background-color:#dfd">    const utility::string_t&amp; host() const { return m_components.m_host; }</span>
+
+    /// &lt;summary&gt;
+    /// Get the port component of the URI. Returns -1 if no port is specified.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI port as an integer.&lt;/returns&gt;
+<span style = "background-color:#dfd">    int port() const { return m_components.m_port; }</span>
+
+    /// &lt;summary&gt;
+    /// Get the path component of the URI as an encoded string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI path as a string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const utility::string_t&amp; path() const { return m_components.m_path; }</span>
+
+    /// &lt;summary&gt;
+    /// Get the query component of the URI as an encoded string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI query as a string.&lt;/returns&gt;
+<span style = "background-color:#dfd">    const utility::string_t&amp; query() const { return m_components.m_query; }</span>
+
+    /// &lt;summary&gt;
+    /// Get the fragment component of the URI as an encoded string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The URI fragment as a string.&lt;/returns&gt;
+<span style = "background-color:#dfd">    const utility::string_t&amp; fragment() const { return m_components.m_fragment; }</span>
+
+    /// &lt;summary&gt;
+    /// Creates a new uri object with the same authority portion as this one, omitting the resource and query portions.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The new uri object with the same authority.&lt;/returns&gt;
+    _ASYNCRTIMP uri authority() const;
+
+    /// &lt;summary&gt;
+    /// Gets the path, query, and fragment portion of this uri, which may be empty.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The new URI object with the path, query and fragment portion of this URI.&lt;/returns&gt;
+    _ASYNCRTIMP uri resource() const;
+
+    /// &lt;summary&gt;
+    /// An empty URI specifies no components, and serves as a default value
+    /// &lt;/summary&gt;
+<span style = "background-color:#dfd">    bool is_empty() const { return this-&gt;m_uri.empty() || this-&gt;m_uri == _XPLATSTR("/"); }</span>
+
+    /// &lt;summary&gt;
+    /// A loopback URI is one which refers to a hostname or ip address with meaning only on the local machine.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;
+    /// Examples include "localhost", or "127.0.0.1". The only URIs for which this method returns true are "127.0.0.1", and "localhost",
+    /// all other URIs return false
+    /// &lt;/remarks&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if this URI references the local host, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    bool is_host_loopback() const
+    {
+        return !is_empty() &amp;&amp;
+               ((host() == _XPLATSTR("localhost")) || (host() == _XPLATSTR("127.0.0.1")));
+    }
+
+    /// &lt;summary&gt;
+    /// A wildcard URI is one which refers to all hostnames that resolve to the local machine (using the * or +)
+    /// &lt;/summary&gt;
+    /// &lt;example&gt;
+    /// http://*:80
+    /// &lt;/example&gt;
+    bool is_host_wildcard() const
+    {
+        return !is_empty() &amp;&amp; (this-&gt;host() == _XPLATSTR("*") || this-&gt;host() == _XPLATSTR("+"));
+    }
+
+    /// &lt;summary&gt;
+    /// A portable URI is one with a hostname that can be resolved globally (used from another machine).
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if this URI can be resolved globally (used from another machine), &lt;c&gt;false&lt;/c&gt;
+    /// otherwise.&lt;/returns&gt; &lt;remarks&gt; The hostname "localhost" is a reserved name that is guaranteed to resolve to the
+    /// local machine, and cannot be used for inter-machine communication. Likewise the hostnames "*" and "+" on Windows
+    /// represent wildcards, and do not map to a resolvable address.
+    /// &lt;/remarks&gt;
+    bool is_host_portable() const { return !(is_empty() || is_host_loopback() || is_host_wildcard()); }
+
+    /// &lt;summary&gt;
+    /// A default port is one where the port is unspecified, and will be determined by the operating system.
+    /// The choice of default port may be dictated by the scheme (http -&gt; 80) or not.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if this URI instance has a default port, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+<span style = "background-color:#dfd">    bool is_port_default() const { return !is_empty() &amp;&amp; this-&gt;port() == 0; }</span>
+
+    /// &lt;summary&gt;
+    /// An "authority" URI is one with only a scheme, optional userinfo, hostname, and (optional) port.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if this is an "authority" URI, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    bool is_authority() const { return !is_empty() &amp;&amp; is_path_empty() &amp;&amp; query().empty() &amp;&amp; fragment().empty(); }
+
+    /// &lt;summary&gt;
+    /// Returns whether the other URI has the same authority as this one
+    /// &lt;/summary&gt;
+    /// &lt;param name="other"&gt;The URI to compare the authority with.&lt;/param&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if both the URI's have the same authority, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    bool has_same_authority(const uri&amp; other) const { return !is_empty() &amp;&amp; this-&gt;authority() == other.authority(); }
+
+    /// &lt;summary&gt;
+    /// Returns whether the path portion of this URI is empty
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the path portion of this URI is empty, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    bool is_path_empty() const { return path().empty() || path() == _XPLATSTR("/"); }
+
+    /// &lt;summary&gt;
+    /// Returns the full (encoded) URI as a string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The full encoded URI string.&lt;/returns&gt;
+<span style = "background-color:#dfd">    utility::string_t to_string() const { return m_uri; }</span>
+
+    /// &lt;summary&gt;
+    /// Returns an URI resolved against &lt;c&gt;this&lt;/c&gt; as the base URI
+    /// according to RFC3986, Section 5 (https://tools.ietf.org/html/rfc3986#section-5).
+    /// &lt;/summary&gt;
+    /// &lt;param name="relativeUri"&gt;The relative URI to be resolved against &lt;c&gt;this&lt;/c&gt; as base.&lt;/param&gt;
+    /// &lt;returns&gt;The new resolved URI string.&lt;/returns&gt;
+    _ASYNCRTIMP utility::string_t resolve_uri(const utility::string_t&amp; relativeUri) const;
+
+    _ASYNCRTIMP bool operator==(const uri&amp; other) const;
+
+    bool operator&lt;(const uri&amp; other) const { return m_uri &lt; other.m_uri; }
+
+    bool operator!=(const uri&amp; other) const { return !(this-&gt;operator==(other)); }
+
+private:
+    friend class uri_builder;
+
+    /// &lt;summary&gt;
+    /// Creates a URI from the given URI components.
+    /// &lt;/summary&gt;
+    /// &lt;param name="components"&gt;A URI components object to create the URI instance.&lt;/param&gt;
+    _ASYNCRTIMP uri(const details::uri_components&amp; components);
+
+    // Used by uri_builder
+    static utility::string_t __cdecl encode_query_impl(const utf8string&amp; raw);
+
+    utility::string_t m_uri;
+    details::uri_components m_components;
+};
+
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

@@ -1,0 +1,352 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>http_compression.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: Compression and decompression interfaces
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#pragma once
+
+namespace web
+{
+namespace http
+{
+namespace compression
+{
+/// &lt;summary&gt;
+/// Hint as to whether a compress or decompress call is meant to be the last for a particular HTTP request or reply
+/// &lt;/summary&gt;
+enum operation_hint
+{
+    is_last, // Used for the expected last compress() call, or for an expected single decompress() call
+    has_more // Used when further compress() calls will be made, or when multiple decompress() calls may be required
+};
+
+/// &lt;summary&gt;
+/// Result structure for asynchronous compression and decompression operations
+/// &lt;/summary&gt;
+struct operation_result
+{
+    size_t input_bytes_processed; // From the input buffer
+    size_t output_bytes_produced; // To the output buffer
+    bool done; // For compress, set when 'last' is true and there was enough space to complete compression;
+               // for decompress, set if the end of the decompression stream has been reached
+};
+
+/// &lt;summary&gt;
+/// Compression interface for use with HTTP requests
+/// &lt;/summary&gt;
+class compress_provider
+{
+public:
+    virtual const utility::string_t&amp; algorithm() const = 0;
+    virtual size_t compress(const uint8_t* input,
+                            size_t input_size,
+                            uint8_t* output,
+                            size_t output_size,
+                            operation_hint hint,
+                            size_t&amp; input_bytes_processed,
+                            bool&amp; done) = 0;
+    virtual pplx::task&lt;operation_result&gt; compress(
+        const uint8_t* input, size_t input_size, uint8_t* output, size_t output_size, operation_hint hint) = 0;
+    virtual void reset() = 0;
+    virtual ~compress_provider() = default;
+};
+
+/// &lt;summary&gt;
+/// Decompression interface for use with HTTP requests
+/// &lt;/summary&gt;
+class decompress_provider
+{
+public:
+    virtual const utility::string_t&amp; algorithm() const = 0;
+    virtual size_t decompress(const uint8_t* input,
+                              size_t input_size,
+                              uint8_t* output,
+                              size_t output_size,
+                              operation_hint hint,
+                              size_t&amp; input_bytes_processed,
+                              bool&amp; done) = 0;
+    virtual pplx::task&lt;operation_result&gt; decompress(
+        const uint8_t* input, size_t input_size, uint8_t* output, size_t output_size, operation_hint hint) = 0;
+    virtual void reset() = 0;
+    virtual ~decompress_provider() = default;
+};
+
+/// &lt;summary&gt;
+/// Factory interface for compressors for use with received HTTP requests
+/// &lt;/summary&gt;
+class compress_factory
+{
+public:
+    virtual const utility::string_t&amp; algorithm() const = 0;
+    virtual std::unique_ptr&lt;compress_provider&gt; make_compressor() const = 0;
+<span style = "background-color:#fdd">    virtual ~compress_factory() = default;</span>
+};
+
+/// &lt;summary&gt;
+/// Factory interface for decompressors for use with HTTP requests
+/// &lt;/summary&gt;
+class decompress_factory
+{
+public:
+    virtual const utility::string_t&amp; algorithm() const = 0;
+    virtual uint16_t weight() const = 0;
+    virtual std::unique_ptr&lt;decompress_provider&gt; make_decompressor() const = 0;
+<span style = "background-color:#fdd">    virtual ~decompress_factory() = default;</span>
+};
+
+/// &lt;summary&gt;
+/// Built-in compression support
+/// &lt;/summary&gt;
+namespace builtin
+{
+/// &lt;summary&gt;
+/// Test whether cpprestsdk was built with built-in compression support
+/// &lt;returns&gt;True if cpprestsdk was built with built-in compression support, and false if not.&lt;/returns&gt;
+/// &lt;/summary&gt;
+_ASYNCRTIMP bool supported();
+
+/// &lt;summary&gt;
+// String constants for each built-in compression algorithm, for convenient use with the factory functions
+/// &lt;/summary&gt;
+namespace algorithm
+{
+#if defined(_MSC_VER) &amp;&amp; _MSC_VER &lt; 1900
+const utility::char_t* const GZIP = _XPLATSTR("gzip");
+const utility::char_t* const DEFLATE = _XPLATSTR("deflate");
+const utility::char_t* const BROTLI = _XPLATSTR("br");
+#else // ^^^ VS2013 and before ^^^ // vvv VS2015+, and everything else vvv
+constexpr const utility::char_t* const GZIP = _XPLATSTR("gzip");
+constexpr const utility::char_t* const DEFLATE = _XPLATSTR("deflate");
+constexpr const utility::char_t* const BROTLI = _XPLATSTR("br");
+#endif
+
+/// &lt;summary&gt;
+/// Test whether cpprestsdk was built with built-in compression support and
+/// the supplied string matches a supported built-in algorithm
+/// &lt;param name="algorithm"&gt;The name of the algorithm to test for built-in support.&lt;/param&gt;
+/// &lt;returns&gt;True if cpprestsdk was built with built-in compression support and
+/// the supplied string matches a supported built-in algorithm, and false if not.&lt;/returns&gt;
+/// &lt;summary&gt;
+_ASYNCRTIMP bool supported(const utility::string_t&amp; algorithm);
+} // namespace algorithm
+
+/// &lt;summary&gt;
+/// Factory function to instantiate a built-in compression provider with default parameters by compression algorithm
+/// name.
+/// &lt;/summary&gt;
+/// &lt;param name="algorithm"&gt;The name of the algorithm for which to instantiate a provider.&lt;/param&gt;
+/// &lt;returns&gt;
+/// A caller-owned pointer to a provider of the requested-type, or to nullptr if no such built-in type exists.
+/// &lt;/returns&gt;
+_ASYNCRTIMP std::unique_ptr&lt;compress_provider&gt; make_compressor(const utility::string_t&amp; algorithm);
+
+/// &lt;summary&gt;
+/// Factory function to instantiate a built-in decompression provider with default parameters by compression algorithm
+/// name.
+/// &lt;/summary&gt;
+/// &lt;param name="algorithm"&gt;The name of the algorithm for which to instantiate a provider.&lt;/param&gt;
+/// &lt;returns&gt;
+/// A caller-owned pointer to a provider of the requested-type, or to nullptr if no such built-in type exists.
+/// &lt;/returns&gt;
+_ASYNCRTIMP std::unique_ptr&lt;decompress_provider&gt; make_decompressor(const utility::string_t&amp; algorithm);
+
+/// &lt;summary&gt;
+/// Factory function to obtain a pointer to a built-in compression provider factory by compression algorithm name.
+/// &lt;/summary&gt;
+/// &lt;param name="algorithm"&gt;The name of the algorithm for which to find a factory.&lt;/param&gt;
+/// &lt;returns&gt;
+/// A caller-owned pointer to a provider of the requested-type, or to nullptr if no such built-in type exists.
+/// &lt;/returns&gt;
+_ASYNCRTIMP std::shared_ptr&lt;compress_factory&gt; get_compress_factory(const utility::string_t&amp; algorithm);
+
+/// &lt;summary&gt;
+/// Factory function to obtain a pointer to a built-in decompression provider factory by compression algorithm name.
+/// &lt;/summary&gt;
+/// &lt;param name="algorithm"&gt;The name of the algorithm for which to find a factory.&lt;/param&gt;
+/// &lt;returns&gt;
+/// A caller-owned pointer to a provider of the requested-type, or to nullptr if no such built-in type exists.
+/// &lt;/returns&gt;
+_ASYNCRTIMP std::shared_ptr&lt;decompress_factory&gt; get_decompress_factory(const utility::string_t&amp; algorithm);
+
+/// &lt;summary&gt;
+// Factory function to instantiate a built-in gzip compression provider with caller-selected parameters.
+/// &lt;/summary&gt;
+/// &lt;returns&gt;
+/// A caller-owned pointer to a gzip compression provider, or to nullptr if the library was built without built-in
+/// compression support.
+/// &lt;/returns&gt;
+_ASYNCRTIMP std::unique_ptr&lt;compress_provider&gt; make_gzip_compressor(int compressionLevel,
+                                                                    int method,
+                                                                    int strategy,
+                                                                    int memLevel);
+
+/// &lt;summary&gt;
+// Factory function to instantiate a built-in deflate compression provider with caller-selected parameters.
+/// &lt;/summary&gt;
+/// &lt;returns&gt;
+/// A caller-owned pointer to a deflate compression provider, or to nullptr if the library was built without built-in
+/// compression support..
+/// &lt;/returns&gt;
+_ASYNCRTIMP std::unique_ptr&lt;compress_provider&gt; make_deflate_compressor(int compressionLevel,
+                                                                       int method,
+                                                                       int strategy,
+                                                                       int memLevel);
+
+/// &lt;summary&gt;
+// Factory function to instantiate a built-in Brotli compression provider with caller-selected parameters.
+/// &lt;/summary&gt;
+/// &lt;returns&gt;
+/// A caller-owned pointer to a Brotli compression provider, or to nullptr if the library was built without built-in
+/// compression support.
+/// &lt;/returns&gt;
+_ASYNCRTIMP std::unique_ptr&lt;compress_provider&gt; make_brotli_compressor(
+    uint32_t window, uint32_t quality, uint32_t mode, uint32_t block, uint32_t nomodel, uint32_t hint);
+} // namespace builtin
+
+/// &lt;summary&gt;
+/// Factory function to instantiate a compression provider factory by compression algorithm name.
+/// &lt;/summary&gt;
+/// &lt;param name="algorithm"&gt;The name of the algorithm supported by the factory.  Must match that returned by the
+/// &lt;c&gt;web::http::compression::compress_provider&lt;/c&gt; type instantiated by the factory's make_compressor function.
+/// The supplied string is copied, and thus need not remain valid once the call returns.&lt;/param&gt;
+/// &lt;param name="make_compressor"&gt;A factory function to be used to instantiate a compressor matching the factory's
+/// reported algorithm.&lt;/param&gt;
+/// &lt;returns&gt;
+/// A pointer to a generic provider factory implementation configured with the supplied parameters.
+/// &lt;/returns&gt;
+/// &lt;remarks&gt;
+/// This method may be used to conveniently instantiate a factory object for a caller-selected &lt;c&gt;compress_provider&lt;/c&gt;.
+/// That provider may be of the caller's own design, or it may be one of the built-in types.  As such, this method may
+/// be helpful when a caller wishes to build vectors containing a mix of custom and built-in providers.
+/// &lt;/remarks&gt;
+_ASYNCRTIMP std::shared_ptr&lt;compress_factory&gt; make_compress_factory(
+    const utility::string_t&amp; algorithm, std::function&lt;std::unique_ptr&lt;compress_provider&gt;()&gt; make_compressor);
+
+/// &lt;summary&gt;
+/// Factory function to instantiate a decompression provider factory by compression algorithm name.
+/// &lt;/summary&gt;
+/// &lt;param name="algorithm"&gt;The name of the algorithm supported by the factory.  Must match that returned by the
+/// &lt;c&gt;web::http::compression::decompress_provider&lt;/c&gt; type instantiated by the factory's make_decompressor function.
+/// The supplied string is copied, and thus need not remain valid once the call returns.&lt;/param&gt;
+/// &lt;param name="weight"&gt;A numeric weight for the compression algorithm, times 1000,  for use as a "quality value" when
+/// requesting that the server send a compressed response.  Valid values are between 0 and 1000, inclusive, where higher
+/// values indicate more preferred algorithms, and 0 indicates that the algorithm is not allowed; values greater than
+/// 1000 are treated as 1000.&lt;/param&gt;
+/// &lt;param name="make_decompressor"&gt;A factory function to be used to instantiate a decompressor matching the factory's
+/// reported algorithm.&lt;/param&gt;
+/// &lt;returns&gt;
+/// A pointer to a generic provider factory implementation configured with the supplied parameters.
+/// &lt;/returns&gt;
+/// &lt;remarks&gt;
+/// This method may be used to conveniently instantiate a factory object for a caller-selected
+/// &lt;c&gt;decompress_provider&lt;/c&gt;.  That provider may be of the caller's own design, or it may be one of the built-in
+/// types.  As such, this method may be helpful when a caller wishes to change the weights of built-in provider types,
+/// to use custom providers without explicitly implementing a &lt;c&gt;decompress_factory&lt;/c&gt;, or to build vectors containing
+/// a mix of custom and built-in providers.
+/// &lt;/remarks&gt;
+_ASYNCRTIMP std::shared_ptr&lt;decompress_factory&gt; make_decompress_factory(
+    const utility::string_t&amp; algorithm,
+    uint16_t weight,
+    std::function&lt;std::unique_ptr&lt;decompress_provider&gt;()&gt; make_decompressor);
+
+namespace details
+{
+/// &lt;summary&gt;
+/// Header type enum for use with compressor and decompressor header parsing and building functions
+/// &lt;/summary&gt;
+enum header_types
+{
+    transfer_encoding,
+    content_encoding,
+    te,
+    accept_encoding
+};
+
+/// &lt;summary&gt;
+/// Factory function to instantiate an appropriate compression provider, if any.
+/// &lt;/summary&gt;
+/// &lt;param name="encoding"&gt;A TE or Accept-Encoding header to interpret.&lt;/param&gt;
+/// &lt;param name="type"&gt;Specifies the type of header whose contents are in the encoding parameter; valid values are
+/// &lt;c&gt;header_type::te&lt;/c&gt; and &lt;c&gt;header_type::accept_encoding&lt;/c&gt;.&lt;/param&gt;
+/// &lt;param name="preferred"&gt;A compressor object of the caller's preferred (possibly custom) type, which is used if
+/// possible.&lt;/param&gt;
+/// &lt;param name="factories"&gt;A collection of factory objects for use in construction of an appropriate compressor, if
+/// any. If empty or not supplied, the set of supported built-in compressors is used.&lt;/param&gt;
+/// &lt;returns&gt;
+/// A pointer to a compressor object that is acceptable per the supplied header, or to nullptr if no matching
+/// algorithm is found.
+/// &lt;/returns&gt;
+_ASYNCRTIMP std::unique_ptr&lt;compress_provider&gt; get_compressor_from_header(
+    const utility::string_t&amp; encoding,
+    header_types type,
+    const std::vector&lt;std::shared_ptr&lt;compress_factory&gt;&gt;&amp; factories = std::vector&lt;std::shared_ptr&lt;compress_factory&gt;&gt;());
+
+/// &lt;summary&gt;
+/// Factory function to instantiate an appropriate decompression provider, if any.
+/// &lt;/summary&gt;
+/// &lt;param name="encoding"&gt;A Transfer-Encoding or Content-Encoding header to interpret.&lt;/param&gt;
+/// &lt;param name="type"&gt;Specifies the type of header whose contents are in the encoding parameter; valid values are
+/// &lt;c&gt;header_type::transfer_encoding&lt;/c&gt; and &lt;c&gt;header_type::content_encoding&lt;/c&gt;.&lt;/param&gt;
+/// &lt;param name="factories"&gt;A collection of factory objects for use in construction of an appropriate decompressor,
+/// if any. If empty or not supplied, the set of supported built-in compressors is used.&lt;/param&gt;
+/// &lt;returns&gt;
+/// A pointer to a decompressor object that is acceptable per the supplied header, or to nullptr if no matching
+/// algorithm is found.
+/// &lt;/returns&gt;
+_ASYNCRTIMP std::unique_ptr&lt;decompress_provider&gt; get_decompressor_from_header(
+    const utility::string_t&amp; encoding,
+    header_types type,
+    const std::vector&lt;std::shared_ptr&lt;decompress_factory&gt;&gt;&amp; factories =
+        std::vector&lt;std::shared_ptr&lt;decompress_factory&gt;&gt;());
+
+/// &lt;summary&gt;
+/// Helper function to compose a TE or Accept-Encoding header with supported, and possibly ranked, compression
+/// algorithms.
+/// &lt;/summary&gt;
+/// &lt;param name="type"&gt;Specifies the type of header to be built; valid values are &lt;c&gt;header_type::te&lt;/c&gt; and
+/// &lt;c&gt;header_type::accept_encoding&lt;/c&gt;.&lt;/param&gt;
+/// &lt;param name="factories"&gt;A collection of factory objects for use in header construction. If empty or not
+/// supplied, the set of supported built-in compressors is used.&lt;/param&gt;
+/// &lt;returns&gt;
+/// A well-formed header, without the header name, specifying the acceptable ranked compression types.
+/// &lt;/returns&gt;
+_ASYNCRTIMP utility::string_t build_supported_header(header_types type,
+                                                     const std::vector&lt;std::shared_ptr&lt;decompress_factory&gt;&gt;&amp; factories =
+                                                         std::vector&lt;std::shared_ptr&lt;decompress_factory&gt;&gt;());
+} // namespace details
+} // namespace compression
+} // namespace http
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

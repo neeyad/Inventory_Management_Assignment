@@ -1,0 +1,185 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>web_utilities.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * Credential and proxy utilities.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#include "stdafx.h"
+
+#include &lt;assert.h&gt;
+
+#if defined(_WIN32) &amp;&amp; !defined(__cplusplus_winrt)
+#include &lt;Wincrypt.h&gt;
+#endif
+
+#if defined(__cplusplus_winrt)
+#include &lt;robuffer.h&gt;
+#endif
+
+namespace web
+{
+namespace details
+{
+#ifdef _WIN32
+#if _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+#ifdef __cplusplus_winrt
+
+// Helper function to zero out memory of an IBuffer.
+void winrt_secure_zero_buffer(Windows::Storage::Streams::IBuffer ^ buffer)
+{
+    Microsoft::WRL::ComPtr&lt;IInspectable&gt; bufferInspectable(reinterpret_cast&lt;IInspectable*&gt;(buffer));
+    Microsoft::WRL::ComPtr&lt;Windows::Storage::Streams::IBufferByteAccess&gt; bufferByteAccess;
+    bufferInspectable.As(&amp;bufferByteAccess);
+
+    // This shouldn't happen but if can't get access to the raw bytes for some reason
+    // then we can't zero out.
+    byte* rawBytes;
+    if (bufferByteAccess-&gt;Buffer(&amp;rawBytes) == S_OK)
+    {
+        SecureZeroMemory(rawBytes, buffer-&gt;Length);
+    }
+}
+
+winrt_encryption::winrt_encryption(const std::wstring&amp; data)
+{
+    auto provider = ref new Windows::Security::Cryptography::DataProtection::DataProtectionProvider(
+        ref new Platform::String(L"Local=user"));
+
+    // Create buffer containing plain text password.
+    Platform::ArrayReference&lt;unsigned char&gt; arrayref(
+        reinterpret_cast&lt;unsigned char*&gt;(const_cast&lt;std::wstring::value_type*&gt;(data.c_str())),
+        static_cast&lt;unsigned int&gt;(data.size()) * sizeof(std::wstring::value_type));
+    Windows::Storage::Streams::IBuffer ^ plaintext =
+        Windows::Security::Cryptography::CryptographicBuffer::CreateFromByteArray(arrayref);
+    m_buffer = pplx::create_task(provider-&gt;ProtectAsync(plaintext));
+    m_buffer.then(
+        [plaintext](pplx::task&lt;Windows::Storage::Streams::IBuffer ^&gt;) { winrt_secure_zero_buffer(plaintext); });
+}
+
+plaintext_string winrt_encryption::decrypt() const
+{
+    // To fully guarantee asynchrony would require significant impact on existing code. This code path
+    // is never run on a user's thread and is only done once when setting up a connection.
+    auto encrypted = m_buffer.get();
+    auto provider = ref new Windows::Security::Cryptography::DataProtection::DataProtectionProvider();
+    auto plaintext = pplx::create_task(provider-&gt;UnprotectAsync(encrypted)).get();
+
+    // Get access to raw bytes in plain text buffer.
+    Microsoft::WRL::ComPtr&lt;IInspectable&gt; bufferInspectable(reinterpret_cast&lt;IInspectable*&gt;(plaintext));
+    Microsoft::WRL::ComPtr&lt;Windows::Storage::Streams::IBufferByteAccess&gt; bufferByteAccess;
+    bufferInspectable.As(&amp;bufferByteAccess);
+    byte* rawPlaintext;
+    const auto&amp; result = bufferByteAccess-&gt;Buffer(&amp;rawPlaintext);
+    if (result != S_OK)
+    {
+        throw ::utility::details::create_system_error(result);
+    }
+
+    // Construct string and zero out memory from plain text buffer.
+    auto data = plaintext_string(
+        new std::wstring(reinterpret_cast&lt;const std::wstring::value_type*&gt;(rawPlaintext), plaintext-&gt;Length / 2));
+    SecureZeroMemory(rawPlaintext, plaintext-&gt;Length);
+    return std::move(data);
+}
+
+#else  // ^^^ __cplusplus_winrt ^^^ // vvv !__cplusplus_winrt vvv
+
+<span style = "background-color:#fdd">win32_encryption::win32_encryption(const std::wstring&amp; data) : m_numCharacters(data.size())
+{</span>
+    // Early return because CryptProtectMemory crashes with empty string
+<span style = "background-color:#fdd">    if (m_numCharacters == 0)</span>
+    {
+<span style = "background-color:#fdd">        return;</span>
+    }
+
+<span style = "background-color:#fdd">    if (data.size() &gt; (std::numeric_limits&lt;DWORD&gt;::max)() / sizeof(wchar_t))</span>
+    {
+<span style = "background-color:#fdd">        throw std::length_error("Encryption string too long");</span>
+    }
+
+<span style = "background-color:#fdd">    const auto dataSizeDword = static_cast&lt;DWORD&gt;(data.size() * sizeof(wchar_t));</span>
+
+    // Round up dataSizeDword to be a multiple of CRYPTPROTECTMEMORY_BLOCK_SIZE
+    static_assert(CRYPTPROTECTMEMORY_BLOCK_SIZE == 16, "Power of 2 assumptions in this bit masking violated");
+<span style = "background-color:#fdd">    const auto mask = static_cast&lt;DWORD&gt;(CRYPTPROTECTMEMORY_BLOCK_SIZE - 1u);
+    const auto dataNumBytes = (dataSizeDword &amp; ~mask) + ((dataSizeDword &amp; mask) != 0) * CRYPTPROTECTMEMORY_BLOCK_SIZE;
+    assert((dataNumBytes % CRYPTPROTECTMEMORY_BLOCK_SIZE) == 0);
+    assert(dataNumBytes &gt;= dataSizeDword);
+    m_buffer.resize(dataNumBytes);
+    memcpy_s(m_buffer.data(), m_buffer.size(), data.c_str(), dataNumBytes);
+    if (!CryptProtectMemory(m_buffer.data(), dataNumBytes, CRYPTPROTECTMEMORY_SAME_PROCESS))</span>
+    {
+<span style = "background-color:#fdd">        throw ::utility::details::create_system_error(GetLastError());</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+<span style = "background-color:#fdd">win32_encryption::~win32_encryption() { SecureZeroMemory(m_buffer.data(), m_buffer.size()); }</span>
+
+plaintext_string win32_encryption::decrypt() const
+<span style = "background-color:#fdd">{</span>
+    // Copy the buffer and decrypt to avoid having to re-encrypt.
+<span style = "background-color:#fdd">    auto result = plaintext_string(new std::wstring(reinterpret_cast&lt;const std::wstring::value_type*&gt;(m_buffer.data()),</span>
+                                                    m_buffer.size() / sizeof(wchar_t)));
+<span style = "background-color:#fdd">    auto&amp; data = *result;
+    if (!m_buffer.empty())</span>
+    {
+<span style = "background-color:#fdd">        if (!CryptUnprotectMemory(&amp;data[0], static_cast&lt;DWORD&gt;(m_buffer.size()), CRYPTPROTECTMEMORY_SAME_PROCESS))</span>
+        {
+<span style = "background-color:#fdd">            throw ::utility::details::create_system_error(GetLastError());</span>
+        }
+
+<span style = "background-color:#fdd">        assert(m_numCharacters &lt;= m_buffer.size());
+        SecureZeroMemory(&amp;data[m_numCharacters], data.size() - m_numCharacters);
+        data.erase(m_numCharacters);</span>
+    }
+
+<span style = "background-color:#fdd">    return result;
+}</span>
+#endif // __cplusplus_winrt
+#endif // _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+#endif // _WIN32
+
+void zero_memory_deleter::operator()(::utility::string_t* data) const
+<span style = "background-color:#fdd">{</span>
+    (void)data;
+#ifdef _WIN32
+<span style = "background-color:#fdd">    SecureZeroMemory(&amp;(*data)[0], data-&gt;size() * sizeof(::utility::string_t::value_type));
+    delete data;</span>
+#endif
+<span style = "background-color:#fdd">}</span>
+} // namespace details
+
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

@@ -1,0 +1,10 @@
+^C:\USERS\NEERAJY\DOCUMENTS\AI NATIVE ASSIGNEMNT 1\CMAKEFILES\46544CE2DA3274B53808F16F7ABCC815\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" "-SC:/Users/Neerajy/Documents/AI Native Assignemnt 1" "-BC:/Users/Neerajy/Documents/AI Native Assignemnt 1" --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file "C:/Users/Neerajy/Documents/AI Native Assignemnt 1/ECommerceInventoryService.sln"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

@@ -1,0 +1,1206 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>astreambuf.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * Asynchronous I/O: stream buffer. This is an extension to the PPL concurrency features and therefore
+ * lives in the Concurrency namespace.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#pragma once
+
+#include "cpprest/asyncrt_utils.h"
+#include "cpprest/details/basic_types.h"
+#include "pplx/pplxtasks.h"
+#include &lt;atomic&gt;
+#include &lt;cstring&gt;
+#include &lt;ios&gt;
+#include &lt;math.h&gt;
+#include &lt;memory&gt;
+
+#if (defined(_MSC_VER) &amp;&amp; (_MSC_VER &gt;= 1800)) &amp;&amp; !CPPREST_FORCE_PPLX
+namespace Concurrency // since namespace pplx = Concurrency
+#else
+namespace pplx
+#endif
+{
+namespace details
+{
+template&lt;class F, class T = bool&gt;
+pplx::task&lt;T&gt; _do_while(F func)
+<span style = "background-color:#fdd">{
+    pplx::task&lt;T&gt; first = func();
+    return first.then([=](bool guard) -&gt; pplx::task&lt;T&gt; {
+        if (guard)
+            return pplx::details::_do_while&lt;F, T&gt;(func);</span>
+        else
+<span style = "background-color:#fdd">            return first;
+    });
+}</span>
+} // namespace details
+}
+
+namespace Concurrency
+{
+/// Library for asynchronous streams.
+namespace streams
+{
+/// &lt;summary&gt;
+/// Extending the standard char_traits type with one that adds values and types
+/// that are unique to "C++ REST SDK" streams.
+/// &lt;/summary&gt;
+/// &lt;typeparam name="_CharType"&gt;
+/// The data type of the basic element of the stream.
+/// &lt;/typeparam&gt;
+template&lt;typename _CharType&gt;
+struct char_traits : std::char_traits&lt;_CharType&gt;
+{
+    /// &lt;summary&gt;
+    /// Some synchronous functions will return this value if the operation
+    /// requires an asynchronous call in a given situation.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;An &lt;c&gt;int_type&lt;/c&gt; value which implies that an asynchronous call is required.&lt;/returns&gt;
+    static typename std::char_traits&lt;_CharType&gt;::int_type requires_async()
+<span style = "background-color:#fdd">    {
+        return std::char_traits&lt;_CharType&gt;::eof() - 1;
+    }</span>
+};
+#if !defined(_WIN32)
+template&lt;&gt;
+struct char_traits&lt;unsigned char&gt; : private std::char_traits&lt;char&gt;
+{
+public:
+    typedef unsigned char char_type;
+
+    using std::char_traits&lt;char&gt;::eof;
+    using std::char_traits&lt;char&gt;::int_type;
+    using std::char_traits&lt;char&gt;::off_type;
+    using std::char_traits&lt;char&gt;::pos_type;
+
+    static size_t length(const unsigned char* str)
+    {
+        return std::char_traits&lt;char&gt;::length(reinterpret_cast&lt;const char*&gt;(str));
+    }
+
+    static void assign(unsigned char&amp; left, const unsigned char&amp; right) { left = right; }
+    static unsigned char* assign(unsigned char* left, size_t n, unsigned char value)
+    {
+        return reinterpret_cast&lt;unsigned char*&gt;(
+            std::char_traits&lt;char&gt;::assign(reinterpret_cast&lt;char*&gt;(left), n, static_cast&lt;char&gt;(value)));
+    }
+
+    static unsigned char* copy(unsigned char* left, const unsigned char* right, size_t n)
+    {
+        return reinterpret_cast&lt;unsigned char*&gt;(
+            std::char_traits&lt;char&gt;::copy(reinterpret_cast&lt;char*&gt;(left), reinterpret_cast&lt;const char*&gt;(right), n));
+    }
+
+    static unsigned char* move(unsigned char* left, const unsigned char* right, size_t n)
+    {
+        return reinterpret_cast&lt;unsigned char*&gt;(
+            std::char_traits&lt;char&gt;::move(reinterpret_cast&lt;char*&gt;(left), reinterpret_cast&lt;const char*&gt;(right), n));
+    }
+
+    static int_type requires_async() { return eof() - 1; }
+};
+#endif
+
+namespace details
+{
+/// &lt;summary&gt;
+/// Stream buffer base class.
+/// &lt;/summary&gt;
+template&lt;typename _CharType&gt;
+class basic_streambuf
+{
+public:
+    typedef _CharType char_type;
+    typedef ::concurrency::streams::char_traits&lt;_CharType&gt; traits;
+
+    typedef typename traits::int_type int_type;
+    typedef typename traits::pos_type pos_type;
+    typedef typename traits::off_type off_type;
+
+    /// &lt;summary&gt;
+    /// Virtual constructor for stream buffers.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    virtual ~basic_streambuf() {}</span>
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;can_read&lt;/c&gt; is used to determine whether a stream buffer will support read operations (get).
+    /// &lt;/summary&gt;
+    virtual bool can_read() const = 0;
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;can_write&lt;/c&gt; is used to determine whether a stream buffer will support write operations (put).
+    /// &lt;/summary&gt;
+    virtual bool can_write() const = 0;
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;can_seek&lt;c/&gt; is used to determine whether a stream buffer supports seeking.
+    /// &lt;/summary&gt;
+    virtual bool can_seek() const = 0;
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;has_size&lt;c/&gt; is used to determine whether a stream buffer supports size().
+    /// &lt;/summary&gt;
+    virtual bool has_size() const = 0;
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;is_eof&lt;/c&gt; is used to determine whether a read head has reached the end of the buffer.
+    /// &lt;/summary&gt;
+    virtual bool is_eof() const = 0;
+
+    /// &lt;summary&gt;
+    /// Gets the stream buffer size, if one has been set.
+    /// &lt;/summary&gt;
+    /// &lt;param name="direction"&gt;The direction of buffering (in or out)&lt;/param&gt;
+    /// &lt;returns&gt;The size of the internal buffer (for the given direction).&lt;/returns&gt;
+    /// &lt;remarks&gt;An implementation that does not support buffering will always return 0.&lt;/remarks&gt;
+    virtual size_t buffer_size(std::ios_base::openmode direction = std::ios_base::in) const = 0;
+
+    /// &lt;summary&gt;
+    /// Sets the stream buffer implementation to buffer or not buffer.
+    /// &lt;/summary&gt;
+    /// &lt;param name="size"&gt;The size to use for internal buffering, 0 if no buffering should be done.&lt;/param&gt;
+    /// &lt;param name="direction"&gt;The direction of buffering (in or out)&lt;/param&gt;
+    /// &lt;remarks&gt;An implementation that does not support buffering will silently ignore calls to this function and it
+    /// will not have any effect on what is returned by subsequent calls to &lt;see cref="::buffer_size method"
+    /// /&gt;.&lt;/remarks&gt;
+    virtual void set_buffer_size(size_t size, std::ios_base::openmode direction = std::ios_base::in) = 0;
+
+    /// &lt;summary&gt;
+    /// For any input stream, &lt;c&gt;in_avail&lt;/c&gt; returns the number of characters that are immediately available
+    /// to be consumed without blocking. May be used in conjunction with &lt;cref="::sbumpc method"/&gt; to read data without
+    /// incurring the overhead of using tasks.
+    /// &lt;/summary&gt;
+    virtual size_t in_avail() const = 0;
+
+    /// &lt;summary&gt;
+    /// Checks if the stream buffer is open.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;No separation is made between open for reading and open for writing.&lt;/remarks&gt;
+    virtual bool is_open() const = 0;
+
+    /// &lt;summary&gt;
+    /// Closes the stream buffer, preventing further read or write operations.
+    /// &lt;/summary&gt;
+    /// &lt;param name="mode"&gt;The I/O mode (in or out) to close for.&lt;/param&gt;
+    virtual pplx::task&lt;void&gt; close(std::ios_base::openmode mode = (std::ios_base::in | std::ios_base::out)) = 0;
+
+    /// &lt;summary&gt;
+    /// Closes the stream buffer with an exception.
+    /// &lt;/summary&gt;
+    /// &lt;param name="mode"&gt;The I/O mode (in or out) to close for.&lt;/param&gt;
+    /// &lt;param name="eptr"&gt;Pointer to the exception.&lt;/param&gt;
+    virtual pplx::task&lt;void&gt; close(std::ios_base::openmode mode, std::exception_ptr eptr) = 0;
+
+    /// &lt;summary&gt;
+    /// Writes a single character to the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ch"&gt;The character to write&lt;/param&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the value of the character. This value is EOF if the write operation
+    /// fails.&lt;/returns&gt;
+    virtual pplx::task&lt;int_type&gt; putc(_CharType ch) = 0;
+
+    /// &lt;summary&gt;
+    /// Writes a number of characters to the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;A pointer to the block of data to be written.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The number of characters to write.&lt;/param&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the number of characters actually written, either 'count' or 0.&lt;/returns&gt;
+    virtual pplx::task&lt;size_t&gt; putn(const _CharType* ptr, size_t count) = 0;
+
+    /// &lt;summary&gt;
+    /// Writes a number of characters to the stream. Note: callers must make sure the data to be written is valid until
+    /// the returned task completes.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;A pointer to the block of data to be written.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The number of characters to write.&lt;/param&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the number of characters actually written, either 'count' or 0.&lt;/returns&gt;
+    virtual pplx::task&lt;size_t&gt; putn_nocopy(const _CharType* ptr, size_t count) = 0;
+
+    /// &lt;summary&gt;
+    /// Reads a single character from the stream and advances the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the value of the character. This value is EOF if the read fails.&lt;/returns&gt;
+    virtual pplx::task&lt;int_type&gt; bumpc() = 0;
+
+    /// &lt;summary&gt;
+    /// Reads a single character from the stream and advances the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the character. &lt;c&gt;-1&lt;/c&gt; if the read fails. &lt;c&gt;-2&lt;/c&gt; if an asynchronous read is
+    /// required&lt;/returns&gt; &lt;remarks&gt;This is a synchronous operation, but is guaranteed to never block.&lt;/remarks&gt;
+    virtual int_type sbumpc() = 0;
+
+    /// &lt;summary&gt;
+    /// Reads a single character from the stream without advancing the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the value of the byte. This value is EOF if the read fails.&lt;/returns&gt;
+    virtual pplx::task&lt;int_type&gt; getc() = 0;
+
+    /// &lt;summary&gt;
+    /// Reads a single character from the stream without advancing the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the character. EOF if the read fails. &lt;see cref="::requires_async method" /&gt; if an
+    /// asynchronous read is required&lt;/returns&gt; &lt;remarks&gt;This is a synchronous operation, but is guaranteed to never
+    /// block.&lt;/remarks&gt;
+    virtual int_type sgetc() = 0;
+
+    /// &lt;summary&gt;
+    /// Advances the read position, then returns the next character without advancing again.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the value of the character. This value is EOF if the read fails.&lt;/returns&gt;
+    virtual pplx::task&lt;int_type&gt; nextc() = 0;
+
+    /// &lt;summary&gt;
+    /// Retreats the read position, then returns the current character without advancing.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the value of the character. This value is EOF if the read fails,
+    /// &lt;c&gt;requires_async&lt;/c&gt; if an asynchronous read is required&lt;/returns&gt;
+    virtual pplx::task&lt;int_type&gt; ungetc() = 0;
+
+    /// &lt;summary&gt;
+    /// Reads up to a given number of characters from the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;The address of the target memory area.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The maximum number of characters to read.&lt;/param&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the number of characters read. This value is O if the end of the stream is
+    /// reached.&lt;/returns&gt;
+    virtual pplx::task&lt;size_t&gt; getn(_Out_writes_(count) _CharType* ptr, _In_ size_t count) = 0;
+
+    /// &lt;summary&gt;
+    /// Copies up to a given number of characters from the stream, synchronously.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;The address of the target memory area.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The maximum number of characters to read.&lt;/param&gt;
+    /// &lt;returns&gt;The number of characters copied. O if the end of the stream is reached or an asynchronous read is
+    /// required.&lt;/returns&gt; &lt;remarks&gt;This is a synchronous operation, but is guaranteed to never block.&lt;/remarks&gt;
+    virtual size_t scopy(_Out_writes_(count) _CharType* ptr, _In_ size_t count) = 0;
+
+    /// &lt;summary&gt;
+    /// Gets the current read or write position in the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="direction"&gt;The I/O direction to seek (see remarks)&lt;/param&gt;
+    /// &lt;returns&gt;The current position. EOF if the operation fails.&lt;/returns&gt;
+    /// &lt;remarks&gt;Some streams may have separate write and read cursors.
+    ///          For such streams, the direction parameter defines whether to move the read or the write
+    ///          cursor.&lt;/remarks&gt;
+    virtual pos_type getpos(std::ios_base::openmode direction) const = 0;
+
+    /// &lt;summary&gt;
+    /// Gets the size of the stream, if known. Calls to &lt;c&gt;has_size&lt;/c&gt; will determine whether
+    /// the result of &lt;c&gt;size&lt;/c&gt; can be relied on.
+    /// &lt;/summary&gt;
+    virtual utility::size64_t size() const = 0;
+
+    /// &lt;summary&gt;
+    /// Seeks to the given position.
+    /// &lt;/summary&gt;
+    /// &lt;param name="pos"&gt;The offset from the beginning of the stream.&lt;/param&gt;
+    /// &lt;param name="direction"&gt;The I/O direction to seek (see remarks).&lt;/param&gt;
+    /// &lt;returns&gt;The position. EOF if the operation fails.&lt;/returns&gt;
+    /// &lt;remarks&gt;Some streams may have separate write and read cursors. For such streams, the direction parameter
+    /// defines whether to move the read or the write cursor.&lt;/remarks&gt;
+    virtual pos_type seekpos(pos_type pos, std::ios_base::openmode direction) = 0;
+
+    /// &lt;summary&gt;
+    /// Seeks to a position given by a relative offset.
+    /// &lt;/summary&gt;
+    /// &lt;param name="offset"&gt;The relative position to seek to&lt;/param&gt;
+    /// &lt;param name="way"&gt;The starting point (beginning, end, current) for the seek.&lt;/param&gt;
+    /// &lt;param name="mode"&gt;The I/O direction to seek (see remarks)&lt;/param&gt;
+    /// &lt;returns&gt;The position. EOF if the operation fails.&lt;/returns&gt;
+    /// &lt;remarks&gt;Some streams may have separate write and read cursors.
+    ///          For such streams, the mode parameter defines whether to move the read or the write cursor.&lt;/remarks&gt;
+    virtual pos_type seekoff(off_type offset, std::ios_base::seekdir way, std::ios_base::openmode mode) = 0;
+
+    /// &lt;summary&gt;
+    /// For output streams, flush any internally buffered data to the underlying medium.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that returns &lt;c&gt;true&lt;/c&gt; if the sync succeeds, &lt;c&gt;false&lt;/c&gt; if not.&lt;/returns&gt;
+    virtual pplx::task&lt;void&gt; sync() = 0;
+
+    //
+    // Efficient read and write.
+    //
+    // The following routines are intended to be used for more efficient, copy-free, reading and
+    // writing of data from/to the stream. Rather than having the caller provide a buffer into which
+    // data is written or from which it is read, the stream buffer provides a pointer directly to the
+    // internal data blocks that it is using. Since not all stream buffers use internal data structures
+    // to copy data, the functions may not be supported by all. An application that wishes to use this
+    // functionality should therefore first try them and check for failure to support. If there is
+    // such failure, the application should fall back on the copying interfaces (putn / getn)
+    //
+
+    /// &lt;summary&gt;
+    /// Allocates a contiguous memory block and returns it.
+    /// &lt;/summary&gt;
+    /// &lt;param name="count"&gt;The number of characters to allocate.&lt;/param&gt;
+    /// &lt;returns&gt;A pointer to a block to write to, null if the stream buffer implementation does not support
+    /// alloc/commit.&lt;/returns&gt;
+    virtual _CharType* alloc(_In_ size_t count) = 0;
+
+    /// &lt;summary&gt;
+    /// Submits a block already allocated by the stream buffer.
+    /// &lt;/summary&gt;
+    /// &lt;param name="count"&gt;The number of characters to be committed.&lt;/param&gt;
+    virtual void commit(_In_ size_t count) = 0;
+
+    /// &lt;summary&gt;
+    /// Gets a pointer to the next already allocated contiguous block of data.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;A reference to a pointer variable that will hold the address of the block on success.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The number of contiguous characters available at the address in 'ptr'.&lt;/param&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the operation succeeded, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// A return of false does not necessarily indicate that a subsequent read operation would fail, only that
+    /// there is no block to return immediately or that the stream buffer does not support the operation.
+    /// The stream buffer may not de-allocate the block until &lt;see cref="::release method" /&gt; is called.
+    /// If the end of the stream is reached, the function will return &lt;c&gt;true&lt;/c&gt;, a null pointer, and a count of zero;
+    /// a subsequent read will not succeed.
+    /// &lt;/remarks&gt;
+    virtual bool acquire(_Out_ _CharType*&amp; ptr, _Out_ size_t&amp; count) = 0;
+
+    /// &lt;summary&gt;
+    /// Releases a block of data acquired using &lt;see cref="::acquire method"/&gt;. This frees the stream buffer to
+    /// de-allocate the memory, if it so desires. Move the read position ahead by the count.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;A pointer to the block of data to be released.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The number of characters that were read.&lt;/param&gt;
+    virtual void release(_Out_writes_(count) _CharType* ptr, _In_ size_t count) = 0;
+
+    /// &lt;summary&gt;
+    /// Retrieves the stream buffer exception_ptr if it has been set.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Pointer to the exception, if it has been set; otherwise, &lt;c&gt;nullptr&lt;/c&gt; will be returned&lt;/returns&gt;
+    virtual std::exception_ptr exception() const = 0;
+};
+
+template&lt;typename _CharType&gt;
+class streambuf_state_manager : public basic_streambuf&lt;_CharType&gt;,
+                                public std::enable_shared_from_this&lt;streambuf_state_manager&lt;_CharType&gt;&gt;
+{
+public:
+    typedef typename details::basic_streambuf&lt;_CharType&gt;::traits traits;
+    typedef typename details::basic_streambuf&lt;_CharType&gt;::int_type int_type;
+    typedef typename details::basic_streambuf&lt;_CharType&gt;::pos_type pos_type;
+    typedef typename details::basic_streambuf&lt;_CharType&gt;::off_type off_type;
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;can_read&lt;/c&gt; is used to determine whether a stream buffer will support read operations (get).
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    virtual bool can_read() const { return m_stream_can_read; }</span>
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;can_write&lt;/c&gt; is used to determine whether a stream buffer will support write operations (put).
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    virtual bool can_write() const { return m_stream_can_write; }</span>
+
+    /// &lt;summary&gt;
+    /// Checks if the stream buffer is open.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;No separation is made between open for reading and open for writing.&lt;/remarks&gt;
+<span style = "background-color:#fdd">    virtual bool is_open() const { return can_read() || can_write(); }</span>
+
+    /// &lt;summary&gt;
+    /// Closes the stream buffer, preventing further read or write operations.
+    /// &lt;/summary&gt;
+    /// &lt;param name="mode"&gt;The I/O mode (in or out) to close for.&lt;/param&gt;
+    virtual pplx::task&lt;void&gt; close(std::ios_base::openmode mode = std::ios_base::in | std::ios_base::out)
+<span style = "background-color:#fdd">    {
+        pplx::task&lt;void&gt; closeOp = pplx::task_from_result();</span>
+
+<span style = "background-color:#fdd">        if (mode &amp; std::ios_base::in &amp;&amp; can_read())</span>
+        {
+<span style = "background-color:#fdd">            closeOp = _close_read();</span>
+        }
+
+        // After the flush_internal task completed, "this" object may have been destroyed,
+        // accessing the members is invalid, use shared_from_this to avoid access violation exception.
+<span style = "background-color:#fdd">        auto this_ptr = std::static_pointer_cast&lt;streambuf_state_manager&gt;(this-&gt;shared_from_this());</span>
+
+<span style = "background-color:#fdd">        if (mode &amp; std::ios_base::out &amp;&amp; can_write())</span>
+        {
+<span style = "background-color:#fdd">            if (closeOp.is_done())
+                closeOp = closeOp &amp;&amp; _close_write().then([this_ptr] {}); // passing down exceptions from closeOp</span>
+            else
+<span style = "background-color:#fdd">                closeOp = closeOp.then([this_ptr] { return this_ptr-&gt;_close_write().then([this_ptr] {}); });</span>
+        }
+
+<span style = "background-color:#fdd">        return closeOp;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Closes the stream buffer with an exception.
+    /// &lt;/summary&gt;
+    /// &lt;param name="mode"&gt;The I/O mode (in or out) to close for.&lt;/param&gt;
+    /// &lt;param name="eptr"&gt;Pointer to the exception.&lt;/param&gt;
+    virtual pplx::task&lt;void&gt; close(std::ios_base::openmode mode, std::exception_ptr eptr)
+<span style = "background-color:#fdd">    {
+        if (m_currentException == nullptr) m_currentException = eptr;
+        return close(mode);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;is_eof&lt;/c&gt; is used to determine whether a read head has reached the end of the buffer.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    virtual bool is_eof() const { return m_stream_read_eof; }</span>
+
+    /// &lt;summary&gt;
+    /// Writes a single character to the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ch"&gt;The character to write&lt;/param&gt;
+    /// &lt;returns&gt;The value of the character. EOF if the write operation fails&lt;/returns&gt;
+    virtual pplx::task&lt;int_type&gt; putc(_CharType ch)
+<span style = "background-color:#fdd">    {
+        if (!can_write()) return create_exception_checked_value_task&lt;int_type&gt;(traits::eof());</span>
+
+<span style = "background-color:#fdd">        return create_exception_checked_task&lt;int_type&gt;(_putc(ch), [](int_type) {
+            return false; // no EOF for write
+        });
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Writes a number of characters to the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;A pointer to the block of data to be written.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The number of characters to write.&lt;/param&gt;
+    /// &lt;returns&gt;The number of characters actually written, either 'count' or 0.&lt;/returns&gt;
+    CASABLANCA_DEPRECATED("This API in some cases performs a copy. It is deprecated and will be removed in a future "
+                          "release. Use putn_nocopy instead.")
+    virtual pplx::task&lt;size_t&gt; putn(const _CharType* ptr, size_t count)
+<span style = "background-color:#fdd">    {
+        if (!can_write()) return create_exception_checked_value_task&lt;size_t&gt;(0);
+        if (count == 0) return pplx::task_from_result&lt;size_t&gt;(0);</span>
+
+<span style = "background-color:#fdd">        return create_exception_checked_task&lt;size_t&gt;(_putn(ptr, count, true), [](size_t) {
+            return false; // no EOF for write
+        });
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Writes a number of characters to the stream. Note: callers must make sure the data to be written is valid until
+    /// the returned task completes.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;A pointer to the block of data to be written.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The number of characters to write.&lt;/param&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; that holds the number of characters actually written, either 'count' or 0.&lt;/returns&gt;
+    virtual pplx::task&lt;size_t&gt; putn_nocopy(const _CharType* ptr, size_t count)
+<span style = "background-color:#fdd">    {
+        if (!can_write()) return create_exception_checked_value_task&lt;size_t&gt;(0);
+        if (count == 0) return pplx::task_from_result&lt;size_t&gt;(0);</span>
+
+<span style = "background-color:#fdd">        return create_exception_checked_task&lt;size_t&gt;(_putn(ptr, count), [](size_t) {
+            return false; // no EOF for write
+        });
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Reads a single character from the stream and advances the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the character. EOF if the read fails.&lt;/returns&gt;
+    virtual pplx::task&lt;int_type&gt; bumpc()
+<span style = "background-color:#fdd">    {
+        if (!can_read())
+            return create_exception_checked_value_task&lt;int_type&gt;(streambuf_state_manager&lt;_CharType&gt;::traits::eof());</span>
+
+<span style = "background-color:#fdd">        return create_exception_checked_task&lt;int_type&gt;(
+            _bumpc(), [](int_type val) { return val == streambuf_state_manager&lt;_CharType&gt;::traits::eof(); });
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Reads a single character from the stream and advances the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the character. &lt;c&gt;-1&lt;/c&gt; if the read fails. &lt;c&gt;-2&lt;/c&gt; if an asynchronous read is
+    /// required&lt;/returns&gt; &lt;remarks&gt;This is a synchronous operation, but is guaranteed to never block.&lt;/remarks&gt;
+    virtual int_type sbumpc()
+<span style = "background-color:#fdd">    {
+        if (!(m_currentException == nullptr)) std::rethrow_exception(m_currentException);
+        if (!can_read()) return traits::eof();
+        return check_sync_read_eof(_sbumpc());
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Reads a single character from the stream without advancing the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the byte. EOF if the read fails.&lt;/returns&gt;
+    virtual pplx::task&lt;int_type&gt; getc()
+<span style = "background-color:#fdd">    {
+        if (!can_read()) return create_exception_checked_value_task&lt;int_type&gt;(traits::eof());</span>
+
+<span style = "background-color:#fdd">        return create_exception_checked_task&lt;int_type&gt;(
+            _getc(), [](int_type val) { return val == streambuf_state_manager&lt;_CharType&gt;::traits::eof(); });
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Reads a single character from the stream without advancing the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the character. EOF if the read fails. &lt;see cref="::requires_async method" /&gt; if an
+    /// asynchronous read is required&lt;/returns&gt; &lt;remarks&gt;This is a synchronous operation, but is guaranteed to never
+    /// block.&lt;/remarks&gt;
+    virtual int_type sgetc()
+<span style = "background-color:#fdd">    {
+        if (!(m_currentException == nullptr)) std::rethrow_exception(m_currentException);
+        if (!can_read()) return traits::eof();
+        return check_sync_read_eof(_sgetc());
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Advances the read position, then returns the next character without advancing again.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the character. EOF if the read fails.&lt;/returns&gt;
+    virtual pplx::task&lt;int_type&gt; nextc()
+<span style = "background-color:#fdd">    {
+        if (!can_read()) return create_exception_checked_value_task&lt;int_type&gt;(traits::eof());</span>
+
+<span style = "background-color:#fdd">        return create_exception_checked_task&lt;int_type&gt;(
+            _nextc(), [](int_type val) { return val == streambuf_state_manager&lt;_CharType&gt;::traits::eof(); });
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Retreats the read position, then returns the current character without advancing.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the character. EOF if the read fails. &lt;see cref="::requires_async method" /&gt; if an
+    /// asynchronous read is required&lt;/returns&gt;
+    virtual pplx::task&lt;int_type&gt; ungetc()
+<span style = "background-color:#fdd">    {
+        if (!can_read()) return create_exception_checked_value_task&lt;int_type&gt;(traits::eof());</span>
+
+<span style = "background-color:#fdd">        return create_exception_checked_task&lt;int_type&gt;(_ungetc(), [](int_type) { return false; });
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Reads up to a given number of characters from the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;The address of the target memory area.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The maximum number of characters to read.&lt;/param&gt;
+    /// &lt;returns&gt;The number of characters read. O if the end of the stream is reached.&lt;/returns&gt;
+    virtual pplx::task&lt;size_t&gt; getn(_Out_writes_(count) _CharType* ptr, _In_ size_t count)
+<span style = "background-color:#fdd">    {
+        if (!can_read()) return create_exception_checked_value_task&lt;size_t&gt;(0);
+        if (count == 0) return pplx::task_from_result&lt;size_t&gt;(0);</span>
+
+<span style = "background-color:#fdd">        return create_exception_checked_task&lt;size_t&gt;(_getn(ptr, count), [](size_t val) { return val == 0; });
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Copies up to a given number of characters from the stream, synchronously.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;The address of the target memory area.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The maximum number of characters to read.&lt;/param&gt;
+    /// &lt;returns&gt;The number of characters copied. O if the end of the stream is reached or an asynchronous read is
+    /// required.&lt;/returns&gt; &lt;remarks&gt;This is a synchronous operation, but is guaranteed to never block.&lt;/remarks&gt;
+    virtual size_t scopy(_Out_writes_(count) _CharType* ptr, _In_ size_t count)
+<span style = "background-color:#fdd">    {
+        if (!(m_currentException == nullptr)) std::rethrow_exception(m_currentException);
+        if (!can_read()) return 0;</span>
+
+<span style = "background-color:#fdd">        return _scopy(ptr, count);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// For output streams, flush any internally buffered data to the underlying medium.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the flush succeeds, &lt;c&gt;false&lt;/c&gt; if not&lt;/returns&gt;
+    virtual pplx::task&lt;void&gt; sync()
+<span style = "background-color:#fdd">    {
+        if (!can_write())</span>
+        {
+<span style = "background-color:#fdd">            if (m_currentException == nullptr)
+                return pplx::task_from_result();</span>
+            else
+<span style = "background-color:#fdd">                return pplx::task_from_exception&lt;void&gt;(m_currentException);</span>
+        }
+<span style = "background-color:#fdd">        return create_exception_checked_task&lt;bool&gt;(_sync(), [](bool) { return false; }).then([](bool) {});
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Retrieves the stream buffer exception_ptr if it has been set.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Pointer to the exception, if it has been set; otherwise, &lt;c&gt;nullptr&lt;/c&gt; will be returned.&lt;/returns&gt;
+<span style = "background-color:#fdd">    virtual std::exception_ptr exception() const { return m_currentException; }</span>
+
+    /// &lt;summary&gt;
+    /// Allocates a contiguous memory block and returns it.
+    /// &lt;/summary&gt;
+    /// &lt;param name="count"&gt;The number of characters to allocate.&lt;/param&gt;
+    /// &lt;returns&gt;A pointer to a block to write to, null if the stream buffer implementation does not support
+    /// alloc/commit.&lt;/returns&gt; &lt;remarks&gt;This is intended as an advanced API to be used only when it is important to
+    /// avoid extra copies.&lt;/remarks&gt;
+    _CharType* alloc(size_t count)
+<span style = "background-color:#fdd">    {
+        if (m_alloced)
+            throw std::logic_error(</span>
+                "The buffer is already allocated, this maybe caused by overlap of stream read or write");
+
+<span style = "background-color:#fdd">        _CharType* alloc_result = _alloc(count);</span>
+
+<span style = "background-color:#fdd">        if (alloc_result) m_alloced = true;</span>
+
+<span style = "background-color:#fdd">        return alloc_result;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Submits a block already allocated by the stream buffer.
+    /// &lt;/summary&gt;
+    /// &lt;param name="count"&gt;The number of characters to be committed.&lt;/param&gt;
+    /// &lt;remarks&gt;This is intended as an advanced API to be used only when it is important to avoid extra
+    /// copies.&lt;/remarks&gt;
+    void commit(size_t count)
+<span style = "background-color:#fdd">    {
+        if (!m_alloced) throw std::logic_error("The buffer needs to allocate first");</span>
+
+<span style = "background-color:#fdd">        _commit(count);
+        m_alloced = false;
+    }</span>
+
+public:
+    virtual bool can_seek() const = 0;
+    virtual bool has_size() const = 0;
+<span style = "background-color:#fdd">    virtual utility::size64_t size() const { return 0; }</span>
+    virtual size_t buffer_size(std::ios_base::openmode direction = std::ios_base::in) const = 0;
+    virtual void set_buffer_size(size_t size, std::ios_base::openmode direction = std::ios_base::in) = 0;
+    virtual size_t in_avail() const = 0;
+    virtual pos_type getpos(std::ios_base::openmode direction) const = 0;
+    virtual pos_type seekpos(pos_type pos, std::ios_base::openmode direction) = 0;
+    virtual pos_type seekoff(off_type offset, std::ios_base::seekdir way, std::ios_base::openmode mode) = 0;
+    virtual bool acquire(_Out_writes_(count) _CharType*&amp; ptr, _In_ size_t&amp; count) = 0;
+    virtual void release(_Out_writes_(count) _CharType* ptr, _In_ size_t count) = 0;
+
+protected:
+    virtual pplx::task&lt;int_type&gt; _putc(_CharType ch) = 0;
+
+    // This API is only needed for file streams and until we remove the deprecated stream buffer putn overload.
+    virtual pplx::task&lt;size_t&gt; _putn(const _CharType* ptr, size_t count, bool)
+<span style = "background-color:#fdd">    {</span>
+        // Default to no copy, only the file streams API overloads and performs a copy.
+<span style = "background-color:#fdd">        return _putn(ptr, count);
+    }</span>
+    virtual pplx::task&lt;size_t&gt; _putn(const _CharType* ptr, size_t count) = 0;
+
+    virtual pplx::task&lt;int_type&gt; _bumpc() = 0;
+    virtual int_type _sbumpc() = 0;
+    virtual pplx::task&lt;int_type&gt; _getc() = 0;
+    virtual int_type _sgetc() = 0;
+    virtual pplx::task&lt;int_type&gt; _nextc() = 0;
+    virtual pplx::task&lt;int_type&gt; _ungetc() = 0;
+    virtual pplx::task&lt;size_t&gt; _getn(_Out_writes_(count) _CharType* ptr, _In_ size_t count) = 0;
+    virtual size_t _scopy(_Out_writes_(count) _CharType* ptr, _In_ size_t count) = 0;
+    virtual pplx::task&lt;bool&gt; _sync() = 0;
+    virtual _CharType* _alloc(size_t count) = 0;
+    virtual void _commit(size_t count) = 0;
+
+    /// &lt;summary&gt;
+    /// The real read head close operation, implementation should override it if there is any resource to be released.
+    /// &lt;/summary&gt;
+    virtual pplx::task&lt;void&gt; _close_read()
+<span style = "background-color:#fdd">    {
+        m_stream_can_read = false;
+        return pplx::task_from_result();
+    }</span>
+
+    /// &lt;summary&gt;
+    /// The real write head close operation, implementation should override it if there is any resource to be released.
+    /// &lt;/summary&gt;
+    virtual pplx::task&lt;void&gt; _close_write()
+<span style = "background-color:#fdd">    {
+        m_stream_can_write = false;
+        return pplx::task_from_result();
+    }</span>
+
+protected:
+<span style = "background-color:#fdd">    streambuf_state_manager(std::ios_base::openmode mode)
+    {
+        m_stream_can_read = (mode &amp; std::ios_base::in) != 0;
+        m_stream_can_write = (mode &amp; std::ios_base::out) != 0;
+        m_stream_read_eof = false;
+        m_alloced = false;
+    }</span>
+
+    std::exception_ptr m_currentException;
+    // The in/out mode for the buffer
+    std::atomic&lt;bool&gt; m_stream_can_read;
+    std::atomic&lt;bool&gt; m_stream_can_write;
+    std::atomic&lt;bool&gt; m_stream_read_eof;
+    std::atomic&lt;bool&gt; m_alloced;
+
+private:
+    template&lt;typename _CharType1&gt;
+    pplx::task&lt;_CharType1&gt; create_exception_checked_value_task(const _CharType1&amp; val) const
+<span style = "background-color:#fdd">    {
+        if (this-&gt;exception() == nullptr)
+            return pplx::task_from_result&lt;_CharType1&gt;(static_cast&lt;_CharType1&gt;(val));</span>
+        else
+<span style = "background-color:#fdd">            return pplx::task_from_exception&lt;_CharType1&gt;(this-&gt;exception());
+    }</span>
+
+    // Set exception and eof states for async read
+    template&lt;typename _CharType1&gt;
+    pplx::task&lt;_CharType1&gt; create_exception_checked_task(pplx::task&lt;_CharType1&gt; result,
+                                                         std::function&lt;bool(_CharType1)&gt; eof_test,
+                                                         std::ios_base::openmode mode = std::ios_base::in |
+                                                                                        std::ios_base::out)
+<span style = "background-color:#fdd">    {
+        auto thisPointer = this-&gt;shared_from_this();</span>
+
+<span style = "background-color:#fdd">        auto func1 = [=](pplx::task&lt;_CharType1&gt; t1) -&gt; pplx::task&lt;_CharType1&gt; {</span>
+            try
+            {
+<span style = "background-color:#fdd">                thisPointer-&gt;m_stream_read_eof = eof_test(t1.get());</span>
+            }
+            catch (...)
+<span style = "background-color:#fdd">            {
+                thisPointer-&gt;close(mode, std::current_exception()).get();
+                return pplx::task_from_exception&lt;_CharType1&gt;(thisPointer-&gt;exception(), pplx::task_options());
+            }
+            if (thisPointer-&gt;m_stream_read_eof &amp;&amp; !(thisPointer-&gt;exception() == nullptr))
+                return pplx::task_from_exception&lt;_CharType1&gt;(thisPointer-&gt;exception(), pplx::task_options());
+            return t1;
+        };</span>
+
+<span style = "background-color:#fdd">        if (result.is_done())</span>
+        {
+            // If the data is already available, we should avoid scheduling a continuation, so we do it inline.
+<span style = "background-color:#fdd">            return func1(result);
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            return result.then(func1);</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+    // Set eof states for sync read
+    int_type check_sync_read_eof(int_type ch)
+<span style = "background-color:#fdd">    {
+        m_stream_read_eof = ch == traits::eof();
+        return ch;
+    }</span>
+};
+
+} // namespace details
+
+// Forward declarations
+template&lt;typename _CharType&gt;
+class basic_istream;
+template&lt;typename _CharType&gt;
+class basic_ostream;
+
+/// &lt;summary&gt;
+/// Reference-counted stream buffer.
+/// &lt;/summary&gt;
+/// &lt;typeparam name="_CharType"&gt;
+/// The data type of the basic element of the &lt;c&gt;streambuf.&lt;/c&gt;
+/// &lt;/typeparam&gt;
+/// &lt;typeparam name="_CharType2"&gt;
+/// The data type of the basic element of the &lt;c&gt;streambuf.&lt;/c&gt;
+/// &lt;/typeparam&gt;
+template&lt;typename _CharType&gt;
+class streambuf : public details::basic_streambuf&lt;_CharType&gt;
+{
+public:
+    typedef typename details::basic_streambuf&lt;_CharType&gt;::traits traits;
+    typedef typename details::basic_streambuf&lt;_CharType&gt;::int_type int_type;
+    typedef typename details::basic_streambuf&lt;_CharType&gt;::pos_type pos_type;
+    typedef typename details::basic_streambuf&lt;_CharType&gt;::off_type off_type;
+    typedef typename details::basic_streambuf&lt;_CharType&gt;::char_type char_type;
+
+    template&lt;typename _CharType2&gt;
+    friend class streambuf;
+
+    /// &lt;summary&gt;
+    /// Constructor.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;A pointer to the concrete stream buffer implementation.&lt;/param&gt;
+<span style = "background-color:#fdd">    streambuf(_In_ const std::shared_ptr&lt;details::basic_streambuf&lt;_CharType&gt;&gt;&amp; ptr) : m_buffer(ptr) {}</span>
+
+    /// &lt;summary&gt;
+    /// Default constructor.
+    /// &lt;/summary&gt;
+    streambuf() {}
+
+    /// &lt;summary&gt;
+    /// Converter Constructor.
+    /// &lt;/summary&gt;
+    /// &lt;typeparam name="AlterCharType"&gt;
+    /// The data type of the basic element of the source &lt;c&gt;streambuf&lt;/c&gt;.
+    /// &lt;/typeparam&gt;
+    /// &lt;param name="other"&gt;The source buffer to be converted.&lt;/param&gt;
+    template&lt;typename AlterCharType&gt;
+    streambuf(const streambuf&lt;AlterCharType&gt;&amp; other)
+<span style = "background-color:#fdd">        : m_buffer(std::static_pointer_cast&lt;details::basic_streambuf&lt;_CharType&gt;&gt;(</span>
+              std::static_pointer_cast&lt;void&gt;(other.m_buffer)))
+<span style = "background-color:#fdd">    {</span>
+        static_assert(std::is_same&lt;pos_type, typename details::basic_streambuf&lt;AlterCharType&gt;::pos_type&gt;::value &amp;&amp;
+                          std::is_same&lt;off_type, typename details::basic_streambuf&lt;AlterCharType&gt;::off_type&gt;::value &amp;&amp;
+                          std::is_integral&lt;_CharType&gt;::value &amp;&amp; std::is_integral&lt;AlterCharType&gt;::value &amp;&amp;
+                          std::is_integral&lt;int_type&gt;::value &amp;&amp;
+                          std::is_integral&lt;typename details::basic_streambuf&lt;AlterCharType&gt;::int_type&gt;::value &amp;&amp;
+                          sizeof(_CharType) == sizeof(AlterCharType) &amp;&amp;
+                          sizeof(int_type) == sizeof(typename details::basic_streambuf&lt;AlterCharType&gt;::int_type),
+                      "incompatible stream character types");
+<span style = "background-color:#fdd">    }</span>
+
+    /// &lt;summary&gt;
+    /// Constructs an input stream head for this stream buffer.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;basic_istream&lt;/c&gt;.&lt;/returns&gt;
+    concurrency::streams::basic_istream&lt;_CharType&gt; create_istream() const
+<span style = "background-color:#fdd">    {
+        if (!can_read()) throw std::runtime_error("stream buffer not set up for input of data");
+        return concurrency::streams::basic_istream&lt;_CharType&gt;(*this);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Constructs an output stream for this stream buffer.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;basic_ostream&lt;/returns&gt;
+    concurrency::streams::basic_ostream&lt;_CharType&gt; create_ostream() const
+<span style = "background-color:#fdd">    {
+        if (!can_write()) throw std::runtime_error("stream buffer not set up for output of data");
+        return concurrency::streams::basic_ostream&lt;_CharType&gt;(*this);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Checks if the stream buffer has been initialized or not.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    operator bool() const { return (bool)m_buffer; }</span>
+
+    /// &lt;summary&gt;
+    /// Destructor
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    virtual ~streambuf() {}</span>
+
+    const std::shared_ptr&lt;details::basic_streambuf&lt;_CharType&gt;&gt;&amp; get_base() const
+<span style = "background-color:#fdd">    {
+        if (!m_buffer)</span>
+        {
+<span style = "background-color:#fdd">            throw std::invalid_argument("Invalid streambuf object");</span>
+        }
+
+<span style = "background-color:#fdd">        return m_buffer;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;can_read&lt;/c&gt; is used to determine whether a stream buffer will support read operations (get).
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    virtual bool can_read() const { return get_base()-&gt;can_read(); }</span>
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;can_write&lt;/c&gt; is used to determine whether a stream buffer will support write operations (put).
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    virtual bool can_write() const { return get_base()-&gt;can_write(); }</span>
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;can_seek&lt;/c&gt; is used to determine whether a stream buffer supports seeking.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;True if seeking is supported, false otherwise.&lt;/returns&gt;
+<span style = "background-color:#fdd">    virtual bool can_seek() const { return get_base()-&gt;can_seek(); }</span>
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;has_size&lt;/c&gt; is used to determine whether a stream buffer supports size().
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;True if the &lt;c&gt;size&lt;/c&gt; API is supported, false otherwise.&lt;/returns&gt;
+<span style = "background-color:#fdd">    virtual bool has_size() const { return get_base()-&gt;has_size(); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the total number of characters in the stream buffer, if known. Calls to &lt;c&gt;has_size&lt;/c&gt; will determine
+    /// whether the result of &lt;c&gt;size&lt;/c&gt; can be relied on.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The total number of characters in the stream buffer.&lt;/returns&gt;
+<span style = "background-color:#fdd">    virtual utility::size64_t size() const { return get_base()-&gt;size(); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the stream buffer size, if one has been set.
+    /// &lt;/summary&gt;
+    /// &lt;param name="direction"&gt;The direction of buffering (in or out)&lt;/param&gt;
+    /// &lt;returns&gt;The size of the internal buffer (for the given direction).&lt;/returns&gt;
+    /// &lt;remarks&gt;An implementation that does not support buffering will always return 0.&lt;/remarks&gt;
+    virtual size_t buffer_size(std::ios_base::openmode direction = std::ios_base::in) const
+<span style = "background-color:#fdd">    {
+        return get_base()-&gt;buffer_size(direction);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Sets the stream buffer implementation to buffer or not buffer.
+    /// &lt;/summary&gt;
+    /// &lt;param name="size"&gt;The size to use for internal buffering, 0 if no buffering should be done.&lt;/param&gt;
+    /// &lt;param name="direction"&gt;The direction of buffering (in or out)&lt;/param&gt;
+    /// &lt;remarks&gt;An implementation that does not support buffering will silently ignore calls to this function and it
+    /// will not have any effect on what is returned by subsequent calls to &lt;see cref="::buffer_size method"
+    /// /&gt;.&lt;/remarks&gt;
+    virtual void set_buffer_size(size_t size, std::ios_base::openmode direction = std::ios_base::in)
+<span style = "background-color:#fdd">    {
+        get_base()-&gt;set_buffer_size(size, direction);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// For any input stream, &lt;c&gt;in_avail&lt;/c&gt; returns the number of characters that are immediately available
+    /// to be consumed without blocking. May be used in conjunction with &lt;cref="::sbumpc method"/&gt; to read data without
+    /// incurring the overhead of using tasks.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Number of characters that are ready to read.&lt;/returns&gt;
+<span style = "background-color:#fdd">    virtual size_t in_avail() const { return get_base()-&gt;in_avail(); }</span>
+
+    /// &lt;summary&gt;
+    /// Checks if the stream buffer is open.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;No separation is made between open for reading and open for writing.&lt;/remarks&gt;
+    /// &lt;returns&gt;True if the stream buffer is open for reading or writing, false otherwise.&lt;/returns&gt;
+<span style = "background-color:#fdd">    virtual bool is_open() const { return get_base()-&gt;is_open(); }</span>
+
+    /// &lt;summary&gt;
+    /// &lt;c&gt;is_eof&lt;/c&gt; is used to determine whether a read head has reached the end of the buffer.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;True if at the end of the buffer, false otherwise.&lt;/returns&gt;
+<span style = "background-color:#fdd">    virtual bool is_eof() const { return get_base()-&gt;is_eof(); }</span>
+
+    /// &lt;summary&gt;
+    /// Closes the stream buffer, preventing further read or write operations.
+    /// &lt;/summary&gt;
+    /// &lt;param name="mode"&gt;The I/O mode (in or out) to close for.&lt;/param&gt;
+    virtual pplx::task&lt;void&gt; close(std::ios_base::openmode mode = (std::ios_base::in | std::ios_base::out))
+<span style = "background-color:#fdd">    {</span>
+        // We preserve the check here to workaround a Dev10 compiler crash
+<span style = "background-color:#fdd">        auto buffer = get_base();
+        return buffer ? buffer-&gt;close(mode) : pplx::task_from_result();
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Closes the stream buffer with an exception.
+    /// &lt;/summary&gt;
+    /// &lt;param name="mode"&gt;The I/O mode (in or out) to close for.&lt;/param&gt;
+    /// &lt;param name="eptr"&gt;Pointer to the exception.&lt;/param&gt;
+    virtual pplx::task&lt;void&gt; close(std::ios_base::openmode mode, std::exception_ptr eptr)
+<span style = "background-color:#fdd">    {</span>
+        // We preserve the check here to workaround a Dev10 compiler crash
+<span style = "background-color:#fdd">        auto buffer = get_base();
+        return buffer ? buffer-&gt;close(mode, eptr) : pplx::task_from_result();
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Writes a single character to the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ch"&gt;The character to write&lt;/param&gt;
+    /// &lt;returns&gt;The value of the character. EOF if the write operation fails&lt;/returns&gt;
+<span style = "background-color:#fdd">    virtual pplx::task&lt;int_type&gt; putc(_CharType ch) { return get_base()-&gt;putc(ch); }</span>
+
+    /// &lt;summary&gt;
+    /// Allocates a contiguous memory block and returns it.
+    /// &lt;/summary&gt;
+    /// &lt;param name="count"&gt;The number of characters to allocate.&lt;/param&gt;
+    /// &lt;returns&gt;A pointer to a block to write to, null if the stream buffer implementation does not support
+    /// alloc/commit.&lt;/returns&gt;
+<span style = "background-color:#fdd">    virtual _CharType* alloc(size_t count) { return get_base()-&gt;alloc(count); }</span>
+
+    /// &lt;summary&gt;
+    /// Submits a block already allocated by the stream buffer.
+    /// &lt;/summary&gt;
+    /// &lt;param name="count"&gt;The number of characters to be committed.&lt;/param&gt;
+<span style = "background-color:#fdd">    virtual void commit(size_t count) { get_base()-&gt;commit(count); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets a pointer to the next already allocated contiguous block of data.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;A reference to a pointer variable that will hold the address of the block on success.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The number of contiguous characters available at the address in 'ptr'.&lt;/param&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the operation succeeded, &lt;c&gt;false&lt;/c&gt; otherwise.&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// A return of false does not necessarily indicate that a subsequent read operation would fail, only that
+    /// there is no block to return immediately or that the stream buffer does not support the operation.
+    /// The stream buffer may not de-allocate the block until &lt;see cref="::release method" /&gt; is called.
+    /// If the end of the stream is reached, the function will return &lt;c&gt;true&lt;/c&gt;, a null pointer, and a count of zero;
+    /// a subsequent read will not succeed.
+    /// &lt;/remarks&gt;
+    virtual bool acquire(_Out_ _CharType*&amp; ptr, _Out_ size_t&amp; count)
+<span style = "background-color:#fdd">    {
+        ptr = nullptr;
+        count = 0;
+        return get_base()-&gt;acquire(ptr, count);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Releases a block of data acquired using &lt;see cref="::acquire method"/&gt;. This frees the stream buffer to
+    /// de-allocate the memory, if it so desires. Move the read position ahead by the count.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;A pointer to the block of data to be released.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The number of characters that were read.&lt;/param&gt;
+<span style = "background-color:#fdd">    virtual void release(_Out_writes_(count) _CharType* ptr, _In_ size_t count) { get_base()-&gt;release(ptr, count); }</span>
+
+    /// &lt;summary&gt;
+    /// Writes a number of characters to the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;A pointer to the block of data to be written.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The number of characters to write.&lt;/param&gt;
+    /// &lt;returns&gt;The number of characters actually written, either 'count' or 0.&lt;/returns&gt;
+    CASABLANCA_DEPRECATED("This API in some cases performs a copy. It is deprecated and will be removed in a future "
+                          "release. Use putn_nocopy instead.")
+<span style = "background-color:#fdd">    virtual pplx::task&lt;size_t&gt; putn(const _CharType* ptr, size_t count) { return get_base()-&gt;putn(ptr, count); }</span>
+
+    /// &lt;summary&gt;
+    /// Writes a number of characters to the stream. Note: callers must make sure the data to be written is valid until
+    /// the returned task completes.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;A pointer to the block of data to be written.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The number of characters to write.&lt;/param&gt;
+    /// &lt;returns&gt;The number of characters actually written, either 'count' or 0.&lt;/returns&gt;
+    virtual pplx::task&lt;size_t&gt; putn_nocopy(const _CharType* ptr, size_t count)
+<span style = "background-color:#fdd">    {
+        return get_base()-&gt;putn_nocopy(ptr, count);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Reads a single character from the stream and advances the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the character. EOF if the read fails.&lt;/returns&gt;
+<span style = "background-color:#fdd">    virtual pplx::task&lt;int_type&gt; bumpc() { return get_base()-&gt;bumpc(); }</span>
+
+    /// &lt;summary&gt;
+    /// Reads a single character from the stream and advances the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the character. &lt;c&gt;-1&lt;/c&gt; if the read fails. &lt;c&gt;-2&lt;/c&gt; if an asynchronous read is
+    /// required&lt;/returns&gt; &lt;remarks&gt;This is a synchronous operation, but is guaranteed to never block.&lt;/remarks&gt;
+<span style = "background-color:#fdd">    virtual typename details::basic_streambuf&lt;_CharType&gt;::int_type sbumpc() { return get_base()-&gt;sbumpc(); }</span>
+
+    /// &lt;summary&gt;
+    /// Reads a single character from the stream without advancing the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the byte. EOF if the read fails.&lt;/returns&gt;
+<span style = "background-color:#fdd">    virtual pplx::task&lt;int_type&gt; getc() { return get_base()-&gt;getc(); }</span>
+
+    /// &lt;summary&gt;
+    /// Reads a single character from the stream without advancing the read position.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the character. EOF if the read fails. &lt;see cref="::requires_async method" /&gt; if an
+    /// asynchronous read is required&lt;/returns&gt; &lt;remarks&gt;This is a synchronous operation, but is guaranteed to never
+    /// block.&lt;/remarks&gt;
+<span style = "background-color:#fdd">    virtual typename details::basic_streambuf&lt;_CharType&gt;::int_type sgetc() { return get_base()-&gt;sgetc(); }</span>
+
+    /// &lt;summary&gt;
+    /// Advances the read position, then returns the next character without advancing again.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the character. EOF if the read fails.&lt;/returns&gt;
+<span style = "background-color:#fdd">    pplx::task&lt;int_type&gt; nextc() { return get_base()-&gt;nextc(); }</span>
+
+    /// &lt;summary&gt;
+    /// Retreats the read position, then returns the current character without advancing.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The value of the character. EOF if the read fails. &lt;see cref="::requires_async method" /&gt; if an
+    /// asynchronous read is required&lt;/returns&gt;
+<span style = "background-color:#fdd">    pplx::task&lt;int_type&gt; ungetc() { return get_base()-&gt;ungetc(); }</span>
+
+    /// &lt;summary&gt;
+    /// Reads up to a given number of characters from the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;The address of the target memory area.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The maximum number of characters to read.&lt;/param&gt;
+    /// &lt;returns&gt;The number of characters read. O if the end of the stream is reached.&lt;/returns&gt;
+    virtual pplx::task&lt;size_t&gt; getn(_Out_writes_(count) _CharType* ptr, _In_ size_t count)
+<span style = "background-color:#fdd">    {
+        return get_base()-&gt;getn(ptr, count);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Copies up to a given number of characters from the stream, synchronously.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ptr"&gt;The address of the target memory area.&lt;/param&gt;
+    /// &lt;param name="count"&gt;The maximum number of characters to read.&lt;/param&gt;
+    /// &lt;returns&gt;The number of characters copied. O if the end of the stream is reached or an asynchronous read is
+    /// required.&lt;/returns&gt; &lt;remarks&gt;This is a synchronous operation, but is guaranteed to never block.&lt;/remarks&gt;
+    virtual size_t scopy(_Out_writes_(count) _CharType* ptr, _In_ size_t count)
+<span style = "background-color:#fdd">    {
+        return get_base()-&gt;scopy(ptr, count);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the current read or write position in the stream.
+    /// &lt;/summary&gt;
+    /// &lt;param name="direction"&gt;The I/O direction to seek (see remarks)&lt;/param&gt;
+    /// &lt;returns&gt;The current position. EOF if the operation fails.&lt;/returns&gt;
+    /// &lt;remarks&gt;Some streams may have separate write and read cursors.
+    ///          For such streams, the direction parameter defines whether to move the read or the write
+    ///          cursor.&lt;/remarks&gt;
+    virtual typename details::basic_streambuf&lt;_CharType&gt;::pos_type getpos(std::ios_base::openmode direction) const
+<span style = "background-color:#fdd">    {
+        return get_base()-&gt;getpos(direction);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Seeks to the given position.
+    /// &lt;/summary&gt;
+    /// &lt;param name="pos"&gt;The offset from the beginning of the stream.&lt;/param&gt;
+    /// &lt;param name="direction"&gt;The I/O direction to seek (see remarks).&lt;/param&gt;
+    /// &lt;returns&gt;The position. EOF if the operation fails.&lt;/returns&gt;
+    /// &lt;remarks&gt;Some streams may have separate write and read cursors. For such streams, the direction parameter
+    /// defines whether to move the read or the write cursor.&lt;/remarks&gt;
+    virtual typename details::basic_streambuf&lt;_CharType&gt;::pos_type seekpos(
+        typename details::basic_streambuf&lt;_CharType&gt;::pos_type pos, std::ios_base::openmode direction)
+<span style = "background-color:#fdd">    {
+        return get_base()-&gt;seekpos(pos, direction);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Seeks to a position given by a relative offset.
+    /// &lt;/summary&gt;
+    /// &lt;param name="offset"&gt;The relative position to seek to&lt;/param&gt;
+    /// &lt;param name="way"&gt;The starting point (beginning, end, current) for the seek.&lt;/param&gt;
+    /// &lt;param name="mode"&gt;The I/O direction to seek (see remarks)&lt;/param&gt;
+    /// &lt;returns&gt;The position. EOF if the operation fails.&lt;/returns&gt;
+    /// &lt;remarks&gt;Some streams may have separate write and read cursors.
+    ///          For such streams, the mode parameter defines whether to move the read or the write cursor.&lt;/remarks&gt;
+    virtual typename details::basic_streambuf&lt;_CharType&gt;::pos_type seekoff(
+        typename details::basic_streambuf&lt;_CharType&gt;::off_type offset,
+        std::ios_base::seekdir way,
+        std::ios_base::openmode mode)
+<span style = "background-color:#fdd">    {
+        return get_base()-&gt;seekoff(offset, way, mode);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// For output streams, flush any internally buffered data to the underlying medium.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;&lt;c&gt;true&lt;/c&gt; if the flush succeeds, &lt;c&gt;false&lt;/c&gt; if not&lt;/returns&gt;
+<span style = "background-color:#fdd">    virtual pplx::task&lt;void&gt; sync() { return get_base()-&gt;sync(); }</span>
+
+    /// &lt;summary&gt;
+    /// Retrieves the stream buffer exception_ptr if it has been set.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Pointer to the exception, if it has been set; otherwise, &lt;c&gt;nullptr&lt;/c&gt; will be returned&lt;/returns&gt;
+<span style = "background-color:#fdd">    virtual std::exception_ptr exception() const { return get_base()-&gt;exception(); }</span>
+
+private:
+    std::shared_ptr&lt;details::basic_streambuf&lt;_CharType&gt;&gt; m_buffer;
+};
+
+} // namespace streams
+} // namespace Concurrency</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

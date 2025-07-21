@@ -1,0 +1,1658 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>http_msg.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: Request and reply message definitions.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#pragma once
+
+#include "cpprest/asyncrt_utils.h"
+#include "cpprest/containerstream.h"
+#include "cpprest/details/cpprest_compat.h"
+#include "cpprest/http_compression.h"
+#include "cpprest/http_headers.h"
+#include "cpprest/json.h"
+#include "cpprest/streams.h"
+#include "cpprest/uri.h"
+#include "pplx/pplxtasks.h"
+#include &lt;map&gt;
+#include &lt;memory&gt;
+#include &lt;string&gt;
+#include &lt;system_error&gt;
+#include &lt;vector&gt;
+
+namespace web
+{
+namespace http
+{
+// URI class has been moved from web::http namespace to web namespace.
+// The below using declarations ensure we don't break existing code.
+// Please use the web::uri class going forward.
+using web::uri;
+using web::uri_builder;
+
+namespace client
+{
+class http_client;
+}
+
+/// &lt;summary&gt;
+/// Represents the HTTP protocol version of a message, as {major, minor}.
+/// &lt;/summary&gt;
+struct http_version
+{
+    uint8_t major;
+    uint8_t minor;
+
+    inline bool operator==(const http_version&amp; other) const { return major == other.major &amp;&amp; minor == other.minor; }
+    inline bool operator&lt;(const http_version&amp; other) const
+    {
+        return major &lt; other.major || (major == other.major &amp;&amp; minor &lt; other.minor);
+    }
+
+    inline bool operator!=(const http_version&amp; other) const { return !(*this == other); }
+    inline bool operator&gt;=(const http_version&amp; other) const { return !(*this &lt; other); }
+    inline bool operator&gt;(const http_version&amp; other) const { return !(*this &lt; other || *this == other); }
+    inline bool operator&lt;=(const http_version&amp; other) const { return *this &lt; other || *this == other; }
+
+    /// &lt;summary&gt;
+    /// Creates &lt;c&gt;http_version&lt;/c&gt; from an HTTP-Version string, "HTTP" "/" 1*DIGIT "." 1*DIGIT.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Returns a &lt;c&gt;http_version&lt;/c&gt; of {0, 0} if not successful.&lt;/returns&gt;
+    static _ASYNCRTIMP http_version __cdecl from_string(const std::string&amp; http_version_string);
+
+    /// &lt;summary&gt;
+    /// Returns the string representation of the &lt;c&gt;http_version&lt;/c&gt;.
+    /// &lt;/summary&gt;
+    _ASYNCRTIMP std::string to_utf8string() const;
+};
+
+/// &lt;summary&gt;
+/// Predefined HTTP protocol versions.
+/// &lt;/summary&gt;
+class http_versions
+{
+public:
+    _ASYNCRTIMP static const http_version HTTP_0_9;
+    _ASYNCRTIMP static const http_version HTTP_1_0;
+    _ASYNCRTIMP static const http_version HTTP_1_1;
+};
+
+/// &lt;summary&gt;
+/// Predefined method strings for the standard HTTP methods mentioned in the
+/// HTTP 1.1 specification.
+/// &lt;/summary&gt;
+typedef utility::string_t method;
+
+/// &lt;summary&gt;
+/// Common HTTP methods.
+/// &lt;/summary&gt;
+class methods
+{
+public:
+#define _METHODS
+#define DAT(a, b) _ASYNCRTIMP const static method a;
+#include "cpprest/details/http_constants.dat"
+#undef _METHODS
+#undef DAT
+};
+
+typedef unsigned short status_code;
+
+/// &lt;summary&gt;
+/// Predefined values for all of the standard HTTP 1.1 response status codes.
+/// &lt;/summary&gt;
+class status_codes
+{
+public:
+#define _PHRASES
+#define DAT(a, b, c) const static status_code a = b;
+#include "cpprest/details/http_constants.dat"
+#undef _PHRASES
+#undef DAT
+};
+
+namespace details
+{
+/// &lt;summary&gt;
+/// Constants for MIME types.
+/// &lt;/summary&gt;
+class mime_types
+{
+public:
+#define _MIME_TYPES
+#define DAT(a, b) _ASYNCRTIMP const static utility::string_t a;
+#include "cpprest/details/http_constants.dat"
+#undef _MIME_TYPES
+#undef DAT
+};
+
+/// &lt;summary&gt;
+/// Constants for charset types.
+/// &lt;/summary&gt;
+class charset_types
+{
+public:
+#define _CHARSET_TYPES
+#define DAT(a, b) _ASYNCRTIMP const static utility::string_t a;
+#include "cpprest/details/http_constants.dat"
+#undef _CHARSET_TYPES
+#undef DAT
+};
+
+} // namespace details
+
+/// Message direction
+namespace message_direction
+{
+/// &lt;summary&gt;
+/// Enumeration used to denote the direction of a message: a request with a body is
+/// an upload, a response with a body is a download.
+/// &lt;/summary&gt;
+enum direction
+{
+    upload,
+    download
+};
+} // namespace message_direction
+
+typedef utility::string_t reason_phrase;
+typedef std::function&lt;void(message_direction::direction, utility::size64_t)&gt; progress_handler;
+
+struct http_status_to_phrase
+{
+    unsigned short id;
+    reason_phrase phrase;
+};
+
+/// &lt;summary&gt;
+/// Constants for the HTTP headers mentioned in RFC 2616.
+/// &lt;/summary&gt;
+class header_names
+{
+public:
+#define _HEADER_NAMES
+#define DAT(a, b) _ASYNCRTIMP const static utility::string_t a;
+#include "cpprest/details/http_constants.dat"
+#undef _HEADER_NAMES
+#undef DAT
+};
+
+/// &lt;summary&gt;
+/// Represents an HTTP error. This class holds an error message and an optional error code.
+/// &lt;/summary&gt;
+class _ASYNCRTIMP_TYPEINFO http_exception : public std::exception
+{
+public:
+    /// &lt;summary&gt;
+    /// Creates an &lt;c&gt;http_exception&lt;/c&gt; with just a string message and no error code.
+    /// &lt;/summary&gt;
+    /// &lt;param name="whatArg"&gt;Error message string.&lt;/param&gt;
+<span style = "background-color:#fdd">    http_exception(const utility::string_t&amp; whatArg) : m_msg(utility::conversions::to_utf8string(whatArg)) {}</span>
+
+#ifdef _WIN32
+    /// &lt;summary&gt;
+    /// Creates an &lt;c&gt;http_exception&lt;/c&gt; with just a string message and no error code.
+    /// &lt;/summary&gt;
+    /// &lt;param name="whatArg"&gt;Error message string.&lt;/param&gt;
+<span style = "background-color:#fdd">    http_exception(std::string whatArg) : m_msg(std::move(whatArg)) {}</span>
+#endif
+
+    /// &lt;summary&gt;
+    /// Creates an &lt;c&gt;http_exception&lt;/c&gt; with from a error code using the current platform error category.
+    /// The message of the error code will be used as the what() string message.
+    /// &lt;/summary&gt;
+    /// &lt;param name="errorCode"&gt;Error code value.&lt;/param&gt;
+<span style = "background-color:#fdd">    http_exception(int errorCode) : m_errorCode(utility::details::create_error_code(errorCode))
+    {
+        m_msg = m_errorCode.message();
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Creates an &lt;c&gt;http_exception&lt;/c&gt; with from a error code using the current platform error category.
+    /// &lt;/summary&gt;
+    /// &lt;param name="errorCode"&gt;Error code value.&lt;/param&gt;
+    /// &lt;param name="whatArg"&gt;Message to use in what() string.&lt;/param&gt;
+    http_exception(int errorCode, const utility::string_t&amp; whatArg)
+<span style = "background-color:#fdd">        : m_errorCode(utility::details::create_error_code(errorCode))
+        , m_msg(utility::conversions::to_utf8string(whatArg))
+    {
+    }</span>
+
+#ifdef _WIN32
+    /// &lt;summary&gt;
+    /// Creates an &lt;c&gt;http_exception&lt;/c&gt; with from a error code using the current platform error category.
+    /// &lt;/summary&gt;
+    /// &lt;param name="errorCode"&gt;Error code value.&lt;/param&gt;
+    /// &lt;param name="whatArg"&gt;Message to use in what() string.&lt;/param&gt;
+    http_exception(int errorCode, std::string whatArg)
+<span style = "background-color:#fdd">        : m_errorCode(utility::details::create_error_code(errorCode)), m_msg(std::move(whatArg))
+    {
+    }</span>
+#endif
+
+    /// &lt;summary&gt;
+    /// Creates an &lt;c&gt;http_exception&lt;/c&gt; with from a error code and category. The message of the error code will be used
+    /// as the &lt;c&gt;what&lt;/c&gt; string message.
+    /// &lt;/summary&gt;
+    /// &lt;param name="errorCode"&gt;Error code value.&lt;/param&gt;
+    /// &lt;param name="cat"&gt;Error category for the code.&lt;/param&gt;
+<span style = "background-color:#fdd">    http_exception(int errorCode, const std::error_category&amp; cat) : m_errorCode(std::error_code(errorCode, cat))
+    {
+        m_msg = m_errorCode.message();
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Creates an &lt;c&gt;http_exception&lt;/c&gt; with from a error code with a category, and a string message.
+    /// &lt;/summary&gt;
+    /// &lt;param name="errorCode"&gt;Error code value.&lt;/param&gt;
+    /// &lt;param name="whatArg"&gt;Error message string.&lt;/param&gt;
+    http_exception(std::error_code errorCode, const utility::string_t&amp; whatArg)
+        : m_errorCode(std::move(errorCode)), m_msg(utility::conversions::to_utf8string(whatArg))
+    {
+    }
+
+#ifdef _WIN32
+    /// &lt;summary&gt;
+    /// Creates an &lt;c&gt;http_exception&lt;/c&gt; with from a error code with a category, and a string message.
+    /// &lt;/summary&gt;
+    /// &lt;param name="errorCode"&gt;Error code value.&lt;/param&gt;
+    /// &lt;param name="whatArg"&gt;Error message string.&lt;/param&gt;
+    http_exception(std::error_code errorCode, std::string whatArg)
+        : m_errorCode(std::move(errorCode)), m_msg(std::move(whatArg))
+    {
+    }
+#endif
+
+    /// &lt;summary&gt;
+    /// Gets a string identifying the cause of the exception.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A null terminated character string.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const char* what() const CPPREST_NOEXCEPT { return m_msg.c_str(); }</span>
+
+    /// &lt;summary&gt;
+    /// Retrieves the underlying error code causing this exception.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A std::error_code.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const std::error_code&amp; error_code() const { return m_errorCode; }</span>
+
+private:
+    std::error_code m_errorCode;
+    std::string m_msg;
+};
+
+namespace details
+{
+/// &lt;summary&gt;
+/// Base class for HTTP messages.
+/// This class is to store common functionality so it isn't duplicated on
+/// both the request and response side.
+/// &lt;/summary&gt;
+class http_msg_base
+{
+public:
+    friend class http::client::http_client;
+
+    _ASYNCRTIMP http_msg_base();
+
+<span style = "background-color:#fdd">    virtual ~http_msg_base() {}</span>
+
+    http::http_version http_version() const { return m_http_version; }
+
+<span style = "background-color:#fdd">    http_headers&amp; headers() { return m_headers; }</span>
+
+    _ASYNCRTIMP void set_body(const concurrency::streams::istream&amp; instream, const utf8string&amp; contentType);
+    _ASYNCRTIMP void set_body(const concurrency::streams::istream&amp; instream, const utf16string&amp; contentType);
+    _ASYNCRTIMP void set_body(const concurrency::streams::istream&amp; instream,
+                              utility::size64_t contentLength,
+                              const utf8string&amp; contentType);
+    _ASYNCRTIMP void set_body(const concurrency::streams::istream&amp; instream,
+                              utility::size64_t contentLength,
+                              const utf16string&amp; contentType);
+
+    /// &lt;summary&gt;
+    /// Helper function for extract functions. Parses the Content-Type header and check to make sure it matches,
+    /// throws an exception if not.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ignore_content_type"&gt;If true ignores the Content-Type header value.&lt;/param&gt;
+    /// &lt;param name="check_content_type"&gt;Function to verify additional information on Content-Type.&lt;/param&gt;
+    /// &lt;returns&gt;A string containing the charset, an empty string if no Content-Type header is empty.&lt;/returns&gt;
+    utility::string_t parse_and_check_content_type(
+        bool ignore_content_type, const std::function&lt;bool(const utility::string_t&amp;)&gt;&amp; check_content_type);
+
+    _ASYNCRTIMP utf8string extract_utf8string(bool ignore_content_type = false);
+    _ASYNCRTIMP utf16string extract_utf16string(bool ignore_content_type = false);
+    _ASYNCRTIMP utility::string_t extract_string(bool ignore_content_type = false);
+
+    _ASYNCRTIMP json::value _extract_json(bool ignore_content_type = false);
+    _ASYNCRTIMP std::vector&lt;unsigned char&gt; _extract_vector();
+
+    virtual _ASYNCRTIMP utility::string_t to_string() const;
+
+    /// &lt;summary&gt;
+    /// Completes this message
+    /// &lt;/summary&gt;
+    virtual _ASYNCRTIMP void _complete(utility::size64_t bodySize,
+                                       const std::exception_ptr&amp; exceptionPtr = std::exception_ptr());
+
+    /// &lt;summary&gt;
+    /// Set the stream through which the message body could be read
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    void set_instream(const concurrency::streams::istream&amp; instream) { m_inStream = instream; }</span>
+
+    /// &lt;summary&gt;
+    /// Get the stream through which the message body could be read
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    const concurrency::streams::istream&amp; instream() const { return m_inStream; }</span>
+
+    /// &lt;summary&gt;
+    /// Set the stream through which the message body could be written
+    /// &lt;/summary&gt;
+    void set_outstream(const concurrency::streams::ostream&amp; outstream, bool is_default)
+<span style = "background-color:#fdd">    {
+        m_outStream = outstream;
+        m_default_outstream = is_default;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Get the stream through which the message body could be written
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    const concurrency::streams::ostream&amp; outstream() const { return m_outStream; }</span>
+
+    /// &lt;summary&gt;
+    /// Sets the compressor for the message body
+    /// &lt;/summary&gt;
+    void set_compressor(std::unique_ptr&lt;http::compression::compress_provider&gt; compressor)
+<span style = "background-color:#fdd">    {
+        m_compressor = std::move(compressor);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the compressor for the message body, if any
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    std::unique_ptr&lt;http::compression::compress_provider&gt;&amp; compressor() { return m_compressor; }</span>
+
+    /// &lt;summary&gt;
+    /// Sets the collection of factory classes for decompressors for use with the message body
+    /// &lt;/summary&gt;
+    void set_decompress_factories(const std::vector&lt;std::shared_ptr&lt;http::compression::decompress_factory&gt;&gt;&amp; factories)
+<span style = "background-color:#fdd">    {
+        m_decompressors = factories;
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the collection of factory classes for decompressors to be used to decompress the message body, if any
+    /// &lt;/summary&gt;
+    const std::vector&lt;std::shared_ptr&lt;http::compression::decompress_factory&gt;&gt;&amp; decompress_factories()
+<span style = "background-color:#fdd">    {
+        return m_decompressors;
+    }</span>
+
+<span style = "background-color:#fdd">    const pplx::task_completion_event&lt;utility::size64_t&gt;&amp; _get_data_available() const { return m_data_available; }</span>
+
+    /// &lt;summary&gt;
+    /// Prepare the message with an output stream to receive network data
+    /// &lt;/summary&gt;
+    _ASYNCRTIMP void _prepare_to_receive_data();
+
+    /// &lt;summary&gt;
+    /// Determine the remaining input stream length
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;
+    /// std::numeric_limits&lt;size_t&gt;::max() if the stream's remaining length cannot be determined
+    /// length      if the stream's remaining length (which may be 0) can be determined
+    /// &lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// This routine should only be called after a msg (request/response) has been
+    /// completely constructed.
+    /// &lt;/remarks&gt;
+    _ASYNCRTIMP size_t _get_stream_length();
+
+    /// &lt;summary&gt;
+    /// Determine the content length
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;
+    /// std::numeric_limits&lt;size_t&gt;::max() if there is content with unknown length (transfer_encoding:chunked)
+    /// 0           if there is no content
+    /// length      if there is content with known length
+    /// &lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// This routine should only be called after a msg (request/response) has been
+    /// completely constructed.
+    /// &lt;/remarks&gt;
+    _ASYNCRTIMP size_t _get_content_length();
+
+    /// &lt;summary&gt;
+    /// Determine the content length, and, if necessary, manage compression in the Transfer-Encoding header
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;
+    /// std::numeric_limits&lt;size_t&gt;::max() if there is content with unknown length (transfer_encoding:chunked)
+    /// 0           if there is no content
+    /// length      if there is content with known length
+    /// &lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// This routine is like _get_content_length, except that it adds a compression algorithm to
+    /// the Trasfer-Length header if compression is configured.  It throws if a Transfer-Encoding
+    /// header exists and does not match the one it generated.
+    /// &lt;/remarks&gt;
+    _ASYNCRTIMP size_t _get_content_length_and_set_compression();
+
+<span style = "background-color:#fdd">    void _set_http_version(const http::http_version&amp; http_version) { m_http_version = http_version; }</span>
+
+protected:
+    std::unique_ptr&lt;http::compression::compress_provider&gt; m_compressor;
+    std::unique_ptr&lt;http::compression::decompress_provider&gt; m_decompressor;
+    std::vector&lt;std::shared_ptr&lt;http::compression::decompress_factory&gt;&gt; m_decompressors;
+
+    /// &lt;summary&gt;
+    /// Stream to read the message body.
+    /// By default this is an invalid stream. The user could set the instream on
+    /// a request by calling set_request_stream(...). This would also be set when
+    /// set_body() is called - a stream from the body is constructed and set.
+    /// Even in the presence of msg body this stream could be invalid. An example
+    /// would be when the user sets an ostream for the response. With that API the
+    /// user does not provide the ability to read the msg body.
+    /// Thus m_instream is valid when there is a msg body and it can actually be read
+    /// &lt;/summary&gt;
+    concurrency::streams::istream m_inStream;
+
+    /// &lt;summary&gt;
+    /// stream to write the msg body
+    /// By default this is an invalid stream. The user could set this on the response
+    /// (for http_client). In all the other cases we would construct one to transfer
+    /// the data from the network into the message body.
+    /// &lt;/summary&gt;
+    concurrency::streams::ostream m_outStream;
+
+    http::http_version m_http_version;
+    http_headers m_headers;
+    bool m_default_outstream;
+
+    /// &lt;summary&gt; The TCE is used to signal the availability of the message body. &lt;/summary&gt;
+    pplx::task_completion_event&lt;utility::size64_t&gt; m_data_available;
+
+    size_t _get_content_length(bool honor_compression);
+};
+
+/// &lt;summary&gt;
+/// Base structure for associating internal server information
+/// with an HTTP request/response.
+/// &lt;/summary&gt;
+class _http_server_context
+{
+public:
+<span style = "background-color:#fdd">    _http_server_context() {}
+    virtual ~_http_server_context() {}</span>
+
+private:
+};
+
+/// &lt;summary&gt;
+/// Internal representation of an HTTP response.
+/// &lt;/summary&gt;
+class _http_response final : public http::details::http_msg_base
+{
+public:
+<span style = "background-color:#fdd">    _http_response() : m_status_code((std::numeric_limits&lt;uint16_t&gt;::max)()) {}</span>
+
+<span style = "background-color:#fdd">    _http_response(http::status_code code) : m_status_code(code) {}</span>
+
+<span style = "background-color:#fdd">    http::status_code status_code() const { return m_status_code; }</span>
+
+<span style = "background-color:#fdd">    void set_status_code(http::status_code code) { m_status_code = code; }</span>
+
+<span style = "background-color:#fdd">    const http::reason_phrase&amp; reason_phrase() const { return m_reason_phrase; }</span>
+
+<span style = "background-color:#fdd">    void set_reason_phrase(const http::reason_phrase&amp; reason) { m_reason_phrase = reason; }</span>
+
+    _ASYNCRTIMP utility::string_t to_string() const;
+
+<span style = "background-color:#fdd">    _http_server_context* _get_server_context() const { return m_server_context.get(); }</span>
+
+    void _set_server_context(std::unique_ptr&lt;details::_http_server_context&gt; server_context)
+<span style = "background-color:#fdd">    {
+        m_server_context = std::move(server_context);
+    }</span>
+
+private:
+    std::unique_ptr&lt;_http_server_context&gt; m_server_context;
+
+    http::status_code m_status_code;
+    http::reason_phrase m_reason_phrase;
+};
+
+} // namespace details
+
+/// &lt;summary&gt;
+/// Represents an HTTP response.
+/// &lt;/summary&gt;
+class http_response
+{
+public:
+    /// &lt;summary&gt;
+    /// Constructs a response with an empty status code, no headers, and no body.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A new HTTP response.&lt;/returns&gt;
+<span style = "background-color:#fdd">    http_response() : _m_impl(std::make_shared&lt;details::_http_response&gt;()) {}</span>
+
+    /// &lt;summary&gt;
+    /// Constructs a response with given status code, no headers, and no body.
+    /// &lt;/summary&gt;
+    /// &lt;param name="code"&gt;HTTP status code to use in response.&lt;/param&gt;
+    /// &lt;returns&gt;A new HTTP response.&lt;/returns&gt;
+<span style = "background-color:#fdd">    http_response(http::status_code code) : _m_impl(std::make_shared&lt;details::_http_response&gt;(code)) {}</span>
+
+    /// &lt;summary&gt;
+    /// Gets the status code of the response message.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;status code.&lt;/returns&gt;
+<span style = "background-color:#fdd">    http::status_code status_code() const { return _m_impl-&gt;status_code(); }</span>
+
+    /// &lt;summary&gt;
+    /// Sets the status code of the response message.
+    /// &lt;/summary&gt;
+    /// &lt;param name="code"&gt;Status code to set.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This will overwrite any previously set status code.
+    /// &lt;/remarks&gt;
+<span style = "background-color:#fdd">    void set_status_code(http::status_code code) const { _m_impl-&gt;set_status_code(code); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the reason phrase of the response message.
+    /// If no reason phrase is set it will default to the standard one corresponding to the status code.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Reason phrase.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const http::reason_phrase&amp; reason_phrase() const { return _m_impl-&gt;reason_phrase(); }</span>
+
+    /// &lt;summary&gt;
+    /// Sets the reason phrase of the response message.
+    /// If no reason phrase is set it will default to the standard one corresponding to the status code.
+    /// &lt;/summary&gt;
+    /// &lt;param name="reason"&gt;The reason phrase to set.&lt;/param&gt;
+<span style = "background-color:#fdd">    void set_reason_phrase(const http::reason_phrase&amp; reason) const { _m_impl-&gt;set_reason_phrase(reason); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the headers of the response message.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;HTTP headers for this response.&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// Use the &lt;seealso cref="http_headers::add Method"/&gt; to fill in desired headers.
+    /// &lt;/remarks&gt;
+<span style = "background-color:#fdd">    http_headers&amp; headers() { return _m_impl-&gt;headers(); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets a const reference to the headers of the response message.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;HTTP headers for this response.&lt;/returns&gt;
+    const http_headers&amp; headers() const { return _m_impl-&gt;headers(); }
+
+    /// &lt;summary&gt;
+    /// Generates a string representation of the message, including the body when possible.
+    /// Mainly this should be used for debugging purposes as it has to copy the
+    /// message body and doesn't have excellent performance.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A string representation of this HTTP request.&lt;/returns&gt;
+    /// &lt;remarks&gt;Note this function is synchronous and doesn't wait for the
+    /// entire message body to arrive. If the message body has arrived by the time this
+    /// function is called and it is has a textual Content-Type it will be included.
+    /// Otherwise just the headers will be present.&lt;/remarks&gt;
+    utility::string_t to_string() const { return _m_impl-&gt;to_string(); }
+
+    /// &lt;summary&gt;
+    /// Extracts the body of the response message as a string value, checking that the content type is a MIME text type.
+    /// A body can only be extracted once because in some cases an optimization is made where the data is 'moved' out.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ignore_content_type"&gt;If true, ignores the Content-Type header and assumes text.&lt;/param&gt;
+    /// &lt;returns&gt;String containing body of the message.&lt;/returns&gt;
+    pplx::task&lt;utility::string_t&gt; extract_string(bool ignore_content_type = false) const
+<span style = "background-color:#fdd">    {
+        auto impl = _m_impl;
+        return pplx::create_task(_m_impl-&gt;_get_data_available()).then([impl, ignore_content_type](utility::size64_t) {
+            return impl-&gt;extract_string(ignore_content_type);
+        });
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Extracts the body of the response message as a UTF-8 string value, checking that the content type is a MIME text
+    /// type. A body can only be extracted once because in some cases an optimization is made where the data is 'moved'
+    /// out.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ignore_content_type"&gt;If true, ignores the Content-Type header and assumes text.&lt;/param&gt;
+    /// &lt;returns&gt;String containing body of the message.&lt;/returns&gt;
+    pplx::task&lt;utf8string&gt; extract_utf8string(bool ignore_content_type = false) const
+    {
+        auto impl = _m_impl;
+        return pplx::create_task(_m_impl-&gt;_get_data_available()).then([impl, ignore_content_type](utility::size64_t) {
+            return impl-&gt;extract_utf8string(ignore_content_type);
+        });
+    }
+
+    /// &lt;summary&gt;
+    /// Extracts the body of the response message as a UTF-16 string value, checking that the content type is a MIME
+    /// text type. A body can only be extracted once because in some cases an optimization is made where the data is
+    /// 'moved' out.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ignore_content_type"&gt;If true, ignores the Content-Type header and assumes text.&lt;/param&gt;
+    /// &lt;returns&gt;String containing body of the message.&lt;/returns&gt;
+    pplx::task&lt;utf16string&gt; extract_utf16string(bool ignore_content_type = false) const
+    {
+        auto impl = _m_impl;
+        return pplx::create_task(_m_impl-&gt;_get_data_available()).then([impl, ignore_content_type](utility::size64_t) {
+            return impl-&gt;extract_utf16string(ignore_content_type);
+        });
+    }
+
+    /// &lt;summary&gt;
+    /// Extracts the body of the response message into a json value, checking that the content type is application/json.
+    /// A body can only be extracted once because in some cases an optimization is made where the data is 'moved' out.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ignore_content_type"&gt;If true, ignores the Content-Type header and assumes json.&lt;/param&gt;
+    /// &lt;returns&gt;JSON value from the body of this message.&lt;/returns&gt;
+    pplx::task&lt;json::value&gt; extract_json(bool ignore_content_type = false) const
+<span style = "background-color:#fdd">    {
+        auto impl = _m_impl;
+        return pplx::create_task(_m_impl-&gt;_get_data_available()).then([impl, ignore_content_type](utility::size64_t) {
+            return impl-&gt;_extract_json(ignore_content_type);
+        });
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Extracts the body of the response message into a vector of bytes.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The body of the message as a vector of bytes.&lt;/returns&gt;
+    pplx::task&lt;std::vector&lt;unsigned char&gt;&gt; extract_vector() const
+    {
+        auto impl = _m_impl;
+        return pplx::create_task(_m_impl-&gt;_get_data_available()).then([impl](utility::size64_t) {
+            return impl-&gt;_extract_vector();
+        });
+    }
+
+    /// &lt;summary&gt;
+    /// Sets the body of the message to a textual string and set the "Content-Type" header. Assumes
+    /// the character encoding of the string is UTF-8.
+    /// &lt;/summary&gt;
+    /// &lt;param name="body_text"&gt;String containing body text.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;MIME type to set the "Content-Type" header to. Default to "text/plain;
+    /// charset=utf-8".&lt;/param&gt; &lt;remarks&gt; This will overwrite any previously set body data and "Content-Type" header.
+    /// &lt;/remarks&gt;
+    void set_body(utf8string&amp;&amp; body_text, const utf8string&amp; content_type = utf8string("text/plain; charset=utf-8"))
+    {
+        const auto length = body_text.size();
+        _m_impl-&gt;set_body(
+            concurrency::streams::bytestream::open_istream&lt;std::string&gt;(std::move(body_text)), length, content_type);
+    }
+
+    /// &lt;summary&gt;
+    /// Sets the body of the message to a textual string and set the "Content-Type" header. Assumes
+    /// the character encoding of the string is UTF-8.
+    /// &lt;/summary&gt;
+    /// &lt;param name="body_text"&gt;String containing body text.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;MIME type to set the "Content-Type" header to. Default to "text/plain;
+    /// charset=utf-8".&lt;/param&gt; &lt;remarks&gt; This will overwrite any previously set body data and "Content-Type" header.
+    /// &lt;/remarks&gt;
+    void set_body(const utf8string&amp; body_text, const utf8string&amp; content_type = utf8string("text/plain; charset=utf-8"))
+<span style = "background-color:#fdd">    {
+        _m_impl-&gt;set_body(</span>
+            concurrency::streams::bytestream::open_istream&lt;std::string&gt;(body_text), body_text.size(), content_type);
+<span style = "background-color:#fdd">    }</span>
+
+    /// &lt;summary&gt;
+    /// Sets the body of the message to a textual string and set the "Content-Type" header. Assumes
+    /// the character encoding of the string is UTF-16 will perform conversion to UTF-8.
+    /// &lt;/summary&gt;
+    /// &lt;param name="body_text"&gt;String containing body text.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;MIME type to set the "Content-Type" header to. Default to "text/plain".&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This will overwrite any previously set body data and "Content-Type" header.
+    /// &lt;/remarks&gt;
+    void set_body(const utf16string&amp; body_text,
+                  utf16string content_type = utility::conversions::to_utf16string("text/plain"))
+<span style = "background-color:#fdd">    {
+        if (content_type.find(::utility::conversions::to_utf16string("charset=")) != content_type.npos)</span>
+        {
+<span style = "background-color:#fdd">            throw std::invalid_argument("content_type can't contain a 'charset'.");</span>
+        }
+
+<span style = "background-color:#fdd">        auto utf8body = utility::conversions::utf16_to_utf8(body_text);
+        auto length = utf8body.size();
+        _m_impl-&gt;set_body(concurrency::streams::bytestream::open_istream&lt;std::string&gt;(std::move(utf8body)),</span>
+                          length,
+                          std::move(content_type.append(::utility::conversions::to_utf16string("; charset=utf-8"))));
+<span style = "background-color:#fdd">    }</span>
+
+    /// &lt;summary&gt;
+    /// Sets the body of the message to contain json value. If the 'Content-Type'
+    /// header hasn't already been set it will be set to 'application/json'.
+    /// &lt;/summary&gt;
+    /// &lt;param name="body_text"&gt;json value.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This will overwrite any previously set body data.
+    /// &lt;/remarks&gt;
+    void set_body(const json::value&amp; body_data)
+    {
+        auto body_text = utility::conversions::to_utf8string(body_data.serialize());
+        auto length = body_text.size();
+        set_body(concurrency::streams::bytestream::open_istream(std::move(body_text)),
+                 length,
+                 _XPLATSTR("application/json"));
+    }
+
+    /// &lt;summary&gt;
+    /// Sets the body of the message to the contents of a byte vector. If the 'Content-Type'
+    /// header hasn't already been set it will be set to 'application/octet-stream'.
+    /// &lt;/summary&gt;
+    /// &lt;param name="body_data"&gt;Vector containing body data.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This will overwrite any previously set body data.
+    /// &lt;/remarks&gt;
+    void set_body(std::vector&lt;unsigned char&gt;&amp;&amp; body_data)
+    {
+        auto length = body_data.size();
+        set_body(concurrency::streams::bytestream::open_istream(std::move(body_data)), length);
+    }
+
+    /// &lt;summary&gt;
+    /// Sets the body of the message to the contents of a byte vector. If the 'Content-Type'
+    /// header hasn't already been set it will be set to 'application/octet-stream'.
+    /// &lt;/summary&gt;
+    /// &lt;param name="body_data"&gt;Vector containing body data.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This will overwrite any previously set body data.
+    /// &lt;/remarks&gt;
+    void set_body(const std::vector&lt;unsigned char&gt;&amp; body_data)
+    {
+        set_body(concurrency::streams::bytestream::open_istream(body_data), body_data.size());
+    }
+
+    /// &lt;summary&gt;
+    /// Defines a stream that will be relied on to provide the body of the HTTP message when it is
+    /// sent.
+    /// &lt;/summary&gt;
+    /// &lt;param name="stream"&gt;A readable, open asynchronous stream.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;A string holding the MIME type of the message body.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This cannot be used in conjunction with any external means of setting the body of the request.
+    /// The stream will not be read until the message is sent.
+    /// &lt;/remarks&gt;
+    void set_body(const concurrency::streams::istream&amp; stream,
+                  const utility::string_t&amp; content_type = _XPLATSTR("application/octet-stream"))
+    {
+        _m_impl-&gt;set_body(stream, content_type);
+    }
+
+    /// &lt;summary&gt;
+    /// Defines a stream that will be relied on to provide the body of the HTTP message when it is
+    /// sent.
+    /// &lt;/summary&gt;
+    /// &lt;param name="stream"&gt;A readable, open asynchronous stream.&lt;/param&gt;
+    /// &lt;param name="content_length"&gt;The size of the data to be sent in the body.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;A string holding the MIME type of the message body.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This cannot be used in conjunction with any external means of setting the body of the request.
+    /// The stream will not be read until the message is sent.
+    /// &lt;/remarks&gt;
+    void set_body(const concurrency::streams::istream&amp; stream,
+                  utility::size64_t content_length,
+                  const utility::string_t&amp; content_type = _XPLATSTR("application/octet-stream"))
+    {
+        _m_impl-&gt;set_body(stream, content_length, content_type);
+    }
+
+    /// &lt;summary&gt;
+    /// Produces a stream which the caller may use to retrieve data from an incoming request.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A readable, open asynchronous stream.&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// This cannot be used in conjunction with any other means of getting the body of the request.
+    /// It is not necessary to wait until the message has been sent before starting to write to the
+    /// stream, but it is advisable to do so, since it will allow the network I/O to start earlier
+    /// and the work of sending data can be overlapped with the production of more data.
+    /// &lt;/remarks&gt;
+<span style = "background-color:#fdd">    concurrency::streams::istream body() const { return _m_impl-&gt;instream(); }</span>
+
+    /// &lt;summary&gt;
+    /// Signals the user (client) when all the data for this response message has been received.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; which is completed when all of the response body has been received.&lt;/returns&gt;
+    pplx::task&lt;http::http_response&gt; content_ready() const
+    {
+        http_response resp = *this;
+        return pplx::create_task(_m_impl-&gt;_get_data_available()).then([resp](utility::size64_t) mutable {
+            return resp;
+        });
+    }
+
+<span style = "background-color:#fdd">    std::shared_ptr&lt;http::details::_http_response&gt; _get_impl() const { return _m_impl; }</span>
+
+<span style = "background-color:#fdd">    http::details::_http_server_context* _get_server_context() const { return _m_impl-&gt;_get_server_context(); }</span>
+    void _set_server_context(std::unique_ptr&lt;http::details::_http_server_context&gt; server_context)
+<span style = "background-color:#fdd">    {
+        _m_impl-&gt;_set_server_context(std::move(server_context));
+    }</span>
+
+private:
+    std::shared_ptr&lt;http::details::_http_response&gt; _m_impl;
+};
+
+namespace details
+{
+/// &lt;summary&gt;
+/// Internal representation of an HTTP request message.
+/// &lt;/summary&gt;
+class _http_request final : public http::details::http_msg_base, public std::enable_shared_from_this&lt;_http_request&gt;
+{
+public:
+    _ASYNCRTIMP _http_request(http::method mtd);
+
+    _ASYNCRTIMP _http_request(std::unique_ptr&lt;http::details::_http_server_context&gt; server_context);
+
+<span style = "background-color:#fdd">    virtual ~_http_request() {}</span>
+
+<span style = "background-color:#fdd">    http::method&amp; method() { return m_method; }</span>
+
+<span style = "background-color:#fdd">    uri&amp; request_uri() { return m_uri; }</span>
+
+    _ASYNCRTIMP uri absolute_uri() const;
+
+    _ASYNCRTIMP uri relative_uri() const;
+
+    _ASYNCRTIMP void set_request_uri(const uri&amp;);
+
+    const utility::string_t&amp; remote_address() const { return m_remote_address; }
+
+<span style = "background-color:#fdd">    const pplx::cancellation_token&amp; cancellation_token() const { return m_cancellationToken; }</span>
+
+<span style = "background-color:#fdd">    void set_cancellation_token(const pplx::cancellation_token&amp; token) { m_cancellationToken = token; }</span>
+
+    _ASYNCRTIMP utility::string_t to_string() const;
+
+    _ASYNCRTIMP pplx::task&lt;void&gt; reply(const http_response&amp; response);
+
+<span style = "background-color:#fdd">    pplx::task&lt;http_response&gt; get_response() { return pplx::task&lt;http_response&gt;(m_response); }</span>
+
+    _ASYNCRTIMP pplx::task&lt;void&gt; _reply_if_not_already(http::status_code status);
+
+    void set_response_stream(const concurrency::streams::ostream&amp; stream) { m_response_stream = stream; }
+
+    void set_progress_handler(const progress_handler&amp; handler)
+    {
+        m_progress_handler = std::make_shared&lt;progress_handler&gt;(handler);
+    }
+
+<span style = "background-color:#fdd">    const concurrency::streams::ostream&amp; _response_stream() const { return m_response_stream; }</span>
+
+<span style = "background-color:#fdd">    const std::shared_ptr&lt;progress_handler&gt;&amp; _progress_handler() const { return m_progress_handler; }</span>
+
+    http::details::_http_server_context* _get_server_context() const { return m_server_context.get(); }
+
+    void _set_server_context(std::unique_ptr&lt;http::details::_http_server_context&gt; server_context)
+    {
+        m_server_context = std::move(server_context);
+    }
+
+<span style = "background-color:#fdd">    void _set_listener_path(const utility::string_t&amp; path) { m_listener_path = path; }</span>
+
+<span style = "background-color:#fdd">    void _set_base_uri(const http::uri&amp; base_uri) { m_base_uri = base_uri; }</span>
+
+<span style = "background-color:#fdd">    void _set_remote_address(const utility::string_t&amp; remote_address) { m_remote_address = remote_address; }</span>
+
+private:
+    // Actual initiates sending the response, without checking if a response has already been sent.
+    pplx::task&lt;void&gt; _reply_impl(http_response response);
+
+    http::method m_method;
+
+    // Tracks whether or not a response has already been started for this message.
+    // 0 = No reply sent
+    // 1 = Usual reply sent
+    // 2 = Reply aborted by another thread; e.g. server shutdown
+    pplx::details::atomic_long m_initiated_response;
+
+    std::unique_ptr&lt;http::details::_http_server_context&gt; m_server_context;
+
+    pplx::cancellation_token m_cancellationToken;
+
+    http::uri m_base_uri;
+    http::uri m_uri;
+    utility::string_t m_listener_path;
+
+    concurrency::streams::ostream m_response_stream;
+
+    std::shared_ptr&lt;progress_handler&gt; m_progress_handler;
+
+    pplx::task_completion_event&lt;http_response&gt; m_response;
+
+    utility::string_t m_remote_address;
+};
+
+} // namespace details
+
+/// &lt;summary&gt;
+/// Represents an HTTP request.
+/// &lt;/summary&gt;
+class http_request
+{
+public:
+    /// &lt;summary&gt;
+    /// Constructs a new HTTP request with the 'GET' method.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    http_request() : _m_impl(std::make_shared&lt;http::details::_http_request&gt;(methods::GET)) {}</span>
+
+    /// &lt;summary&gt;
+    /// Constructs a new HTTP request with the given request method.
+    /// &lt;/summary&gt;
+    /// &lt;param name="mtd"&gt;Request method.&lt;/param&gt;
+    http_request(http::method mtd) : _m_impl(std::make_shared&lt;http::details::_http_request&gt;(std::move(mtd))) {}
+
+    /// &lt;summary&gt;
+    /// Destructor frees any held resources.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    ~http_request() {}</span>
+
+    /// &lt;summary&gt;
+    /// Get the method (GET/PUT/POST/DELETE) of the request message.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Request method of this HTTP request.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const http::method&amp; method() const { return _m_impl-&gt;method(); }</span>
+
+    /// &lt;summary&gt;
+    /// Set the method (GET/PUT/POST/DELETE) of the request message.
+    /// &lt;/summary&gt;
+    /// &lt;param name="method"&gt;Request method of this HTTP request.&lt;/param&gt;
+<span style = "background-color:#fdd">    void set_method(const http::method&amp; method) const { _m_impl-&gt;method() = method; }</span>
+
+    /// &lt;summary&gt;
+    /// Get the underling URI of the request message.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The uri of this message.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const uri&amp; request_uri() const { return _m_impl-&gt;request_uri(); }</span>
+
+    /// &lt;summary&gt;
+    /// Set the underling URI of the request message.
+    /// &lt;/summary&gt;
+    /// &lt;param name="uri"&gt;The uri for this message.&lt;/param&gt;
+<span style = "background-color:#fdd">    void set_request_uri(const uri&amp; uri) { return _m_impl-&gt;set_request_uri(uri); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets a reference the URI path, query, and fragment part of this request message.
+    /// This will be appended to the base URI specified at construction of the http_client.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A string.&lt;/returns&gt;
+    /// &lt;remarks&gt;When the request is the one passed to a listener's handler, the
+    /// relative URI is the request URI less the listener's path. In all other circumstances,
+    /// request_uri() and relative_uri() will return the same value.
+    /// &lt;/remarks&gt;
+<span style = "background-color:#fdd">    uri relative_uri() const { return _m_impl-&gt;relative_uri(); }</span>
+
+    /// &lt;summary&gt;
+    /// Get an absolute URI with scheme, host, port, path, query, and fragment part of
+    /// the request message.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;Absolute URI is only valid after this http_request object has been passed
+    /// to http_client::request().
+    /// &lt;/remarks&gt;
+<span style = "background-color:#fdd">    uri absolute_uri() const { return _m_impl-&gt;absolute_uri(); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets a reference to the headers of the response message.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;HTTP headers for this response.&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// Use the http_headers::add to fill in desired headers.
+    /// &lt;/remarks&gt;
+<span style = "background-color:#fdd">    http_headers&amp; headers() { return _m_impl-&gt;headers(); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets a const reference to the headers of the response message.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;HTTP headers for this response.&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// Use the http_headers::add to fill in desired headers.
+    /// &lt;/remarks&gt;
+    const http_headers&amp; headers() const { return _m_impl-&gt;headers(); }
+
+    /// &lt;summary&gt;
+    /// Returns the HTTP protocol version of this request message.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The HTTP protocol version.&lt;/returns&gt;
+    http::http_version http_version() const { return _m_impl-&gt;http_version(); }
+
+    /// &lt;summary&gt;
+    /// Returns a string representation of the remote IP address.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The remote IP address.&lt;/returns&gt;
+    const utility::string_t&amp; remote_address() const { return _m_impl-&gt;remote_address(); }
+
+    CASABLANCA_DEPRECATED("Use `remote_address()` instead.")
+    const utility::string_t&amp; get_remote_address() const { return _m_impl-&gt;remote_address(); }
+
+    /// &lt;summary&gt;
+    /// Extract the body of the request message as a string value, checking that the content type is a MIME text type.
+    /// A body can only be extracted once because in some cases an optimization is made where the data is 'moved' out.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ignore_content_type"&gt;If true, ignores the Content-Type header and assumes UTF-8.&lt;/param&gt;
+    /// &lt;returns&gt;String containing body of the message.&lt;/returns&gt;
+    pplx::task&lt;utility::string_t&gt; extract_string(bool ignore_content_type = false)
+<span style = "background-color:#fdd">    {
+        auto impl = _m_impl;
+        return pplx::create_task(_m_impl-&gt;_get_data_available()).then([impl, ignore_content_type](utility::size64_t) {
+            return impl-&gt;extract_string(ignore_content_type);
+        });
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Extract the body of the request message as a UTF-8 string value, checking that the content type is a MIME text
+    /// type. A body can only be extracted once because in some cases an optimization is made where the data is 'moved'
+    /// out.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ignore_content_type"&gt;If true, ignores the Content-Type header and assumes UTF-8.&lt;/param&gt;
+    /// &lt;returns&gt;String containing body of the message.&lt;/returns&gt;
+    pplx::task&lt;utf8string&gt; extract_utf8string(bool ignore_content_type = false)
+    {
+        auto impl = _m_impl;
+        return pplx::create_task(_m_impl-&gt;_get_data_available()).then([impl, ignore_content_type](utility::size64_t) {
+            return impl-&gt;extract_utf8string(ignore_content_type);
+        });
+    }
+
+    /// &lt;summary&gt;
+    /// Extract the body of the request message as a UTF-16 string value, checking that the content type is a MIME text
+    /// type. A body can only be extracted once because in some cases an optimization is made where the data is 'moved'
+    /// out.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ignore_content_type"&gt;If true, ignores the Content-Type header and assumes UTF-16.&lt;/param&gt;
+    /// &lt;returns&gt;String containing body of the message.&lt;/returns&gt;
+    pplx::task&lt;utf16string&gt; extract_utf16string(bool ignore_content_type = false)
+    {
+        auto impl = _m_impl;
+        return pplx::create_task(_m_impl-&gt;_get_data_available()).then([impl, ignore_content_type](utility::size64_t) {
+            return impl-&gt;extract_utf16string(ignore_content_type);
+        });
+    }
+
+    /// &lt;summary&gt;
+    /// Extracts the body of the request message into a json value, checking that the content type is application/json.
+    /// A body can only be extracted once because in some cases an optimization is made where the data is 'moved' out.
+    /// &lt;/summary&gt;
+    /// &lt;param name="ignore_content_type"&gt;If true, ignores the Content-Type header and assumes UTF-8.&lt;/param&gt;
+    /// &lt;returns&gt;JSON value from the body of this message.&lt;/returns&gt;
+    pplx::task&lt;json::value&gt; extract_json(bool ignore_content_type = false) const
+    {
+        auto impl = _m_impl;
+        return pplx::create_task(_m_impl-&gt;_get_data_available()).then([impl, ignore_content_type](utility::size64_t) {
+            return impl-&gt;_extract_json(ignore_content_type);
+        });
+    }
+
+    /// &lt;summary&gt;
+    /// Extract the body of the response message into a vector of bytes. Extracting a vector can be done on
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The body of the message as a vector of bytes.&lt;/returns&gt;
+    pplx::task&lt;std::vector&lt;unsigned char&gt;&gt; extract_vector() const
+    {
+        auto impl = _m_impl;
+        return pplx::create_task(_m_impl-&gt;_get_data_available()).then([impl](utility::size64_t) {
+            return impl-&gt;_extract_vector();
+        });
+    }
+
+    /// &lt;summary&gt;
+    /// Sets the body of the message to a textual string and set the "Content-Type" header. Assumes
+    /// the character encoding of the string is UTF-8.
+    /// &lt;/summary&gt;
+    /// &lt;param name="body_text"&gt;String containing body text.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;MIME type to set the "Content-Type" header to. Default to "text/plain;
+    /// charset=utf-8".&lt;/param&gt; &lt;remarks&gt; This will overwrite any previously set body data and "Content-Type" header.
+    /// &lt;/remarks&gt;
+    void set_body(utf8string&amp;&amp; body_text, const utf8string&amp; content_type = utf8string("text/plain; charset=utf-8"))
+    {
+        const auto length = body_text.size();
+        _m_impl-&gt;set_body(
+            concurrency::streams::bytestream::open_istream&lt;std::string&gt;(std::move(body_text)), length, content_type);
+    }
+
+    /// &lt;summary&gt;
+    /// Sets the body of the message to a textual string and set the "Content-Type" header. Assumes
+    /// the character encoding of the string is UTF-8.
+    /// &lt;/summary&gt;
+    /// &lt;param name="body_text"&gt;String containing body text.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;MIME type to set the "Content-Type" header to. Default to "text/plain;
+    /// charset=utf-8".&lt;/param&gt; &lt;remarks&gt; This will overwrite any previously set body data and "Content-Type" header.
+    /// &lt;/remarks&gt;
+    void set_body(const utf8string&amp; body_text, const utf8string&amp; content_type = utf8string("text/plain; charset=utf-8"))
+    {
+        _m_impl-&gt;set_body(
+            concurrency::streams::bytestream::open_istream&lt;std::string&gt;(body_text), body_text.size(), content_type);
+    }
+
+    /// &lt;summary&gt;
+    /// Sets the body of the message to a textual string and set the "Content-Type" header. Assumes
+    /// the character encoding of the string is UTF-16 will perform conversion to UTF-8.
+    /// &lt;/summary&gt;
+    /// &lt;/summary&gt;
+    /// &lt;param name="body_text"&gt;String containing body text.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;MIME type to set the "Content-Type" header to. Default to "text/plain".&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This will overwrite any previously set body data and "Content-Type" header.
+    /// &lt;/remarks&gt;
+    void set_body(const utf16string&amp; body_text,
+                  utf16string content_type = utility::conversions::to_utf16string("text/plain"))
+<span style = "background-color:#fdd">    {
+        if (content_type.find(::utility::conversions::to_utf16string("charset=")) != content_type.npos)</span>
+        {
+<span style = "background-color:#fdd">            throw std::invalid_argument("content_type can't contain a 'charset'.");</span>
+        }
+
+<span style = "background-color:#fdd">        auto utf8body = utility::conversions::utf16_to_utf8(body_text);
+        auto length = utf8body.size();
+        _m_impl-&gt;set_body(concurrency::streams::bytestream::open_istream(std::move(utf8body)),</span>
+                          length,
+                          std::move(content_type.append(::utility::conversions::to_utf16string("; charset=utf-8"))));
+<span style = "background-color:#fdd">    }</span>
+
+    /// &lt;summary&gt;
+    /// Sets the body of the message to contain json value. If the 'Content-Type'
+    /// header hasn't already been set it will be set to 'application/json'.
+    /// &lt;/summary&gt;
+    /// &lt;param name="body_data"&gt;json value.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This will overwrite any previously set body data.
+    /// &lt;/remarks&gt;
+    void set_body(const json::value&amp; body_data)
+    {
+        auto body_text = utility::conversions::to_utf8string(body_data.serialize());
+        auto length = body_text.size();
+        _m_impl-&gt;set_body(concurrency::streams::bytestream::open_istream(std::move(body_text)),
+                          length,
+                          _XPLATSTR("application/json"));
+    }
+
+    /// &lt;summary&gt;
+    /// Sets the body of the message to the contents of a byte vector. If the 'Content-Type'
+    /// header hasn't already been set it will be set to 'application/octet-stream'.
+    /// &lt;/summary&gt;
+    /// &lt;param name="body_data"&gt;Vector containing body data.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This will overwrite any previously set body data.
+    /// &lt;/remarks&gt;
+    void set_body(std::vector&lt;unsigned char&gt;&amp;&amp; body_data)
+    {
+        auto length = body_data.size();
+        _m_impl-&gt;set_body(concurrency::streams::bytestream::open_istream(std::move(body_data)),
+                          length,
+                          _XPLATSTR("application/octet-stream"));
+    }
+
+    /// &lt;summary&gt;
+    /// Sets the body of the message to the contents of a byte vector. If the 'Content-Type'
+    /// header hasn't already been set it will be set to 'application/octet-stream'.
+    /// &lt;/summary&gt;
+    /// &lt;param name="body_data"&gt;Vector containing body data.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This will overwrite any previously set body data.
+    /// &lt;/remarks&gt;
+    void set_body(const std::vector&lt;unsigned char&gt;&amp; body_data)
+    {
+        set_body(concurrency::streams::bytestream::open_istream(body_data), body_data.size());
+    }
+
+    /// &lt;summary&gt;
+    /// Defines a stream that will be relied on to provide the body of the HTTP message when it is
+    /// sent.
+    /// &lt;/summary&gt;
+    /// &lt;param name="stream"&gt;A readable, open asynchronous stream.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;A string holding the MIME type of the message body.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This cannot be used in conjunction with any other means of setting the body of the request.
+    /// The stream will not be read until the message is sent.
+    /// &lt;/remarks&gt;
+    void set_body(const concurrency::streams::istream&amp; stream,
+                  const utility::string_t&amp; content_type = _XPLATSTR("application/octet-stream"))
+<span style = "background-color:#fdd">    {
+        _m_impl-&gt;set_body(stream, content_type);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Defines a stream that will be relied on to provide the body of the HTTP message when it is
+    /// sent.
+    /// &lt;/summary&gt;
+    /// &lt;param name="stream"&gt;A readable, open asynchronous stream.&lt;/param&gt;
+    /// &lt;param name="content_length"&gt;The size of the data to be sent in the body.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;A string holding the MIME type of the message body.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This cannot be used in conjunction with any other means of setting the body of the request.
+    /// The stream will not be read until the message is sent.
+    /// &lt;/remarks&gt;
+    void set_body(const concurrency::streams::istream&amp; stream,
+                  utility::size64_t content_length,
+                  const utility::string_t&amp; content_type = _XPLATSTR("application/octet-stream"))
+    {
+        _m_impl-&gt;set_body(stream, content_length, content_type);
+    }
+
+    /// &lt;summary&gt;
+    /// Produces a stream which the caller may use to retrieve data from an incoming request.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A readable, open asynchronous stream.&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// This cannot be used in conjunction with any other means of getting the body of the request.
+    /// It is not necessary to wait until the message has been sent before starting to write to the
+    /// stream, but it is advisable to do so, since it will allow the network I/O to start earlier
+    /// and the work of sending data can be overlapped with the production of more data.
+    /// &lt;/remarks&gt;
+<span style = "background-color:#fdd">    concurrency::streams::istream body() const { return _m_impl-&gt;instream(); }</span>
+
+    /// &lt;summary&gt;
+    /// Defines a stream that will be relied on to hold the body of the HTTP response message that
+    /// results from the request.
+    /// &lt;/summary&gt;
+    /// &lt;param name="stream"&gt;A writable, open asynchronous stream.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// If this function is called, the body of the response should not be accessed in any other
+    /// way.
+    /// &lt;/remarks&gt;
+    void set_response_stream(const concurrency::streams::ostream&amp; stream)
+    {
+        return _m_impl-&gt;set_response_stream(stream);
+    }
+
+    /// &lt;summary&gt;
+    /// Sets a compressor that will be used to compress the body of the HTTP message as it is sent.
+    /// &lt;/summary&gt;
+    /// &lt;param name="compressor"&gt;A pointer to an instantiated compressor of the desired type.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This cannot be used in conjunction with any external means of compression.  The Transfer-Encoding
+    /// header will be managed internally, and must not be set by the client.
+    /// &lt;/remarks&gt;
+    void set_compressor(std::unique_ptr&lt;http::compression::compress_provider&gt; compressor)
+    {
+        return _m_impl-&gt;set_compressor(std::move(compressor));
+    }
+
+    /// &lt;summary&gt;
+    /// Sets a compressor that will be used to compress the body of the HTTP message as it is sent.
+    /// &lt;/summary&gt;
+    /// &lt;param name="algorithm"&gt;The built-in compression algorithm to use.&lt;/param&gt;
+    /// &lt;returns&gt;
+    /// True if a built-in compressor was instantiated, otherwise false.
+    /// &lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// This cannot be used in conjunction with any external means of compression.  The Transfer-Encoding
+    /// header will be managed internally, and must not be set by the client.
+    /// &lt;/remarks&gt;
+    bool set_compressor(utility::string_t algorithm)
+    {
+        _m_impl-&gt;set_compressor(http::compression::builtin::make_compressor(algorithm));
+        return (bool)_m_impl-&gt;compressor();
+    }
+
+    /// &lt;summary&gt;
+    /// Gets the compressor to be used to compress the message body, if any.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;
+    /// The compressor itself.
+    /// &lt;/returns&gt;
+<span style = "background-color:#fdd">    std::unique_ptr&lt;http::compression::compress_provider&gt;&amp; compressor() { return _m_impl-&gt;compressor(); }</span>
+
+    /// &lt;summary&gt;
+    /// Sets the default collection of built-in factory classes for decompressors that may be used to
+    /// decompress the body of the HTTP message as it is received, effectively enabling decompression.
+    /// &lt;/summary&gt;
+    /// &lt;param name="factories"&gt;The collection of factory classes for allowable decompressors. The
+    /// supplied vector itself need not remain valid after the call returns.&lt;/param&gt;
+    /// &lt;remarks&gt;
+    /// This default collection is implied if request_compressed_response() is set in the associated
+    /// &lt;c&gt;client::http_client_config&lt;/c&gt; and neither overload of this method has been called.
+    ///
+    /// This cannot be used in conjunction with any external means of decompression.  The TE and Accept-Encoding
+    /// headers must not be set by the client, as they will be managed internally as appropriate.
+    /// &lt;/remarks&gt;
+    _ASYNCRTIMP void set_decompress_factories();
+
+    /// &lt;summary&gt;
+    /// Sets a collection of factory classes for decompressors that may be used to decompress the
+    /// body of the HTTP message as it is received, effectively enabling decompression.
+    /// &lt;/summary&gt;
+    /// &lt;remarks&gt;
+    /// If set, this collection takes the place of the built-in compression providers.  It may contain
+    /// custom factory classes and/or factory classes for built-in providers, and may be used to adjust
+    /// the weights of the built-in providers, which default to 500 (i.e. "q=0.500").
+    ///
+    /// This cannot be used in conjunction with any external means of decompression.  The TE and Accept-Encoding
+    /// headers must not be set by the client, as they will be managed internally as appropriate.
+    /// &lt;/remarks&gt;
+    void set_decompress_factories(const std::vector&lt;std::shared_ptr&lt;http::compression::decompress_factory&gt;&gt;&amp; factories)
+    {
+        return _m_impl-&gt;set_decompress_factories(factories);
+    }
+
+    /// &lt;summary&gt;
+    /// Gets the collection of factory classes for decompressors to be used to decompress the message body, if any.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;
+    /// The collection of factory classes itself.
+    /// &lt;/returns&gt;
+    /// &lt;remarks&gt;
+    /// This cannot be used in conjunction with any external means of decompression.  The TE
+    /// header must not be set by the client, as it will be managed internally.
+    /// &lt;/remarks&gt;
+    const std::vector&lt;std::shared_ptr&lt;http::compression::decompress_factory&gt;&gt;&amp; decompress_factories() const
+<span style = "background-color:#fdd">    {
+        return _m_impl-&gt;decompress_factories();
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Defines a callback function that will be invoked for every chunk of data uploaded or downloaded
+    /// as part of the request.
+    /// &lt;/summary&gt;
+    /// &lt;param name="handler"&gt;A function representing the progress handler. It's parameters are:
+    ///    up:       a &lt;c&gt;message_direction::direction&lt;/c&gt; value  indicating the direction of the message
+    ///              that is being reported.
+    ///    progress: the number of bytes that have been processed so far.
+    /// &lt;/param&gt;
+    /// &lt;remarks&gt;
+    ///   This function will be called at least once for upload and at least once for
+    ///   the download body, unless there is some exception generated. An HTTP message with an error
+    ///   code is not an exception. This means, that even if there is no body, the progress handler
+    ///   will be called.
+    ///
+    ///   Setting the chunk size on the http_client does not guarantee that the client will be using
+    ///   exactly that increment for uploading and downloading data.
+    ///
+    ///   The handler will be called only once for each combination of argument values, in order. Depending
+    ///   on how a service responds, some download values may come before all upload values have been
+    ///   reported.
+    ///
+    ///   The progress handler will be called on the thread processing the request. This means that
+    ///   the implementation of the handler must take care not to block the thread or do anything
+    ///   that takes significant amounts of time. In particular, do not do any kind of I/O from within
+    ///   the handler, do not update user interfaces, and to not acquire any locks. If such activities
+    ///   are necessary, it is the handler's responsibility to execute that work on a separate thread.
+    /// &lt;/remarks&gt;
+    void set_progress_handler(const progress_handler&amp; handler) { return _m_impl-&gt;set_progress_handler(handler); }
+
+    /// &lt;summary&gt;
+    /// Asynchronously responses to this HTTP request.
+    /// &lt;/summary&gt;
+    /// &lt;param name="response"&gt;Response to send.&lt;/param&gt;
+    /// &lt;returns&gt;An asynchronous operation that is completed once response is sent.&lt;/returns&gt;
+<span style = "background-color:#fdd">    pplx::task&lt;void&gt; reply(const http_response&amp; response) const { return _m_impl-&gt;reply(response); }</span>
+
+    /// &lt;summary&gt;
+    /// Asynchronously responses to this HTTP request.
+    /// &lt;/summary&gt;
+    /// &lt;param name="status"&gt;Response status code.&lt;/param&gt;
+    /// &lt;returns&gt;An asynchronous operation that is completed once response is sent.&lt;/returns&gt;
+<span style = "background-color:#fdd">    pplx::task&lt;void&gt; reply(http::status_code status) const { return reply(http_response(status)); }</span>
+
+    /// &lt;summary&gt;
+    /// Responds to this HTTP request.
+    /// &lt;/summary&gt;
+    /// &lt;param name="status"&gt;Response status code.&lt;/param&gt;
+    /// &lt;param name="body_data"&gt;Json value to use in the response body.&lt;/param&gt;
+    /// &lt;returns&gt;An asynchronous operation that is completed once response is sent.&lt;/returns&gt;
+    pplx::task&lt;void&gt; reply(http::status_code status, const json::value&amp; body_data) const
+    {
+        http_response response(status);
+        response.set_body(body_data);
+        return reply(response);
+    }
+
+    /// Responds to this HTTP request with a string.
+    /// Assumes the character encoding of the string is UTF-8.
+    /// &lt;/summary&gt;
+    /// &lt;param name="status"&gt;Response status code.&lt;/param&gt;
+    /// &lt;param name="body_data"&gt;UTF-8 string containing the text to use in the response body.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;Content type of the body.&lt;/param&gt;
+    /// &lt;returns&gt;An asynchronous operation that is completed once response is sent.&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    //  Callers of this function do NOT need to block waiting for the response to be
+    /// sent to before the body data is destroyed or goes out of scope.
+    /// &lt;/remarks&gt;
+    pplx::task&lt;void&gt; reply(http::status_code status,
+                           utf8string&amp;&amp; body_data,
+                           const utf8string&amp; content_type = "text/plain; charset=utf-8") const
+    {
+        http_response response(status);
+        response.set_body(std::move(body_data), content_type);
+        return reply(response);
+    }
+
+    /// &lt;summary&gt;
+    /// Responds to this HTTP request with a string.
+    /// Assumes the character encoding of the string is UTF-8.
+    /// &lt;/summary&gt;
+    /// &lt;param name="status"&gt;Response status code.&lt;/param&gt;
+    /// &lt;param name="body_data"&gt;UTF-8 string containing the text to use in the response body.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;Content type of the body.&lt;/param&gt;
+    /// &lt;returns&gt;An asynchronous operation that is completed once response is sent.&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    //  Callers of this function do NOT need to block waiting for the response to be
+    /// sent to before the body data is destroyed or goes out of scope.
+    /// &lt;/remarks&gt;
+    pplx::task&lt;void&gt; reply(http::status_code status,
+                           const utf8string&amp; body_data,
+                           const utf8string&amp; content_type = "text/plain; charset=utf-8") const
+<span style = "background-color:#fdd">    {
+        http_response response(status);
+        response.set_body(body_data, content_type);
+        return reply(response);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Responds to this HTTP request with a string. Assumes the character encoding
+    /// of the string is UTF-16 will perform conversion to UTF-8.
+    /// &lt;/summary&gt;
+    /// &lt;param name="status"&gt;Response status code.&lt;/param&gt;
+    /// &lt;param name="body_data"&gt;UTF-16 string containing the text to use in the response body.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;Content type of the body.&lt;/param&gt;
+    /// &lt;returns&gt;An asynchronous operation that is completed once response is sent.&lt;/returns&gt;
+    /// &lt;remarks&gt;
+    //  Callers of this function do NOT need to block waiting for the response to be
+    /// sent to before the body data is destroyed or goes out of scope.
+    /// &lt;/remarks&gt;
+    pplx::task&lt;void&gt; reply(http::status_code status,
+                           const utf16string&amp; body_data,
+                           const utf16string&amp; content_type = utility::conversions::to_utf16string("text/plain")) const
+<span style = "background-color:#fdd">    {
+        http_response response(status);
+        response.set_body(body_data, content_type);
+        return reply(response);
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Responds to this HTTP request.
+    /// &lt;/summary&gt;
+    /// &lt;param name="status"&gt;Response status code.&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;A string holding the MIME type of the message body.&lt;/param&gt;
+    /// &lt;param name="body"&gt;An asynchronous stream representing the body data.&lt;/param&gt;
+    /// &lt;returns&gt;A task that is completed once a response from the request is received.&lt;/returns&gt;
+    pplx::task&lt;void&gt; reply(status_code status,
+                           const concurrency::streams::istream&amp; body,
+                           const utility::string_t&amp; content_type = _XPLATSTR("application/octet-stream")) const
+    {
+        http_response response(status);
+        response.set_body(body, content_type);
+        return reply(response);
+    }
+
+    /// &lt;summary&gt;
+    /// Responds to this HTTP request.
+    /// &lt;/summary&gt;
+    /// &lt;param name="status"&gt;Response status code.&lt;/param&gt;
+    /// &lt;param name="content_length"&gt;The size of the data to be sent in the body..&lt;/param&gt;
+    /// &lt;param name="content_type"&gt;A string holding the MIME type of the message body.&lt;/param&gt;
+    /// &lt;param name="body"&gt;An asynchronous stream representing the body data.&lt;/param&gt;
+    /// &lt;returns&gt;A task that is completed once a response from the request is received.&lt;/returns&gt;
+    pplx::task&lt;void&gt; reply(status_code status,
+                           const concurrency::streams::istream&amp; body,
+                           utility::size64_t content_length,
+                           const utility::string_t&amp; content_type = _XPLATSTR("application/octet-stream")) const
+    {
+        http_response response(status);
+        response.set_body(body, content_length, content_type);
+        return reply(response);
+    }
+
+    /// &lt;summary&gt;
+    /// Signals the user (listener) when all the data for this request message has been received.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A &lt;c&gt;task&lt;/c&gt; which is completed when all of the response body has been received&lt;/returns&gt;
+    pplx::task&lt;http_request&gt; content_ready() const
+<span style = "background-color:#fdd">    {
+        http_request req = *this;
+        return pplx::create_task(_m_impl-&gt;_get_data_available()).then([req](utility::size64_t) mutable { return req; });
+    }</span>
+
+    /// &lt;summary&gt;
+    /// Gets a task representing the response that will eventually be sent.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A task that is completed once response is sent.&lt;/returns&gt;
+<span style = "background-color:#fdd">    pplx::task&lt;http_response&gt; get_response() const { return _m_impl-&gt;get_response(); }</span>
+
+    /// &lt;summary&gt;
+    /// Generates a string representation of the message, including the body when possible.
+    /// Mainly this should be used for debugging purposes as it has to copy the
+    /// message body and doesn't have excellent performance.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A string representation of this HTTP request.&lt;/returns&gt;
+    /// &lt;remarks&gt;Note this function is synchronous and doesn't wait for the
+    /// entire message body to arrive. If the message body has arrived by the time this
+    /// function is called and it is has a textual Content-Type it will be included.
+    /// Otherwise just the headers will be present.&lt;/remarks&gt;
+<span style = "background-color:#fdd">    utility::string_t to_string() const { return _m_impl-&gt;to_string(); }</span>
+
+    /// &lt;summary&gt;
+    /// Sends a response if one has not already been sent.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    pplx::task&lt;void&gt; _reply_if_not_already(status_code status) { return _m_impl-&gt;_reply_if_not_already(status); }</span>
+
+    /// &lt;summary&gt;
+    /// Gets the server context associated with this HTTP message.
+    /// &lt;/summary&gt;
+    http::details::_http_server_context* _get_server_context() const { return _m_impl-&gt;_get_server_context(); }
+
+    /// &lt;summary&gt;
+    /// These are used for the initial creation of the HTTP request.
+    /// &lt;/summary&gt;
+    static http_request _create_request(std::unique_ptr&lt;http::details::_http_server_context&gt; server_context)
+<span style = "background-color:#fdd">    {
+        return http_request(std::move(server_context));
+    }</span>
+    void _set_server_context(std::unique_ptr&lt;http::details::_http_server_context&gt; server_context)
+    {
+        _m_impl-&gt;_set_server_context(std::move(server_context));
+    }
+
+<span style = "background-color:#fdd">    void _set_listener_path(const utility::string_t&amp; path) { _m_impl-&gt;_set_listener_path(path); }</span>
+
+<span style = "background-color:#fdd">    const std::shared_ptr&lt;http::details::_http_request&gt;&amp; _get_impl() const { return _m_impl; }</span>
+
+<span style = "background-color:#fdd">    void _set_cancellation_token(const pplx::cancellation_token&amp; token) { _m_impl-&gt;set_cancellation_token(token); }</span>
+
+<span style = "background-color:#fdd">    const pplx::cancellation_token&amp; _cancellation_token() const { return _m_impl-&gt;cancellation_token(); }</span>
+
+<span style = "background-color:#fdd">    void _set_base_uri(const http::uri&amp; base_uri) { _m_impl-&gt;_set_base_uri(base_uri); }</span>
+
+private:
+    friend class http::details::_http_request;
+    friend class http::client::http_client;
+
+    http_request(std::unique_ptr&lt;http::details::_http_server_context&gt; server_context)
+<span style = "background-color:#fdd">        : _m_impl(std::make_shared&lt;details::_http_request&gt;(std::move(server_context)))
+    {
+    }</span>
+
+    std::shared_ptr&lt;http::details::_http_request&gt; _m_impl;
+};
+
+namespace client
+{
+class http_pipeline;
+}
+
+/// &lt;summary&gt;
+/// HTTP client handler class, used to represent an HTTP pipeline stage.
+/// &lt;/summary&gt;
+/// &lt;remarks&gt;
+/// When a request goes out, it passes through a series of stages, customizable by
+/// the application and/or libraries. The default stage will interact with lower-level
+/// communication layers to actually send the message on the network. When creating a client
+/// instance, an application may add pipeline stages in front of the already existing
+/// stages. Each stage has a reference to the next stage available in the &lt;seealso cref="http_pipeline_stage::next_stage
+/// Method"/&gt; value.
+/// &lt;/remarks&gt;
+class http_pipeline_stage : public std::enable_shared_from_this&lt;http_pipeline_stage&gt;
+{
+public:
+<span style = "background-color:#fdd">    http_pipeline_stage() = default;</span>
+
+    http_pipeline_stage&amp; operator=(const http_pipeline_stage&amp;) = delete;
+    http_pipeline_stage(const http_pipeline_stage&amp;) = delete;
+
+<span style = "background-color:#fdd">    virtual ~http_pipeline_stage() = default;</span>
+
+    /// &lt;summary&gt;
+    /// Runs this stage against the given request and passes onto the next stage.
+    /// &lt;/summary&gt;
+    /// &lt;param name="request"&gt;The HTTP request.&lt;/param&gt;
+    /// &lt;returns&gt;A task of the HTTP response.&lt;/returns&gt;
+    virtual pplx::task&lt;http_response&gt; propagate(http_request request) = 0;
+
+protected:
+    /// &lt;summary&gt;
+    /// Gets the next stage in the pipeline.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A shared pointer to a pipeline stage.&lt;/returns&gt;
+<span style = "background-color:#fdd">    const std::shared_ptr&lt;http_pipeline_stage&gt;&amp; next_stage() const { return m_next_stage; }</span>
+
+    /// &lt;summary&gt;
+    /// Gets a shared pointer to this pipeline stage.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;A shared pointer to a pipeline stage.&lt;/returns&gt;
+    CASABLANCA_DEPRECATED("This api is redundant. Use 'shared_from_this()' directly instead.")
+    std::shared_ptr&lt;http_pipeline_stage&gt; current_stage() { return this-&gt;shared_from_this(); }
+
+private:
+    friend class ::web::http::client::http_pipeline;
+
+<span style = "background-color:#fdd">    void set_next_stage(const std::shared_ptr&lt;http_pipeline_stage&gt;&amp; next) { m_next_stage = next; }</span>
+
+    std::shared_ptr&lt;http_pipeline_stage&gt; m_next_stage;
+};
+
+} // namespace http
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

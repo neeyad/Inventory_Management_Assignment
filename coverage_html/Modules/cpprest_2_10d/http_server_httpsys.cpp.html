@@ -1,0 +1,1293 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>http_server_httpsys.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: HTTP listener (server-side) APIs
+ *
+ * This file contains implementation built on Windows HTTP Server APIs.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#include "stdafx.h"
+
+#include "cpprest/rawptrstream.h"
+
+#if _WIN32_WINNT &gt;= _WIN32_WINNT_VISTA
+
+#pragma comment(lib, "Ws2_32")
+
+#include "http_server_httpsys.h"
+#include "http_server_impl.h"
+
+using namespace web;
+using namespace utility;
+using namespace concurrency;
+using namespace utility::conversions;
+using namespace http::details;
+using namespace http::experimental::listener;
+using namespace http::experimental::details;
+
+#define CHUNK_SIZE (64 * 1024)
+
+namespace web
+{
+namespace http
+{
+namespace experimental
+{
+namespace details
+{
+/// &lt;summary&gt;
+/// String values for all HTTP Server API HTTP_REQUEST_HEADERS known headers.
+/// NOTE: the order here is important it is from the _HTTP_HEADER_ID enum.
+/// &lt;/summary&gt;
+<span style = "background-color:#dfd">static utility::string_t HttpServerAPIRequestKnownHeaders[] =</span>
+{
+<span style = "background-color:#dfd">    U("Cache-Control"),
+    U("Connection"),
+    U("Date"),
+    U("Keep-Alive"),
+    U("Pragma"),
+    U("Trailer"),
+    U("Transfer-Encoding"),
+    U("Upgrade"),
+    U("Via"),
+    U("Warning"),
+    U("Allow"),
+    U("Content-Length"),
+    U("Content-Type"),
+    U("Content-Encoding"),
+    U("Content-Language"),
+    U("Content-Location"),
+    U("Content-MD5"),
+    U("Content-Range"),
+    U("Expires"),
+    U("Last-Modified"),
+    U("Accept"),
+    U("Accept-Charset"),
+    U("Accept-Encoding"),
+    U("Accept-Language"),
+    U("Authorization"),
+    U("Cookie"),
+    U("Expect"),
+    U("From"),
+    U("Host"),
+    U("If-Match"),
+    U("If-Modified-Since"),
+    U("If-None-Match"),
+    U("If-Range"),
+    U("If-Unmodified-Since"),
+    U("Max-Forwards"),
+    U("Proxy-Authorization"),
+    U("Referer"),
+    U("Range"),
+    U("TE"),
+    U("Translate"),
+    U("User-Agent")
+};</span>
+
+static void char_to_wstring(utf16string&amp; dest, const char* src)
+<span style = "background-color:#fdd">{
+    dest = utility::conversions::to_utf16string(std::string(src));
+}</span>
+
+http::method parse_request_method(const HTTP_REQUEST* p_request)
+<span style = "background-color:#fdd">{
+    http::method method;</span>
+
+<span style = "background-color:#fdd">    switch (p_request-&gt;Verb)</span>
+    {
+<span style = "background-color:#fdd">        case HttpVerbGET: method = methods::GET; break;
+        case HttpVerbPOST: method = methods::POST; break;
+        case HttpVerbPUT: method = methods::PUT; break;
+        case HttpVerbDELETE: method = methods::DEL; break;
+        case HttpVerbHEAD: method = methods::HEAD; break;
+        case HttpVerbOPTIONS: method = methods::OPTIONS; break;
+        case HttpVerbTRACE: method = methods::TRCE; break;
+        case HttpVerbCONNECT: method = methods::CONNECT; break;
+        case HttpVerbUnknown: char_to_wstring(method, p_request-&gt;pUnknownVerb); break;
+        case HttpVerbMOVE: method = _XPLATSTR("MOVE"); break;
+        case HttpVerbCOPY: method = _XPLATSTR("COPY"); break;
+        case HttpVerbPROPFIND: method = _XPLATSTR("PROPFIND"); break;
+        case HttpVerbPROPPATCH: method = _XPLATSTR("PROPPATCH"); break;
+        case HttpVerbMKCOL: method = _XPLATSTR("MKCOL"); break;
+        case HttpVerbLOCK: method = _XPLATSTR("LOCK"); break;
+        case HttpVerbUNLOCK: method = _XPLATSTR("UNLOCK"); break;
+        case HttpVerbSEARCH: method = _XPLATSTR("SEARCH"); break;</span>
+        default: break;
+    }
+<span style = "background-color:#fdd">    return method;
+}</span>
+
+void parse_http_headers(const HTTP_REQUEST_HEADERS&amp; headers, http::http_headers&amp; msgHeaders)
+<span style = "background-color:#fdd">{</span>
+    //
+    // This is weird for the 'KnownHeaders' but there is no way I can find with the HTTP Server API
+    // to get all the raw headers. The known ones are stored in an array index by a HTTP Server API
+    // enumeration.
+    //
+    // TFS 354587 As a perf optimization we could parse the headers from Windows on demand in the
+    //      http_header class itself.
+<span style = "background-color:#fdd">    for (USHORT i = 0; i &lt; headers.UnknownHeaderCount; ++i)</span>
+    {
+<span style = "background-color:#fdd">        utf16string unknown_header_name;
+        char_to_wstring(unknown_header_name, headers.pUnknownHeaders[i].pName);</span>
+
+        // header value can be empty
+<span style = "background-color:#fdd">        if (headers.pUnknownHeaders[i].RawValueLength &gt; 0)</span>
+        {
+<span style = "background-color:#fdd">            msgHeaders.add(unknown_header_name,</span>
+                           utility::conversions::to_utf16string(headers.pUnknownHeaders[i].pRawValue));
+<span style = "background-color:#fdd">        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            msgHeaders[unknown_header_name].clear();</span>
+        }
+<span style = "background-color:#fdd">    }
+    for (int i = 0; i &lt; HttpHeaderMaximum; ++i)</span>
+    {
+<span style = "background-color:#fdd">        if (headers.KnownHeaders[i].RawValueLength &gt; 0)</span>
+        {
+<span style = "background-color:#fdd">            msgHeaders.add(HttpServerAPIRequestKnownHeaders[i],</span>
+                           utility::conversions::to_utf16string(headers.KnownHeaders[i].pRawValue));
+        }
+<span style = "background-color:#fdd">    }
+}</span>
+
+http_windows_server::http_windows_server()
+<span style = "background-color:#dfd">{
+    HTTPAPI_VERSION httpApiVersion = HTTPAPI_VERSION_2;
+    HttpInitialize(httpApiVersion, HTTP_INITIALIZE_SERVER, NULL);
+}</span>
+
+<span style = "background-color:#dfd">http_windows_server::~http_windows_server() { HttpTerminate(HTTP_INITIALIZE_SERVER, NULL); }</span>
+
+pplx::task&lt;void&gt; http_windows_server::register_listener(
+    _In_ web::http::experimental::listener::details::http_listener_impl* pListener)
+<span style = "background-color:#dfd">{</span>
+    unsigned long errorCode;
+
+    // Create a url group for this listener.
+    HTTP_URL_GROUP_ID urlGroupId;
+<span style = "background-color:#dfd">    errorCode = HttpCreateUrlGroup(m_serverSessionId, &amp;urlGroupId, 0);
+    if (errorCode != NO_ERROR)</span>
+    {
+<span style = "background-color:#fdd">        return pplx::task_from_exception&lt;void&gt;(http_exception(errorCode));</span>
+    }
+
+    // Add listener's URI to the new group.
+<span style = "background-color:#dfd">    http::uri u = pListener-&gt;uri();
+    if (u.is_port_default())</span>
+    {
+        // Windows HTTP Server API has issues when the port isn't set to 80 here -- it expects a url prefix string
+        // which always includes the port number
+        // http://msdn.microsoft.com/en-us/library/windows/desktop/aa364698(v=vs.85).aspx
+<span style = "background-color:#fdd">        http::uri_builder builder(u);
+        builder.set_port(80);
+        u = builder.to_uri();
+    }</span>
+
+    // Windows HTTP Server API will not accept a uri with an empty path, it must have a '/'.
+    // Windows HTTP Server API will only accept decoded uri strings.
+<span style = "background-color:#dfd">    utility::string_t host_uri = http::uri::decode(u.to_string());
+    if (host_uri.back() != U('/') &amp;&amp; u.query().empty() &amp;&amp; u.fragment().empty())</span>
+    {
+<span style = "background-color:#dfd">        host_uri.push_back(U('/'));</span>
+    }
+
+    // inside here we check for a few specific error types that know about
+    // there may be more possibilities for windows to return a different error
+<span style = "background-color:#dfd">    errorCode = HttpAddUrlToUrlGroup(urlGroupId, host_uri.c_str(), (HTTP_URL_CONTEXT)pListener, 0);
+    if (errorCode)</span>
+    {
+<span style = "background-color:#fdd">        HttpCloseUrlGroup(urlGroupId);
+        if (errorCode == ERROR_ALREADY_EXISTS || errorCode == ERROR_SHARING_VIOLATION)</span>
+        {
+<span style = "background-color:#fdd">            return pplx::task_from_exception&lt;void&gt;(http_exception(</span>
+                errorCode, _XPLATSTR("Address '") + pListener-&gt;uri().to_string() + _XPLATSTR("' is already in use")));
+<span style = "background-color:#fdd">        }
+        else if (errorCode == ERROR_ACCESS_DENIED)</span>
+        {
+<span style = "background-color:#fdd">            return pplx::task_from_exception&lt;void&gt;(</span>
+                http_exception(errorCode,
+                               _XPLATSTR("Access denied: attempting to add Address '") + pListener-&gt;uri().to_string() +
+                                   _XPLATSTR("'. Run as administrator to listen on an hostname other ")
+                                       _XPLATSTR("than localhost, or to listen on port 80.")));
+<span style = "background-color:#fdd">        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            return pplx::task_from_exception&lt;void&gt;(</span>
+                http_exception(errorCode, _XPLATSTR("Error adding url to url group")));
+        }
+    }
+
+    // Set timeouts.
+    HTTP_TIMEOUT_LIMIT_INFO timeouts;
+<span style = "background-color:#dfd">    const USHORT secs = static_cast&lt;USHORT&gt;(pListener-&gt;configuration().timeout().count());
+    timeouts.EntityBody = secs;
+    timeouts.DrainEntityBody = secs;
+    timeouts.RequestQueue = secs;
+    timeouts.IdleConnection = secs;
+    timeouts.HeaderWait = secs;
+    timeouts.Flags.Present = 1;
+    errorCode =</span>
+        HttpSetUrlGroupProperty(urlGroupId, HttpServerTimeoutsProperty, &amp;timeouts, sizeof(HTTP_TIMEOUT_LIMIT_INFO));
+<span style = "background-color:#dfd">    if (errorCode)</span>
+    {
+<span style = "background-color:#fdd">        HttpCloseUrlGroup(urlGroupId);
+        return pplx::task_from_exception&lt;void&gt;(http_exception(errorCode));</span>
+    }
+
+    // Add listener registration.
+    {
+<span style = "background-color:#dfd">        pplx::extensibility::scoped_rw_lock_t lock(_M_listenersLock);
+        if (_M_registeredListeners.find(pListener) != _M_registeredListeners.end())</span>
+        {
+<span style = "background-color:#fdd">            HttpCloseUrlGroup(urlGroupId);
+            throw std::invalid_argument("Error: http_listener is already registered");</span>
+        }
+<span style = "background-color:#dfd">        _M_registeredListeners[pListener] =</span>
+            std::unique_ptr&lt;listener_registration&gt;(new listener_registration(urlGroupId));
+<span style = "background-color:#dfd">    }</span>
+
+    // Associate Url group with request queue.
+    HTTP_BINDING_INFO bindingInfo;
+<span style = "background-color:#dfd">    bindingInfo.RequestQueueHandle = m_hRequestQueue;
+    bindingInfo.Flags.Present = 1;
+    errorCode = HttpSetUrlGroupProperty(urlGroupId, HttpServerBindingProperty, &amp;bindingInfo, sizeof(HTTP_BINDING_INFO));
+    if (errorCode)</span>
+    {
+<span style = "background-color:#fdd">        HttpCloseUrlGroup(urlGroupId);
+        return pplx::task_from_exception&lt;void&gt;(http_exception(errorCode));</span>
+    }
+
+<span style = "background-color:#dfd">    return pplx::task_from_result();
+}</span>
+
+pplx::task&lt;void&gt; http_windows_server::unregister_listener(
+    _In_ web::http::experimental::listener::details::http_listener_impl* pListener)
+<span style = "background-color:#dfd">{
+    return pplx::create_task([=]() {</span>
+        // First remove listener registration.
+<span style = "background-color:#dfd">        std::unique_ptr&lt;listener_registration&gt; registration;</span>
+        {
+<span style = "background-color:#dfd">            pplx::extensibility::scoped_rw_lock_t lock(_M_listenersLock);
+            registration = std::move(_M_registeredListeners[pListener]);
+            _M_registeredListeners[pListener] = nullptr;
+            _M_registeredListeners.erase(pListener);
+        }</span>
+
+        // Then take the listener write lock to make sure there are no calls into the listener's
+        // request handler.
+        {
+<span style = "background-color:#dfd">            pplx::extensibility::scoped_rw_lock_t lock(registration-&gt;m_requestHandlerLock);
+        }</span>
+
+        // Next close Url group, no need to remove individual Urls.
+<span style = "background-color:#dfd">        const unsigned long error_code = HttpCloseUrlGroup(registration-&gt;m_urlGroupId);
+        if (error_code != NO_ERROR)</span>
+        {
+<span style = "background-color:#fdd">            throw http_exception(error_code);</span>
+        }
+<span style = "background-color:#dfd">    });
+}</span>
+
+pplx::task&lt;void&gt; http_windows_server::start()
+<span style = "background-color:#dfd">{</span>
+    // Initialize data.
+<span style = "background-color:#dfd">    m_serverSessionId = 0;
+    m_hRequestQueue = nullptr;
+    m_threadpool_io = nullptr;
+    m_numOutstandingRequests = 0;
+    m_zeroOutstandingRequests.set();</span>
+
+    // Open server session.
+<span style = "background-color:#dfd">    HTTPAPI_VERSION httpApiVersion = HTTPAPI_VERSION_2;
+    ULONG errorCode = HttpCreateServerSession(httpApiVersion, &amp;m_serverSessionId, 0);
+    if (errorCode)</span>
+    {
+<span style = "background-color:#fdd">        return pplx::task_from_exception&lt;void&gt;(http_exception(errorCode));</span>
+    }
+
+    // Create request queue.
+<span style = "background-color:#dfd">    errorCode = HttpCreateRequestQueue(httpApiVersion, NULL, NULL, NULL, &amp;m_hRequestQueue);
+    if (errorCode)</span>
+    {
+<span style = "background-color:#fdd">        return pplx::task_from_exception&lt;void&gt;(http_exception(errorCode));</span>
+    }
+
+    // Create and start ThreadPool I/O so we can process asynchronous I/O.
+<span style = "background-color:#dfd">    m_threadpool_io = CreateThreadpoolIo(m_hRequestQueue, &amp;http_overlapped::io_completion_callback, NULL, NULL);
+    if (m_threadpool_io == nullptr)</span>
+    {
+<span style = "background-color:#fdd">        return pplx::task_from_exception&lt;void&gt;(http_exception(errorCode));</span>
+    }
+
+    // Start request receiving task.
+<span style = "background-color:#dfd">    m_receivingTask = pplx::create_task([this]() { receive_requests(); });</span>
+
+<span style = "background-color:#dfd">    return pplx::task_from_result();
+}</span>
+
+pplx::task&lt;void&gt; http_windows_server::stop()
+<span style = "background-color:#dfd">{</span>
+    // Shutdown request queue.
+<span style = "background-color:#dfd">    if (m_hRequestQueue != nullptr)</span>
+    {
+<span style = "background-color:#dfd">        HttpShutdownRequestQueue(m_hRequestQueue);
+        m_receivingTask.wait();</span>
+
+        // Wait for all requests to be finished processing.
+<span style = "background-color:#dfd">        m_zeroOutstandingRequests.wait();</span>
+
+<span style = "background-color:#dfd">        HttpCloseRequestQueue(m_hRequestQueue);</span>
+    }
+
+    // Release resources.
+<span style = "background-color:#dfd">    if (m_serverSessionId != 0)</span>
+    {
+<span style = "background-color:#dfd">        HttpCloseServerSession(m_serverSessionId);</span>
+    }
+<span style = "background-color:#dfd">    if (m_threadpool_io != nullptr)</span>
+    {
+<span style = "background-color:#dfd">        CloseThreadpoolIo(m_threadpool_io);
+        m_threadpool_io = nullptr;</span>
+    }
+
+<span style = "background-color:#dfd">    return pplx::task_from_result();
+}</span>
+
+void http_windows_server::receive_requests()
+<span style = "background-color:#dfd">{</span>
+    HTTP_REQUEST p_request;
+    ULONG bytes_received;
+
+    // Oversubscribe since this is a blocking call and we don't want to count
+    // towards the concurrency runtime's thread count. A more proper fix
+    // would be to use Overlapped I/O and asynchronously call HttpReceiveHttpRequest.
+    // This requires additional work to be careful synchronizing with the listener
+    // shutdown. This is much easier especially given the http_listener is 'experimental'
+    // and with VS2015 PPL tasks run on the threadpool.
+#if _MSC_VER &lt; 1900
+    concurrency::Context::Oversubscribe(true);
+#endif
+    for (;;)
+    {
+<span style = "background-color:#dfd">        unsigned long error_code = HttpReceiveHttpRequest(</span>
+            m_hRequestQueue, HTTP_NULL_ID, 0, &amp;p_request, sizeof(HTTP_REQUEST), &amp;bytes_received, 0);
+
+<span style = "background-color:#dfd">        if (error_code != NO_ERROR &amp;&amp; error_code != ERROR_MORE_DATA)</span>
+        {
+<span style = "background-color:#dfd">            break;</span>
+        }
+
+        // Start processing the request
+<span style = "background-color:#fdd">        auto pContext = new windows_request_context();
+        auto pRequestContext = std::unique_ptr&lt;_http_server_context&gt;(pContext);
+        http_request msg = http_request::_create_request(std::move(pRequestContext));
+        pContext-&gt;async_process_request(p_request.RequestId, msg, bytes_received);
+    }</span>
+#if _MSC_VER &lt; 1900
+    concurrency::Context::Oversubscribe(false);
+#endif
+<span style = "background-color:#dfd">}</span>
+
+pplx::task&lt;void&gt; http_windows_server::respond(http::http_response response)
+<span style = "background-color:#fdd">{
+    windows_request_context* p_context = static_cast&lt;windows_request_context*&gt;(response._get_server_context());
+    return pplx::create_task(p_context-&gt;m_response_completed);
+}</span>
+
+windows_request_context::windows_request_context()
+<span style = "background-color:#fdd">    : m_sending_in_chunks(false), m_transfer_encoding(false), m_remaining_to_write(0)
+{
+    auto* pServer = static_cast&lt;http_windows_server*&gt;(http_server_api::server_api());
+    if (++pServer-&gt;m_numOutstandingRequests == 1)</span>
+    {
+<span style = "background-color:#fdd">        pServer-&gt;m_zeroOutstandingRequests.reset();</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+windows_request_context::~windows_request_context()
+<span style = "background-color:#fdd">{</span>
+    // Unfortunately have to work around a ppl task_completion_event bug that can cause AVs.
+    // Bug is that task_completion_event accesses internal state after setting.
+    // Workaround is to use a lock incurring additional synchronization, if can acquire
+    // the lock then setting of the event has completed.
+<span style = "background-color:#fdd">    std::lock_guard&lt;std::mutex&gt; lock(m_responseCompletedLock);</span>
+
+    // Add a task-based continuation so no exceptions thrown from the task go 'unobserved'.
+<span style = "background-color:#fdd">    pplx::create_task(m_response_completed).then([](pplx::task&lt;void&gt; t) {</span>
+        try
+        {
+<span style = "background-color:#fdd">            t.wait();</span>
+        }
+        catch (...)
+<span style = "background-color:#fdd">        {
+        }
+    });</span>
+
+<span style = "background-color:#fdd">    auto* pServer = static_cast&lt;http_windows_server*&gt;(http_server_api::server_api());
+    if (--pServer-&gt;m_numOutstandingRequests == 0)</span>
+    {
+<span style = "background-color:#fdd">        pServer-&gt;m_zeroOutstandingRequests.set();</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+void windows_request_context::async_process_request(HTTP_REQUEST_ID request_id,
+                                                    http_request msg,
+                                                    const unsigned long headers_size)
+<span style = "background-color:#fdd">{
+    auto* pServer = static_cast&lt;http_windows_server*&gt;(http_server_api::server_api());
+    m_request_id = request_id;</span>
+
+    // Save the http_request as the member of windows_request_context for the callback use.
+<span style = "background-color:#fdd">    m_msg = msg;</span>
+
+<span style = "background-color:#fdd">    m_request_buffer =</span>
+        std::unique_ptr&lt;unsigned char[]&gt;(new unsigned char[msl::safeint3::SafeInt&lt;unsigned long&gt;(headers_size)]);
+<span style = "background-color:#fdd">    m_request = (HTTP_REQUEST*)m_request_buffer.get();</span>
+
+    // The read_headers_io_completion callback function.
+<span style = "background-color:#fdd">    m_overlapped.set_http_io_completion(
+        [this](DWORD error, DWORD nBytes) { read_headers_io_completion(error, nBytes); });</span>
+
+<span style = "background-color:#fdd">    StartThreadpoolIo(pServer-&gt;m_threadpool_io);</span>
+
+<span style = "background-color:#fdd">    const unsigned long error_code =</span>
+        HttpReceiveHttpRequest(pServer-&gt;m_hRequestQueue, m_request_id, 0, m_request, headers_size, NULL, &amp;m_overlapped);
+
+<span style = "background-color:#fdd">    if (error_code != NO_ERROR &amp;&amp; error_code != ERROR_IO_PENDING)</span>
+    {
+<span style = "background-color:#fdd">        CancelThreadpoolIo(pServer-&gt;m_threadpool_io);
+        m_msg.reply(status_codes::InternalError);
+        init_response_callbacks(ShouldWaitForBody::DontWait);</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+/// &lt;summary&gt;
+///  The read request headers completion callback function.
+/// &lt;/summary&gt;
+void windows_request_context::read_headers_io_completion(DWORD error_code, DWORD)
+<span style = "background-color:#fdd">{
+    if (error_code != NO_ERROR)</span>
+    {
+<span style = "background-color:#fdd">        m_msg.reply(status_codes::InternalError);
+        init_response_callbacks(ShouldWaitForBody::DontWait);
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        utility::string_t header;
+        std::string badRequestMsg;</span>
+        try
+        {
+            // HTTP_REQUEST::pRawUrl contains the raw URI that came across the wire.
+            // Use this instead since the CookedUrl is a mess of the URI components
+            // some encoded and some not.
+<span style = "background-color:#fdd">            m_msg.set_request_uri(utf8_to_utf16(m_request-&gt;pRawUrl));</span>
+        }
+        catch (const uri_exception&amp; e)
+<span style = "background-color:#fdd">        {</span>
+            // If an exception occurred, finish processing the request below but
+            // respond with BadRequest instead of dispatching to the user's
+            // request handlers.
+<span style = "background-color:#fdd">            badRequestMsg = e.what();
+        }
+        m_msg.set_method(parse_request_method(m_request));
+        parse_http_headers(m_request-&gt;Headers, m_msg.headers());</span>
+
+        // See if we need to compress or decompress the incoming request body, and if so, prepare for it
+        try
+        {
+<span style = "background-color:#fdd">            if (m_msg.headers().match(header_names::transfer_encoding, header))</span>
+            {
+                try
+                {
+<span style = "background-color:#fdd">                    m_decompressor = http::compression::details::get_decompressor_from_header(</span>
+                        header, http::compression::details::header_types::transfer_encoding);
+                }
+                catch (http_exception&amp; e)
+<span style = "background-color:#fdd">                {
+                    if (e.error_code().value() != status_codes::NotImplemented)</span>
+                    {
+                        // Something is wrong with the header; we'll fail here
+<span style = "background-color:#fdd">                        throw;</span>
+                    }
+                    // We could not find a decompressor; we'll see if the user's handler adds one later
+<span style = "background-color:#fdd">                    m_decompress_header_type = http::compression::details::header_types::transfer_encoding;
+                    m_decompress_header = std::move(header);
+                }
+            }
+            else if (m_msg.headers().match(header_names::content_encoding, header))</span>
+            {
+                try
+                {
+<span style = "background-color:#fdd">                    m_decompressor = http::compression::details::get_decompressor_from_header(</span>
+                        header, http::compression::details::header_types::content_encoding);
+                }
+                catch (http_exception&amp; e)
+<span style = "background-color:#fdd">                {
+                    if (e.error_code().value() != status_codes::UnsupportedMediaType)</span>
+                    {
+                        // Something is wrong with the header; we'll fail here
+<span style = "background-color:#fdd">                        throw;</span>
+                    }
+                    // We could not find a decompressor; we'll see if the user's handler adds one later
+<span style = "background-color:#fdd">                    m_decompress_header_type = http::compression::details::header_types::content_encoding;
+                    m_decompress_header = std::move(header);
+                }
+            }
+            else if (m_msg.headers().match(header_names::te, header))</span>
+            {
+                // Note that init_response_headers throws away m_msg, so we need to set our compressor here.  If
+                // the header contains all unsupported algorithms, it's not an error -- we just won't compress
+<span style = "background-color:#fdd">                m_compressor = http::compression::details::get_compressor_from_header(</span>
+                    header, http::compression::details::header_types::te);
+<span style = "background-color:#fdd">            }
+            else if (m_msg.headers().match(header_names::accept_encoding, header))</span>
+            {
+                // This would require pre-compression of the input stream, since we MUST send Content-Length, so we'll
+                // (legally) ignore it
+                // m_compressor = http::compression::details::get_compressor_from_header(header,
+                // http::compression::details::header_types:accept_encoding);
+            }
+        }
+        catch (http_exception&amp; e)
+<span style = "background-color:#fdd">        {
+            if (badRequestMsg.empty())</span>
+            {
+                // Respond with a reasonable message
+<span style = "background-color:#fdd">                badRequestMsg = e.what();</span>
+            }
+<span style = "background-color:#fdd">        }</span>
+
+<span style = "background-color:#fdd">        m_msg._get_impl()-&gt;_set_http_version(</span>
+            {(uint8_t)m_request-&gt;Version.MajorVersion, (uint8_t)m_request-&gt;Version.MinorVersion});
+
+        // Retrieve the remote IP address
+<span style = "background-color:#fdd">        std::vector&lt;wchar_t&gt; remoteAddressBuffer(50);</span>
+
+<span style = "background-color:#fdd">        if (m_request-&gt;Address.pRemoteAddress-&gt;sa_family == AF_INET6)</span>
+        {
+<span style = "background-color:#fdd">            auto inAddr = &amp;reinterpret_cast&lt;SOCKADDR_IN6*&gt;(m_request-&gt;Address.pRemoteAddress)-&gt;sin6_addr;
+            InetNtopW(AF_INET6, inAddr, &amp;remoteAddressBuffer[0], remoteAddressBuffer.size());
+        }
+        else if (m_request-&gt;Address.pRemoteAddress-&gt;sa_family == AF_INET)</span>
+        {
+<span style = "background-color:#fdd">            auto inAddr = &amp;reinterpret_cast&lt;SOCKADDR_IN*&gt;(m_request-&gt;Address.pRemoteAddress)-&gt;sin_addr;
+            InetNtopW(AF_INET, inAddr, &amp;remoteAddressBuffer[0], remoteAddressBuffer.size());
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            remoteAddressBuffer[0] = L'\0';</span>
+        }
+
+<span style = "background-color:#fdd">        m_msg._get_impl()-&gt;_set_remote_address(&amp;remoteAddressBuffer[0]);</span>
+
+        // Start reading in body from the network.
+<span style = "background-color:#fdd">        m_msg._get_impl()-&gt;_prepare_to_receive_data();
+        read_request_body_chunk();</span>
+
+        // Dispatch request to the http_listener.
+<span style = "background-color:#fdd">        if (badRequestMsg.empty())</span>
+        {
+<span style = "background-color:#fdd">            dispatch_request_to_listener(</span>
+                (web::http::experimental::listener::details::http_listener_impl*)m_request-&gt;UrlContext);
+<span style = "background-color:#fdd">        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            m_msg.reply(status_codes::BadRequest, badRequestMsg);</span>
+
+            // Even though we have a bad request, we should wait for the body otherwise we risk racing over m_overlapped
+<span style = "background-color:#fdd">            init_response_callbacks(ShouldWaitForBody::Wait);</span>
+        }
+<span style = "background-color:#fdd">    }
+}</span>
+
+void windows_request_context::read_request_body_chunk()
+<span style = "background-color:#fdd">{
+    auto* pServer = static_cast&lt;http_windows_server*&gt;(http_server_api::server_api());</span>
+    PVOID body;
+
+    // The read_body_io_completion callback function
+<span style = "background-color:#fdd">    m_overlapped.set_http_io_completion([this](DWORD error, DWORD nBytes) { read_body_io_completion(error, nBytes); });</span>
+
+<span style = "background-color:#fdd">    auto request_body_buf = m_msg._get_impl()-&gt;outstream().streambuf();
+    if (!m_decompressor)</span>
+    {
+<span style = "background-color:#fdd">        body = request_body_buf.alloc(CHUNK_SIZE);
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        if (m_compress_buffer.size() &lt; CHUNK_SIZE)</span>
+        {
+<span style = "background-color:#fdd">            m_compress_buffer.resize(CHUNK_SIZE);</span>
+        }
+<span style = "background-color:#fdd">        body = m_compress_buffer.data();</span>
+    }
+
+    // Once we allow users to set the output stream the following assert could fail.
+    // At that time we would need compensation code that would allocate a buffer from the heap instead.
+<span style = "background-color:#fdd">    _ASSERTE(body != nullptr);</span>
+
+<span style = "background-color:#fdd">    StartThreadpoolIo(pServer-&gt;m_threadpool_io);
+    const ULONG error_code = HttpReceiveRequestEntityBody(pServer-&gt;m_hRequestQueue,</span>
+                                                          m_request_id,
+                                                          HTTP_RECEIVE_REQUEST_ENTITY_BODY_FLAG_FILL_BUFFER,
+                                                          (PVOID)body,
+                                                          CHUNK_SIZE,
+                                                          NULL,
+                                                          &amp;m_overlapped);
+
+<span style = "background-color:#fdd">    if (error_code != ERROR_IO_PENDING &amp;&amp; error_code != NO_ERROR)</span>
+    {
+        // There was no more data to read.
+<span style = "background-color:#fdd">        CancelThreadpoolIo(pServer-&gt;m_threadpool_io);
+        if (!m_decompressor)</span>
+        {
+<span style = "background-color:#fdd">            request_body_buf.commit(0);</span>
+        }
+<span style = "background-color:#fdd">        if (error_code == ERROR_HANDLE_EOF)</span>
+        {
+<span style = "background-color:#fdd">            m_msg._get_impl()-&gt;_complete(request_body_buf.in_avail());
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            m_msg._get_impl()-&gt;_complete(0, std::make_exception_ptr(http_exception(error_code)));</span>
+        }
+    }
+<span style = "background-color:#fdd">}</span>
+
+/// &lt;summary&gt;
+///  The read request body completion callback function.
+/// &lt;/summary&gt;
+void windows_request_context::read_body_io_completion(DWORD error_code, DWORD bytes_read)
+<span style = "background-color:#fdd">{
+    auto request_body_buf = m_msg._get_impl()-&gt;outstream().streambuf();</span>
+
+<span style = "background-color:#fdd">    if (error_code == NO_ERROR)</span>
+    {
+<span style = "background-color:#fdd">        if (!m_decompressor)</span>
+        {
+<span style = "background-color:#fdd">            request_body_buf.commit(bytes_read);
+        }</span>
+        else
+        {
+            size_t got;
+            size_t used;
+<span style = "background-color:#fdd">            size_t total_used = 0;</span>
+
+            do
+            {
+<span style = "background-color:#fdd">                auto body = request_body_buf.alloc(CHUNK_SIZE);</span>
+                try
+                {
+                    bool done_unused;
+<span style = "background-color:#fdd">                    got = m_decompressor-&gt;decompress(m_compress_buffer.data() + total_used,</span>
+                                                     bytes_read - total_used,
+                                                     body,
+                                                     CHUNK_SIZE,
+                                                     http::compression::operation_hint::has_more,
+                                                     used,
+                                                     done_unused);
+                }
+                catch (...)
+<span style = "background-color:#fdd">                {
+                    request_body_buf.commit(0);
+                    m_msg._get_impl()-&gt;_complete(0, std::current_exception());
+                    return;
+                }
+                request_body_buf.commit(got);
+                total_used += used;
+            } while (total_used != bytes_read);</span>
+        }
+<span style = "background-color:#fdd">        read_request_body_chunk();
+    }
+    else if (error_code == ERROR_HANDLE_EOF)</span>
+    {
+<span style = "background-color:#fdd">        if (!m_decompressor)</span>
+        {
+<span style = "background-color:#fdd">            request_body_buf.commit(0);</span>
+        }
+<span style = "background-color:#fdd">        m_msg._get_impl()-&gt;_complete(request_body_buf.in_avail());
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        if (!m_decompressor)</span>
+        {
+<span style = "background-color:#fdd">            request_body_buf.commit(0);</span>
+        }
+<span style = "background-color:#fdd">        m_msg._get_impl()-&gt;_complete(0, std::make_exception_ptr(http_exception(error_code)));</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+void windows_request_context::dispatch_request_to_listener(
+    _In_ web::http::experimental::listener::details::http_listener_impl* pListener)
+<span style = "background-color:#fdd">{
+    m_msg._set_listener_path(pListener-&gt;uri().path());</span>
+
+    // Save http_request copy to dispatch to user's handler in case content_ready() completes before.
+<span style = "background-color:#fdd">    http_request request = m_msg;</span>
+
+<span style = "background-color:#fdd">    init_response_callbacks(ShouldWaitForBody::Wait);</span>
+
+    // Look up the lock for the http_listener.
+<span style = "background-color:#fdd">    auto* pServer = static_cast&lt;http_windows_server*&gt;(http_server_api::server_api());</span>
+    pplx::extensibility::reader_writer_lock_t* pListenerLock;
+    {
+<span style = "background-color:#fdd">        pplx::extensibility::scoped_read_lock_t lock(pServer-&gt;_M_listenersLock);</span>
+
+        // It is possible the listener could have unregistered.
+<span style = "background-color:#fdd">        if (pServer-&gt;_M_registeredListeners.find(pListener) == pServer-&gt;_M_registeredListeners.end())</span>
+        {
+<span style = "background-color:#fdd">            request.reply(status_codes::NotFound);
+            return;</span>
+        }
+<span style = "background-color:#fdd">        pListenerLock = &amp;pServer-&gt;_M_registeredListeners[pListener]-&gt;m_requestHandlerLock;</span>
+
+        // We need to acquire the listener's lock before releasing the registered listeners lock.
+        // But we don't need to hold the registered listeners lock when calling into the user's code.
+<span style = "background-color:#fdd">        pListenerLock-&gt;lock_read();
+    }</span>
+
+    try
+    {
+<span style = "background-color:#fdd">        pListener-&gt;handle_request(request);
+        pListenerLock-&gt;unlock();</span>
+    }
+    catch (...)
+<span style = "background-color:#fdd">    {
+        pListenerLock-&gt;unlock();
+        request._reply_if_not_already(status_codes::InternalError);
+    }
+}</span>
+
+void windows_request_context::init_response_callbacks(ShouldWaitForBody shouldWait)
+<span style = "background-color:#fdd">{</span>
+    // Use a proxy event so we're not causing a circular reference between the http_request and the response task
+<span style = "background-color:#fdd">    pplx::task_completion_event&lt;void&gt; proxy_content_ready;</span>
+
+<span style = "background-color:#fdd">    auto content_ready_task = m_msg.content_ready();
+    auto get_response_task = m_msg.get_response();</span>
+
+<span style = "background-color:#fdd">    content_ready_task.then([this, proxy_content_ready](pplx::task&lt;http_request&gt; requestBody) {</span>
+        // If an exception occurred while processing the body then there is no reason
+        // to even try sending the response, just re-surface the same exception.
+        try
+        {
+<span style = "background-color:#fdd">            requestBody.wait();</span>
+        }
+        catch (...)
+<span style = "background-color:#fdd">        {</span>
+            // Copy the request reference in case it's the last
+<span style = "background-color:#fdd">            http_request request = m_msg;
+            m_msg = http_request();
+            auto exc = std::current_exception();
+            proxy_content_ready.set_exception(exc);
+            cancel_request(exc);
+            return;
+        }</span>
+
+        // At this point the user entirely controls the lifetime of the http_request.
+<span style = "background-color:#fdd">        m_msg = http_request();
+        proxy_content_ready.set();
+    });</span>
+
+<span style = "background-color:#fdd">    get_response_task.then([this, proxy_content_ready](pplx::task&lt;http::http_response&gt; responseTask) {</span>
+        // Don't let an exception from sending the response bring down the server.
+        try
+        {
+<span style = "background-color:#fdd">            m_response = responseTask.get();</span>
+        }
+        catch (const pplx::task_canceled&amp;)
+<span style = "background-color:#fdd">        {</span>
+            // This means the user didn't respond to the request, allowing the
+            // http_request instance to be destroyed. There is nothing to do then
+            // so don't send a response.
+            // Avoid unobserved exception handler
+<span style = "background-color:#fdd">            pplx::create_task(proxy_content_ready).then([](pplx::task&lt;void&gt; t) {</span>
+                try
+                {
+<span style = "background-color:#fdd">                    t.wait();</span>
+                }
+                catch (...)
+<span style = "background-color:#fdd">                {
+                }
+            });
+            return;
+        }</span>
+        catch (...)
+<span style = "background-color:#fdd">        {</span>
+            // Should never get here, if we do there's a chance that a circular reference will cause leaks,
+            // or worse, undefined behaviour as we don't know who owns 'this' anymore
+<span style = "background-color:#fdd">            _ASSERTE(false);
+            m_response = http::http_response(status_codes::InternalError);
+        }</span>
+
+<span style = "background-color:#fdd">        pplx::create_task(m_response_completed).then([this](pplx::task&lt;void&gt; t) {</span>
+            // After response is sent, break circular reference between http_response and the request context.
+            // Otherwise http_listener::close() can hang.
+<span style = "background-color:#fdd">            m_response._get_impl()-&gt;_set_server_context(nullptr);
+        });</span>
+
+        // Wait until the content download finished before replying because m_overlapped is reused,
+        // and we don't want to delete 'this' if the body is still downloading
+<span style = "background-color:#fdd">        pplx::create_task(proxy_content_ready)
+            .then([this](pplx::task&lt;void&gt; t) {</span>
+                try
+                {
+<span style = "background-color:#fdd">                    t.wait();
+                    async_process_response();</span>
+                }
+                catch (...)
+<span style = "background-color:#fdd">                {
+                }
+            })</span>
+            .wait();
+<span style = "background-color:#fdd">    });</span>
+
+<span style = "background-color:#fdd">    if (shouldWait == ShouldWaitForBody::DontWait)</span>
+    {
+        // Fake a body completion so the content_ready() task doesn't keep the http_request alive forever
+<span style = "background-color:#fdd">        m_msg._get_impl()-&gt;_complete(0);</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+void windows_request_context::async_process_response()
+<span style = "background-color:#fdd">{
+    auto* pServer = static_cast&lt;http_windows_server*&gt;(http_server_api::server_api());</span>
+
+    HTTP_RESPONSE win_api_response;
+<span style = "background-color:#fdd">    ZeroMemory(&amp;win_api_response, sizeof(win_api_response));
+    win_api_response.StatusCode = m_response.status_code();
+    const std::string reason = utf16_to_utf8(m_response.reason_phrase());
+    win_api_response.pReason = reason.c_str();
+    win_api_response.ReasonLength = (USHORT)reason.size();</span>
+    size_t content_length;
+
+<span style = "background-color:#fdd">    if (m_compressor || m_response._get_impl()-&gt;compressor())</span>
+    {
+<span style = "background-color:#fdd">        if (m_response.headers().has(header_names::content_length))</span>
+        {
+            // Content-Length should not be sent with Transfer-Encoding
+<span style = "background-color:#fdd">            m_response.headers().remove(header_names::content_length);</span>
+        }
+<span style = "background-color:#fdd">        if (!m_response._get_impl()-&gt;compressor())</span>
+        {
+            // Temporarily move the compressor to the response, so _get_content_length() will honor it
+<span style = "background-color:#fdd">            m_response._get_impl()-&gt;set_compressor(std::move(m_compressor));</span>
+        } // else one was already set from a callback, and we'll (blindly) use it
+<span style = "background-color:#fdd">        content_length = m_response._get_impl()-&gt;_get_content_length_and_set_compression();
+        m_compressor = std::move(m_response._get_impl()-&gt;compressor());
+        m_response._get_impl()-&gt;set_compressor(nullptr);
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        if (!m_decompress_header.empty())</span>
+        {
+<span style = "background-color:#fdd">            auto factories = m_response._get_impl()-&gt;decompress_factories();</span>
+            try
+            {
+<span style = "background-color:#fdd">                m_decompressor = http::compression::details::get_decompressor_from_header(</span>
+                    m_decompress_header, m_decompress_header_type, factories);
+<span style = "background-color:#fdd">                m_decompress_header.clear();
+                if (!m_decompressor)</span>
+                {
+<span style = "background-color:#fdd">                    http::status_code code = http::status_codes::NotImplemented;
+                    if (m_decompress_header_type == http::compression::details::header_types::content_encoding)</span>
+                    {
+<span style = "background-color:#fdd">                        code = status_codes::UnsupportedMediaType;</span>
+                    }
+<span style = "background-color:#fdd">                    throw http_exception(code);</span>
+                }
+            }
+            catch (http_exception&amp; e)
+<span style = "background-color:#fdd">            {</span>
+                // No matching decompressor was supplied via callback
+<span style = "background-color:#fdd">                CancelThreadpoolIo(pServer-&gt;m_threadpool_io);
+                cancel_request(std::make_exception_ptr(e));
+                return;
+            }
+        }
+        content_length = m_response._get_impl()-&gt;_get_content_length();</span>
+    }
+
+<span style = "background-color:#fdd">    m_headers = std::unique_ptr&lt;HTTP_UNKNOWN_HEADER[]&gt;(</span>
+        new HTTP_UNKNOWN_HEADER[msl::safeint3::SafeInt&lt;size_t&gt;(m_response.headers().size())]);
+<span style = "background-color:#fdd">    m_headers_buffer.resize(msl::safeint3::SafeInt&lt;size_t&gt;(m_response.headers().size()) * 2);</span>
+
+<span style = "background-color:#fdd">    win_api_response.Headers.UnknownHeaderCount = (USHORT)m_response.headers().size();
+    win_api_response.Headers.pUnknownHeaders = m_headers.get();
+    int headerIndex = 0;
+    for (auto iter = m_response.headers().begin(); iter != m_response.headers().end(); ++iter, ++headerIndex)</span>
+    {
+<span style = "background-color:#fdd">        m_headers_buffer[headerIndex * 2] = utf16_to_utf8(iter-&gt;first);
+        m_headers_buffer[headerIndex * 2 + 1] = utf16_to_utf8(iter-&gt;second);
+        win_api_response.Headers.pUnknownHeaders[headerIndex].NameLength =</span>
+            (USHORT)m_headers_buffer[headerIndex * 2].size();
+<span style = "background-color:#fdd">        win_api_response.Headers.pUnknownHeaders[headerIndex].pName = m_headers_buffer[headerIndex * 2].c_str();
+        win_api_response.Headers.pUnknownHeaders[headerIndex].RawValueLength =</span>
+            (USHORT)m_headers_buffer[headerIndex * 2 + 1].size();
+<span style = "background-color:#fdd">        win_api_response.Headers.pUnknownHeaders[headerIndex].pRawValue = m_headers_buffer[headerIndex * 2 + 1].c_str();
+    }</span>
+
+    // Send response callback function
+<span style = "background-color:#fdd">    m_overlapped.set_http_io_completion(
+        [this](DWORD error, DWORD nBytes) { send_response_io_completion(error, nBytes); });</span>
+
+    // Figure out how to send the entity body of the message.
+<span style = "background-color:#fdd">    if (content_length == 0)</span>
+    {
+        // There's no data. This is easy!
+<span style = "background-color:#fdd">        StartThreadpoolIo(pServer-&gt;m_threadpool_io);
+        const unsigned long error_code = HttpSendHttpResponse(pServer-&gt;m_hRequestQueue,</span>
+                                                              m_request_id,
+                                                              NULL,
+                                                              &amp;win_api_response,
+                                                              NULL,
+                                                              NULL,
+                                                              NULL,
+                                                              NULL,
+                                                              &amp;m_overlapped,
+                                                              NULL);
+
+<span style = "background-color:#fdd">        if (error_code != NO_ERROR &amp;&amp; error_code != ERROR_IO_PENDING)</span>
+        {
+<span style = "background-color:#fdd">            CancelThreadpoolIo(pServer-&gt;m_threadpool_io);
+            cancel_request(std::make_exception_ptr(http_exception(error_code)));</span>
+        }
+
+<span style = "background-color:#fdd">        return;</span>
+    }
+
+    // OK, so we need to chunk it up.
+<span style = "background-color:#fdd">    _ASSERTE(content_length &gt; 0);
+    m_sending_in_chunks = (content_length != (std::numeric_limits&lt;size_t&gt;::max)());
+    m_transfer_encoding = (content_length == (std::numeric_limits&lt;size_t&gt;::max)());
+    m_remaining_to_write = content_length;
+    if (content_length == (std::numeric_limits&lt;size_t&gt;::max)())</span>
+    {
+        // Attempt to figure out the remaining length of the input stream
+<span style = "background-color:#fdd">        m_remaining_to_write = m_response._get_impl()-&gt;_get_stream_length();</span>
+    }
+
+<span style = "background-color:#fdd">    StartThreadpoolIo(pServer-&gt;m_threadpool_io);
+    const unsigned long error_code = HttpSendHttpResponse(pServer-&gt;m_hRequestQueue,</span>
+                                                          m_request_id,
+                                                          HTTP_SEND_RESPONSE_FLAG_MORE_DATA,
+                                                          &amp;win_api_response,
+                                                          NULL,
+                                                          NULL,
+                                                          NULL,
+                                                          NULL,
+                                                          &amp;m_overlapped,
+                                                          NULL);
+
+<span style = "background-color:#fdd">    if (error_code != NO_ERROR &amp;&amp; error_code != ERROR_IO_PENDING)</span>
+    {
+<span style = "background-color:#fdd">        CancelThreadpoolIo(pServer-&gt;m_threadpool_io);
+        cancel_request(std::make_exception_ptr(http_exception(error_code)));</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+/// &lt;summary&gt;
+///  The send response headers completion callback function.
+/// &lt;/summary&gt;
+void windows_request_context::send_response_io_completion(DWORD error_code, DWORD)
+<span style = "background-color:#fdd">{
+    if (error_code != NO_ERROR)</span>
+    {
+<span style = "background-color:#fdd">        cancel_request(std::make_exception_ptr(http_exception(error_code)));
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        transmit_body();</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+// Transmit the response body to the network
+void windows_request_context::transmit_body()
+<span style = "background-color:#fdd">{
+    if (!m_sending_in_chunks &amp;&amp; !m_transfer_encoding)</span>
+    {
+        // We are done sending data.
+<span style = "background-color:#fdd">        std::lock_guard&lt;std::mutex&gt; lock(m_responseCompletedLock);
+        m_response_completed.set();
+        return;</span>
+    }
+
+<span style = "background-color:#fdd">    msl::safeint3::SafeInt&lt;size_t&gt; safeCount = m_remaining_to_write;
+    size_t next_chunk_size = safeCount.Min(CHUNK_SIZE);</span>
+
+    // In both cases here we could perform optimizations to try and use acquire on the streams to avoid an extra copy.
+<span style = "background-color:#fdd">    if (m_sending_in_chunks)</span>
+    {
+<span style = "background-color:#fdd">        m_body_data.resize(CHUNK_SIZE);</span>
+
+<span style = "background-color:#fdd">        streams::rawptr_buffer&lt;unsigned char&gt; buf(&amp;m_body_data[0], next_chunk_size);</span>
+
+<span style = "background-color:#fdd">        m_response.body().read(buf, next_chunk_size).then([this](pplx::task&lt;size_t&gt; op) {
+            size_t bytes_read = 0;</span>
+
+            // If an exception occurs surface the error to user on the server side
+            // and cancel the request so the client sees the error.
+            try
+            {
+<span style = "background-color:#fdd">                bytes_read = op.get();</span>
+            }
+            catch (...)
+<span style = "background-color:#fdd">            {
+                cancel_request(std::current_exception());
+                return;
+            }
+            if (bytes_read == 0)</span>
+            {
+<span style = "background-color:#fdd">                cancel_request(std::make_exception_ptr(</span>
+                    http_exception(_XPLATSTR("Error unexpectedly encountered the end of the response stream early"))));
+<span style = "background-color:#fdd">                return;</span>
+            }
+
+            // Check whether this is the last one to send...
+<span style = "background-color:#fdd">            m_remaining_to_write = m_remaining_to_write - bytes_read;
+            m_sending_in_chunks = (m_remaining_to_write &gt; 0);</span>
+
+<span style = "background-color:#fdd">            send_entity_body(&amp;m_body_data[0], bytes_read);
+        });
+    }</span>
+    else
+    {
+        // We're transfer-encoding...
+<span style = "background-color:#fdd">        if (m_compressor)</span>
+        {
+            // ...and compressing.  For simplicity, we allocate a buffer that's "too large to fail" while compressing.
+<span style = "background-color:#fdd">            const size_t body_data_length = 2 * CHUNK_SIZE + http::details::chunked_encoding::additional_encoding_space;
+            m_body_data.resize(body_data_length);</span>
+
+            // We'll read into a temporary buffer before compressing
+<span style = "background-color:#fdd">            if (m_compress_buffer.capacity() &lt; next_chunk_size)</span>
+            {
+<span style = "background-color:#fdd">                m_compress_buffer.reserve(next_chunk_size);</span>
+            }
+
+<span style = "background-color:#fdd">            streams::rawptr_buffer&lt;unsigned char&gt; buf(m_compress_buffer.data(), next_chunk_size);</span>
+
+<span style = "background-color:#fdd">            m_response.body().read(buf, next_chunk_size).then([this, body_data_length](pplx::task&lt;size_t&gt; op) {
+                size_t bytes_read = 0;</span>
+
+                // If an exception occurs surface the error to user on the server side
+                // and cancel the request so the client sees the error.
+                try
+                {
+<span style = "background-color:#fdd">                    bytes_read = op.get();</span>
+                }
+                catch (...)
+<span style = "background-color:#fdd">                {
+                    cancel_request(std::current_exception());
+                    return;
+                }
+                _ASSERTE(bytes_read &gt;= 0);</span>
+
+                // Compress this chunk; if we read no data, allow the compressor to finalize its stream
+<span style = "background-color:#fdd">                http::compression::operation_hint hint = http::compression::operation_hint::has_more;
+                if (!bytes_read)</span>
+                {
+<span style = "background-color:#fdd">                    hint = http::compression::operation_hint::is_last;</span>
+                }
+<span style = "background-color:#fdd">                m_compressor</span>
+                    -&gt;compress(m_compress_buffer.data(),
+                               bytes_read,
+                               &amp;m_body_data[http::details::chunked_encoding::data_offset],
+                               body_data_length,
+                               hint)
+<span style = "background-color:#fdd">                    .then([this, bytes_read, body_data_length](pplx::task&lt;http::compression::operation_result&gt; op) {</span>
+                        http::compression::operation_result r;
+
+                        try
+                        {
+<span style = "background-color:#fdd">                            r = op.get();</span>
+                        }
+                        catch (...)
+<span style = "background-color:#fdd">                        {
+                            cancel_request(std::current_exception());
+                            return;
+                        }</span>
+
+                        if (r.input_bytes_processed != bytes_read ||
+                            r.output_bytes_produced ==
+<span style = "background-color:#fdd">                                body_data_length - http::details::chunked_encoding::additional_encoding_space ||</span>
+                            r.done != !bytes_read)
+                        {
+                            // We chose our parameters so that compression should
+                            // never overflow body_data_length; fail if it does
+<span style = "background-color:#fdd">                            cancel_request(std::make_exception_ptr(</span>
+                                std::exception("Compressed data exceeds internal buffer size.")));
+<span style = "background-color:#fdd">                            return;</span>
+                        }
+
+                        // Check whether this is the last one to send; note that this is a
+                        // few lines of near-duplicate code with the non-compression path
+<span style = "background-color:#fdd">                        _ASSERTE(bytes_read &lt;= m_remaining_to_write);
+                        m_remaining_to_write -= bytes_read;
+                        m_transfer_encoding = (r.output_bytes_produced &gt; 0);
+                        size_t offset = http::details::chunked_encoding::add_chunked_delimiters(</span>
+                            &amp;m_body_data[0], body_data_length, r.output_bytes_produced);
+<span style = "background-color:#fdd">                        send_entity_body(&amp;m_body_data[offset],</span>
+                                         r.output_bytes_produced +
+                                             http::details::chunked_encoding::additional_encoding_space - offset);
+<span style = "background-color:#fdd">                    });
+            });
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            const size_t body_data_length = CHUNK_SIZE + http::details::chunked_encoding::additional_encoding_space;
+            m_body_data.resize(body_data_length);</span>
+
+<span style = "background-color:#fdd">            streams::rawptr_buffer&lt;unsigned char&gt; buf(&amp;m_body_data[http::details::chunked_encoding::data_offset],</span>
+                                                      body_data_length);
+
+<span style = "background-color:#fdd">            m_response.body().read(buf, next_chunk_size).then([this, body_data_length](pplx::task&lt;size_t&gt; op) {
+                size_t bytes_read = 0;</span>
+
+                // If an exception occurs surface the error to user on the server side
+                // and cancel the request so the client sees the error.
+                try
+                {
+<span style = "background-color:#fdd">                    bytes_read = op.get();</span>
+                }
+                catch (...)
+<span style = "background-color:#fdd">                {
+                    cancel_request(std::current_exception());
+                    return;
+                }</span>
+
+                // Check whether this is the last one to send...
+<span style = "background-color:#fdd">                m_transfer_encoding = (bytes_read &gt; 0);
+                size_t offset = http::details::chunked_encoding::add_chunked_delimiters(</span>
+                    &amp;m_body_data[0], body_data_length, bytes_read);
+
+<span style = "background-color:#fdd">                auto data_length = bytes_read + (http::details::chunked_encoding::additional_encoding_space - offset);
+                send_entity_body(&amp;m_body_data[offset], data_length);
+            });
+        }</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+// Send the body through HTTP.sys
+void windows_request_context::send_entity_body(_In_reads_(data_length) unsigned char* data, _In_ size_t data_length)
+<span style = "background-color:#fdd">{</span>
+    HTTP_DATA_CHUNK dataChunk;
+<span style = "background-color:#fdd">    memset(&amp;dataChunk, 0, sizeof(dataChunk));
+    dataChunk.DataChunkType = HttpDataChunkFromMemory;
+    dataChunk.FromMemory.pBuffer = data;
+    dataChunk.FromMemory.BufferLength = (ULONG)data_length;
+    const bool this_is_the_last_chunk = !m_transfer_encoding &amp;&amp; !m_sending_in_chunks;</span>
+
+    // Send response.
+<span style = "background-color:#fdd">    auto* pServer = static_cast&lt;http_windows_server*&gt;(http_server_api::server_api());</span>
+
+    // Send response body callback function
+<span style = "background-color:#fdd">    m_overlapped.set_http_io_completion(
+        [this](DWORD error, DWORD nBytes) { send_response_body_io_completion(error, nBytes); });</span>
+
+<span style = "background-color:#fdd">    StartThreadpoolIo(pServer-&gt;m_threadpool_io);
+    auto error_code = HttpSendResponseEntityBody(pServer-&gt;m_hRequestQueue,</span>
+                                                 m_request_id,
+                                                 this_is_the_last_chunk ? NULL : HTTP_SEND_RESPONSE_FLAG_MORE_DATA,
+                                                 1,
+                                                 &amp;dataChunk,
+                                                 NULL,
+                                                 NULL,
+                                                 NULL,
+                                                 &amp;m_overlapped,
+                                                 NULL);
+
+<span style = "background-color:#fdd">    if (error_code != NO_ERROR &amp;&amp; error_code != ERROR_IO_PENDING)</span>
+    {
+<span style = "background-color:#fdd">        CancelThreadpoolIo(pServer-&gt;m_threadpool_io);
+        cancel_request(std::make_exception_ptr(http_exception(error_code)));</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+/// &lt;summary&gt;
+///  The send response body completion callback function.
+/// &lt;/summary&gt;
+void windows_request_context::send_response_body_io_completion(DWORD error_code, DWORD)
+<span style = "background-color:#fdd">{
+    if (error_code != NO_ERROR)</span>
+    {
+<span style = "background-color:#fdd">        cancel_request(std::make_exception_ptr(http_exception(error_code)));
+        return;</span>
+    }
+<span style = "background-color:#fdd">    transmit_body();
+}</span>
+
+/// &lt;summary&gt;
+///  The cancel request completion callback function.
+/// &lt;/summary&gt;
+void windows_request_context::cancel_request_io_completion(DWORD, DWORD)
+<span style = "background-color:#fdd">{
+    std::lock_guard&lt;std::mutex&gt; lock(m_responseCompletedLock);
+    m_response_completed.set_exception(m_except_ptr);
+}</span>
+
+void windows_request_context::cancel_request(std::exception_ptr except_ptr)
+<span style = "background-color:#fdd">{
+    auto* pServer = static_cast&lt;http_windows_server*&gt;(http_server_api::server_api());</span>
+
+<span style = "background-color:#fdd">    m_except_ptr = except_ptr;</span>
+
+    // Cancel request callback function.
+<span style = "background-color:#fdd">    m_overlapped.set_http_io_completion(
+        [this](DWORD error, DWORD nBytes) { cancel_request_io_completion(error, nBytes); });</span>
+
+<span style = "background-color:#fdd">    StartThreadpoolIo(pServer-&gt;m_threadpool_io);</span>
+
+<span style = "background-color:#fdd">    auto error_code = HttpCancelHttpRequest(pServer-&gt;m_hRequestQueue, m_request_id, &amp;m_overlapped);</span>
+
+<span style = "background-color:#fdd">    if (error_code != NO_ERROR &amp;&amp; error_code != ERROR_IO_PENDING)</span>
+    {
+<span style = "background-color:#fdd">        CancelThreadpoolIo(pServer-&gt;m_threadpool_io);
+        std::lock_guard&lt;std::mutex&gt; lock(m_responseCompletedLock);
+        m_response_completed.set_exception(except_ptr);
+    }
+}</span>
+
+<span style = "background-color:#dfd">std::unique_ptr&lt;http_server&gt; make_http_httpsys_server() { return std::make_unique&lt;http_windows_server&gt;(); }</span>
+
+} // namespace details
+} // namespace experimental
+} // namespace http
+} // namespace web
+
+#endif</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

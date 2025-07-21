@@ -1,0 +1,199 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>http_server_api.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: exposes the entry points to the http server transport apis.
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#include "stdafx.h"
+
+#if !defined(_WIN32) || (_WIN32_WINNT &gt;= _WIN32_WINNT_VISTA &amp;&amp; !defined(__cplusplus_winrt)) ||                         \
+    defined(CPPREST_FORCE_HTTP_LISTENER_ASIO)
+#include "http_server_impl.h"
+
+using namespace web;
+using namespace utility;
+using namespace web::http::experimental::listener;
+
+namespace web
+{
+namespace http
+{
+namespace experimental
+{
+namespace details
+{
+pplx::extensibility::critical_section_t http_server_api::s_lock;
+
+<span style = "background-color:#dfd">std::unique_ptr&lt;http_server&gt; http_server_api::s_server_api((http_server*)nullptr);</span>
+
+pplx::details::atomic_long http_server_api::s_registrations(0L);
+
+<span style = "background-color:#dfd">bool http_server_api::has_listener() { return s_registrations &gt; 0L; }</span>
+
+void http_server_api::register_server_api(std::unique_ptr&lt;http_server&gt; server_api)
+<span style = "background-color:#fdd">{
+    pplx::extensibility::scoped_critical_section_t lock(s_lock);
+    http_server_api::unsafe_register_server_api(std::move(server_api));
+}</span>
+
+void http_server_api::unregister_server_api()
+<span style = "background-color:#fdd">{
+    pplx::extensibility::scoped_critical_section_t lock(s_lock);</span>
+
+<span style = "background-color:#fdd">    if (http_server_api::has_listener())</span>
+    {
+<span style = "background-color:#fdd">        throw http_exception(_XPLATSTR("Server API was cleared while listeners were still attached"));</span>
+    }
+
+<span style = "background-color:#fdd">    s_server_api.reset();
+}</span>
+
+void http_server_api::unsafe_register_server_api(std::unique_ptr&lt;http_server&gt; server_api)
+<span style = "background-color:#dfd">{</span>
+    // we assume that the lock has been taken here.
+<span style = "background-color:#dfd">    if (http_server_api::has_listener())</span>
+    {
+<span style = "background-color:#fdd">        throw http_exception(_XPLATSTR("Current server API instance has listeners attached."));</span>
+    }
+
+<span style = "background-color:#dfd">    s_server_api.swap(server_api);
+}</span>
+
+pplx::task&lt;void&gt; http_server_api::register_listener(
+    _In_ web::http::experimental::listener::details::http_listener_impl* listener)
+<span style = "background-color:#dfd">{
+    return pplx::create_task([listener]() {
+        pplx::extensibility::scoped_critical_section_t lock(s_lock);</span>
+
+        // the server API was not initialized, register a default
+<span style = "background-color:#dfd">        if (s_server_api == nullptr)</span>
+        {
+#if defined(_WIN32) &amp;&amp; !defined(CPPREST_FORCE_HTTP_LISTENER_ASIO)
+<span style = "background-color:#dfd">            auto server_api = make_http_httpsys_server();</span>
+#else
+            auto server_api = make_http_asio_server();
+#endif
+<span style = "background-color:#dfd">            http_server_api::unsafe_register_server_api(std::move(server_api));</span>
+
+<span style = "background-color:#dfd">            _ASSERTE(s_server_api != nullptr);
+        }</span>
+
+<span style = "background-color:#dfd">        std::exception_ptr except;</span>
+        try
+        {
+            // start the server if necessary
+<span style = "background-color:#dfd">            if (pplx::details::atomic_increment(s_registrations) == 1L)</span>
+            {
+<span style = "background-color:#dfd">                s_server_api-&gt;start().wait();</span>
+            }
+
+            // register listener
+<span style = "background-color:#dfd">            s_server_api-&gt;register_listener(listener).wait();</span>
+        }
+        catch (...)
+<span style = "background-color:#fdd">        {
+            except = std::current_exception();
+        }</span>
+
+        // Registration failed, need to decrement registration count.
+<span style = "background-color:#dfd">        if (except != nullptr)</span>
+        {
+<span style = "background-color:#fdd">            if (pplx::details::atomic_decrement(s_registrations) == 0L)</span>
+            {
+                try
+                {
+<span style = "background-color:#fdd">                    server_api()-&gt;stop().wait();
+                    http_server_api::unsafe_register_server_api(nullptr);</span>
+                }
+                catch (...)
+<span style = "background-color:#fdd">                {</span>
+                    // ignore this exception since we want to report the original one
+<span style = "background-color:#fdd">                }</span>
+            }
+<span style = "background-color:#fdd">            std::rethrow_exception(except);</span>
+        }
+<span style = "background-color:#dfd">    });
+}</span>
+
+pplx::task&lt;void&gt; http_server_api::unregister_listener(
+    _In_ web::http::experimental::listener::details::http_listener_impl* pListener)
+<span style = "background-color:#dfd">{
+    return pplx::create_task([pListener]() {
+        pplx::extensibility::scoped_critical_section_t lock(s_lock);</span>
+
+        // unregister listener
+<span style = "background-color:#dfd">        std::exception_ptr except;</span>
+        try
+        {
+<span style = "background-color:#dfd">            server_api()-&gt;unregister_listener(pListener).wait();</span>
+        }
+        catch (...)
+<span style = "background-color:#fdd">        {
+            except = std::current_exception();
+        }</span>
+
+        // stop server if necessary
+        try
+        {
+<span style = "background-color:#dfd">            if (pplx::details::atomic_decrement(s_registrations) == 0L)</span>
+            {
+<span style = "background-color:#dfd">                server_api()-&gt;stop().wait();
+                http_server_api::unsafe_register_server_api(nullptr);</span>
+            }
+        }
+        catch (...)
+<span style = "background-color:#fdd">        {</span>
+            // save the original exception from unregister listener
+<span style = "background-color:#fdd">            if (except == nullptr)</span>
+            {
+<span style = "background-color:#fdd">                except = std::current_exception();</span>
+            }
+<span style = "background-color:#fdd">        }</span>
+
+        // rethrow exception if one occurred
+<span style = "background-color:#dfd">        if (except != nullptr)</span>
+        {
+<span style = "background-color:#fdd">            std::rethrow_exception(except);</span>
+        }
+<span style = "background-color:#dfd">    });
+}</span>
+
+<span style = "background-color:#dfd">http_server* http_server_api::server_api() { return s_server_api.get(); }</span>
+
+} // namespace details
+} // namespace experimental
+} // namespace http
+} // namespace web
+
+#endif</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

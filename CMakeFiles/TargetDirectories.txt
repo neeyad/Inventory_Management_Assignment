@@ -1,0 +1,5 @@
+C:/Users/Neerajy/Documents/AI Native Assignemnt 1/CMakeFiles/ECommerceInventoryService.dir
+C:/Users/Neerajy/Documents/AI Native Assignemnt 1/CMakeFiles/RUN_TESTS.dir
+C:/Users/Neerajy/Documents/AI Native Assignemnt 1/CMakeFiles/UnitTests.dir
+C:/Users/Neerajy/Documents/AI Native Assignemnt 1/CMakeFiles/ALL_BUILD.dir
+C:/Users/Neerajy/Documents/AI Native Assignemnt 1/CMakeFiles/ZERO_CHECK.dir

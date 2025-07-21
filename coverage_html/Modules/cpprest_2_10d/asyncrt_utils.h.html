@@ -1,0 +1,762 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>asyncrt_utils.h</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * Various common utilities.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#pragma once
+
+#include "cpprest/details/basic_types.h"
+#include "pplx/pplxtasks.h"
+#include &lt;chrono&gt;
+#include &lt;cstdint&gt;
+#include &lt;limits.h&gt;
+#include &lt;locale.h&gt;
+#include &lt;random&gt;
+#include &lt;string&gt;
+#include &lt;system_error&gt;
+#include &lt;vector&gt;
+
+#ifndef _WIN32
+#include &lt;sys/time.h&gt;
+#if !defined(ANDROID) &amp;&amp; !defined(__ANDROID__) &amp;&amp; defined(HAVE_XLOCALE_H) // CodePlex 269
+/* Systems using glibc: xlocale.h has been removed from glibc 2.26
+   The above include of locale.h is sufficient
+   Further details: https://sourceware.org/git/?p=glibc.git;a=commit;h=f0be25b6336db7492e47d2e8e72eb8af53b5506d */
+#include &lt;xlocale.h&gt;
+#endif
+#endif
+
+/// Various utilities for string conversions and date and time manipulation.
+namespace utility
+{
+// Left over from VS2010 support, remains to avoid breaking.
+typedef std::chrono::seconds seconds;
+
+/// Functions for converting to/from std::chrono::seconds to xml string.
+namespace timespan
+{
+/// &lt;summary&gt;
+/// Converts a timespan/interval in seconds to xml duration string as specified by
+/// http://www.w3.org/TR/xmlschema-2/#duration
+/// &lt;/summary&gt;
+_ASYNCRTIMP utility::string_t __cdecl seconds_to_xml_duration(utility::seconds numSecs);
+
+/// &lt;summary&gt;
+/// Converts an xml duration to timespan/interval in seconds
+/// http://www.w3.org/TR/xmlschema-2/#duration
+/// &lt;/summary&gt;
+_ASYNCRTIMP utility::seconds __cdecl xml_duration_to_seconds(const utility::string_t&amp; timespanString);
+} // namespace timespan
+
+/// Functions for Unicode string conversions.
+namespace conversions
+{
+/// &lt;summary&gt;
+/// Converts a UTF-16 string to a UTF-8 string.
+/// &lt;/summary&gt;
+/// &lt;param name="w"&gt;A two byte character UTF-16 string.&lt;/param&gt;
+/// &lt;returns&gt;A single byte character UTF-8 string.&lt;/returns&gt;
+_ASYNCRTIMP std::string __cdecl utf16_to_utf8(const utf16string&amp; w);
+
+/// &lt;summary&gt;
+/// Converts a UTF-8 string to a UTF-16
+/// &lt;/summary&gt;
+/// &lt;param name="s"&gt;A single byte character UTF-8 string.&lt;/param&gt;
+/// &lt;returns&gt;A two byte character UTF-16 string.&lt;/returns&gt;
+_ASYNCRTIMP utf16string __cdecl utf8_to_utf16(const std::string&amp; s);
+
+/// &lt;summary&gt;
+/// Converts a ASCII (us-ascii) string to a UTF-16 string.
+/// &lt;/summary&gt;
+/// &lt;param name="s"&gt;A single byte character us-ascii string.&lt;/param&gt;
+/// &lt;returns&gt;A two byte character UTF-16 string.&lt;/returns&gt;
+_ASYNCRTIMP utf16string __cdecl usascii_to_utf16(const std::string&amp; s);
+
+/// &lt;summary&gt;
+/// Converts a Latin1 (iso-8859-1) string to a UTF-16 string.
+/// &lt;/summary&gt;
+/// &lt;param name="s"&gt;A single byte character UTF-8 string.&lt;/param&gt;
+/// &lt;returns&gt;A two byte character UTF-16 string.&lt;/returns&gt;
+_ASYNCRTIMP utf16string __cdecl latin1_to_utf16(const std::string&amp; s);
+
+/// &lt;summary&gt;
+/// Converts a Latin1 (iso-8859-1) string to a UTF-8 string.
+/// &lt;/summary&gt;
+/// &lt;param name="s"&gt;A single byte character UTF-8 string.&lt;/param&gt;
+/// &lt;returns&gt;A single byte character UTF-8 string.&lt;/returns&gt;
+_ASYNCRTIMP utf8string __cdecl latin1_to_utf8(const std::string&amp; s);
+
+/// &lt;summary&gt;
+/// Converts to a platform dependent Unicode string type.
+/// &lt;/summary&gt;
+/// &lt;param name="s"&gt;A single byte character UTF-8 string.&lt;/param&gt;
+/// &lt;returns&gt;A platform dependent string type.&lt;/returns&gt;
+#ifdef _UTF16_STRINGS
+_ASYNCRTIMP utility::string_t __cdecl to_string_t(std::string&amp;&amp; s);
+#else
+inline utility::string_t&amp;&amp; to_string_t(std::string&amp;&amp; s) { return std::move(s); }
+#endif
+
+/// &lt;summary&gt;
+/// Converts to a platform dependent Unicode string type.
+/// &lt;/summary&gt;
+/// &lt;param name="s"&gt;A two byte character UTF-16 string.&lt;/param&gt;
+/// &lt;returns&gt;A platform dependent string type.&lt;/returns&gt;
+#ifdef _UTF16_STRINGS
+<span style = "background-color:#fdd">inline utility::string_t&amp;&amp; to_string_t(utf16string&amp;&amp; s) { return std::move(s); }</span>
+#else
+_ASYNCRTIMP utility::string_t __cdecl to_string_t(utf16string&amp;&amp; s);
+#endif
+/// &lt;summary&gt;
+/// Converts to a platform dependent Unicode string type.
+/// &lt;/summary&gt;
+/// &lt;param name="s"&gt;A single byte character UTF-8 string.&lt;/param&gt;
+/// &lt;returns&gt;A platform dependent string type.&lt;/returns&gt;
+#ifdef _UTF16_STRINGS
+_ASYNCRTIMP utility::string_t __cdecl to_string_t(const std::string&amp; s);
+#else
+inline const utility::string_t&amp; to_string_t(const std::string&amp; s) { return s; }
+#endif
+
+/// &lt;summary&gt;
+/// Converts to a platform dependent Unicode string type.
+/// &lt;/summary&gt;
+/// &lt;param name="s"&gt;A two byte character UTF-16 string.&lt;/param&gt;
+/// &lt;returns&gt;A platform dependent string type.&lt;/returns&gt;
+#ifdef _UTF16_STRINGS
+inline const utility::string_t&amp; to_string_t(const utf16string&amp; s) { return s; }
+#else
+_ASYNCRTIMP utility::string_t __cdecl to_string_t(const utf16string&amp; s);
+#endif
+
+/// &lt;summary&gt;
+/// Converts to a UTF-16 from string.
+/// &lt;/summary&gt;
+/// &lt;param name="value"&gt;A single byte character UTF-8 string.&lt;/param&gt;
+/// &lt;returns&gt;A two byte character UTF-16 string.&lt;/returns&gt;
+_ASYNCRTIMP utf16string __cdecl to_utf16string(const std::string&amp; value);
+
+/// &lt;summary&gt;
+/// Converts to a UTF-16 from string.
+/// &lt;/summary&gt;
+/// &lt;param name="value"&gt;A two byte character UTF-16 string.&lt;/param&gt;
+/// &lt;returns&gt;A two byte character UTF-16 string.&lt;/returns&gt;
+<span style = "background-color:#fdd">inline const utf16string&amp; to_utf16string(const utf16string&amp; value) { return value; }</span>
+/// &lt;summary&gt;
+/// Converts to a UTF-16 from string.
+/// &lt;/summary&gt;
+/// &lt;param name="value"&gt;A two byte character UTF-16 string.&lt;/param&gt;
+/// &lt;returns&gt;A two byte character UTF-16 string.&lt;/returns&gt;
+inline utf16string&amp;&amp; to_utf16string(utf16string&amp;&amp; value) { return std::move(value); }
+
+/// &lt;summary&gt;
+/// Converts to a UTF-8 string.
+/// &lt;/summary&gt;
+/// &lt;param name="value"&gt;A single byte character UTF-8 string.&lt;/param&gt;
+/// &lt;returns&gt;A single byte character UTF-8 string.&lt;/returns&gt;
+inline std::string&amp;&amp; to_utf8string(std::string&amp;&amp; value) { return std::move(value); }
+
+/// &lt;summary&gt;
+/// Converts to a UTF-8 string.
+/// &lt;/summary&gt;
+/// &lt;param name="value"&gt;A single byte character UTF-8 string.&lt;/param&gt;
+/// &lt;returns&gt;A single byte character UTF-8 string.&lt;/returns&gt;
+inline const std::string&amp; to_utf8string(const std::string&amp; value) { return value; }
+
+/// &lt;summary&gt;
+/// Converts to a UTF-8 string.
+/// &lt;/summary&gt;
+/// &lt;param name="value"&gt;A two byte character UTF-16 string.&lt;/param&gt;
+/// &lt;returns&gt;A single byte character UTF-8 string.&lt;/returns&gt;
+_ASYNCRTIMP std::string __cdecl to_utf8string(const utf16string&amp; value);
+
+/// &lt;summary&gt;
+/// Encode the given byte array into a base64 string
+/// &lt;/summary&gt;
+_ASYNCRTIMP utility::string_t __cdecl to_base64(const std::vector&lt;unsigned char&gt;&amp; data);
+
+/// &lt;summary&gt;
+/// Encode the given 8-byte integer into a base64 string
+/// &lt;/summary&gt;
+_ASYNCRTIMP utility::string_t __cdecl to_base64(uint64_t data);
+
+/// &lt;summary&gt;
+/// Decode the given base64 string to a byte array
+/// &lt;/summary&gt;
+_ASYNCRTIMP std::vector&lt;unsigned char&gt; __cdecl from_base64(const utility::string_t&amp; str);
+
+template&lt;typename Source&gt;
+CASABLANCA_DEPRECATED("All locale-sensitive APIs will be removed in a future update. Use stringstreams directly if "
+                      "locale support is required.")
+utility::string_t print_string(const Source&amp; val, const std::locale&amp; loc = std::locale())
+{
+    utility::ostringstream_t oss;
+    oss.imbue(loc);
+    oss &lt;&lt; val;
+    if (oss.bad())
+    {
+        throw std::bad_cast();
+    }
+    return oss.str();
+}
+
+CASABLANCA_DEPRECATED("All locale-sensitive APIs will be removed in a future update. Use stringstreams directly if "
+                      "locale support is required.")
+inline utility::string_t print_string(const utility::string_t&amp; val) { return val; }
+
+namespace details
+{
+#if defined(__ANDROID__)
+template&lt;class T&gt;
+inline std::string to_string(const T t)
+{
+    std::ostringstream os;
+    os.imbue(std::locale::classic());
+    os &lt;&lt; t;
+    return os.str();
+}
+#endif
+
+template&lt;class T&gt;
+inline utility::string_t to_string_t(const T t)
+<span style = "background-color:#dfd">{</span>
+#ifdef _UTF16_STRINGS
+    using std::to_wstring;
+<span style = "background-color:#dfd">    return to_wstring(t);</span>
+#else
+#if !defined(__ANDROID__)
+    using std::to_string;
+#endif
+    return to_string(t);
+#endif
+<span style = "background-color:#dfd">}</span>
+
+template&lt;typename Source&gt;
+utility::string_t print_string(const Source&amp; val)
+<span style = "background-color:#fdd">{
+    utility::ostringstream_t oss;
+    oss.imbue(std::locale::classic());
+    oss &lt;&lt; val;
+    if (oss.bad())</span>
+    {
+<span style = "background-color:#fdd">        throw std::bad_cast();</span>
+    }
+<span style = "background-color:#fdd">    return oss.str();
+}</span>
+
+<span style = "background-color:#fdd">inline const utility::string_t&amp; print_string(const utility::string_t&amp; val) { return val; }</span>
+
+template&lt;typename Source&gt;
+utf8string print_utf8string(const Source&amp; val)
+<span style = "background-color:#fdd">{
+    return conversions::to_utf8string(print_string(val));
+}</span>
+inline const utf8string&amp; print_utf8string(const utf8string&amp; val) { return val; }
+
+template&lt;typename Target&gt;
+Target scan_string(const utility::string_t&amp; str)
+<span style = "background-color:#dfd">{</span>
+    Target t;
+<span style = "background-color:#dfd">    utility::istringstream_t iss(str);
+    iss.imbue(std::locale::classic());
+    iss &gt;&gt; t;
+    if (iss.bad())</span>
+    {
+<span style = "background-color:#fdd">        throw std::bad_cast();</span>
+    }
+<span style = "background-color:#dfd">    return t;
+}</span>
+
+inline const utility::string_t&amp; scan_string(const utility::string_t&amp; str) { return str; }
+} // namespace details
+
+template&lt;typename Target&gt;
+CASABLANCA_DEPRECATED("All locale-sensitive APIs will be removed in a future update. Use stringstreams directly if "
+                      "locale support is required.")
+Target scan_string(const utility::string_t&amp; str, const std::locale&amp; loc = std::locale())
+{
+    Target t;
+    utility::istringstream_t iss(str);
+    iss.imbue(loc);
+    iss &gt;&gt; t;
+    if (iss.bad())
+    {
+        throw std::bad_cast();
+    }
+    return t;
+}
+
+CASABLANCA_DEPRECATED("All locale-sensitive APIs will be removed in a future update. Use stringstreams directly if "
+                      "locale support is required.")
+inline utility::string_t scan_string(const utility::string_t&amp; str) { return str; }
+} // namespace conversions
+
+namespace details
+{
+/// &lt;summary&gt;
+/// Cross platform RAII container for setting thread local locale.
+/// &lt;/summary&gt;
+class scoped_c_thread_locale
+{
+public:
+    _ASYNCRTIMP scoped_c_thread_locale();
+    _ASYNCRTIMP ~scoped_c_thread_locale();
+
+#if !defined(ANDROID) &amp;&amp; !defined(__ANDROID__) // CodePlex 269
+#ifdef _WIN32
+    typedef _locale_t xplat_locale;
+#else
+    typedef locale_t xplat_locale;
+#endif
+
+    static _ASYNCRTIMP xplat_locale __cdecl c_locale();
+#endif
+private:
+#ifdef _WIN32
+    std::string m_prevLocale;
+    int m_prevThreadSetting;
+#elif !(defined(ANDROID) || defined(__ANDROID__))
+    locale_t m_prevLocale;
+#endif
+    scoped_c_thread_locale(const scoped_c_thread_locale&amp;);
+    scoped_c_thread_locale&amp; operator=(const scoped_c_thread_locale&amp;);
+};
+
+/// &lt;summary&gt;
+/// Our own implementation of alpha numeric instead of std::isalnum to avoid
+/// taking global lock for performance reasons.
+/// &lt;/summary&gt;
+inline bool __cdecl is_alnum(const unsigned char uch) CPPREST_NOEXCEPT
+<span style = "background-color:#dfd">{ // test if uch is an alnum character</span>
+    // special casing char to avoid branches
+    // clang-format off
+    static CPPREST_CONSTEXPR bool is_alnum_table[UCHAR_MAX + 1] = {
+        /*        X0 X1 X2 X3 X4 X5 X6 X7 X8 X9 XA XB XC XD XE XF */
+        /* 0X */   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        /* 1X */   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        /* 2X */   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        /* 3X */   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, /* 0-9 */
+        /* 4X */   0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, /* A-Z */
+        /* 5X */   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0,
+        /* 6X */   0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, /* a-z */
+        /* 7X */   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0
+        /* non-ASCII values initialized to 0 */
+    };
+    // clang-format on
+<span style = "background-color:#dfd">    return (is_alnum_table[uch]);
+}</span>
+
+/// &lt;summary&gt;
+/// Our own implementation of alpha numeric instead of std::isalnum to avoid
+/// taking global lock for performance reasons.
+/// &lt;/summary&gt;
+<span style = "background-color:#dfd">inline bool __cdecl is_alnum(const char ch) CPPREST_NOEXCEPT { return (is_alnum(static_cast&lt;unsigned char&gt;(ch))); }</span>
+
+/// &lt;summary&gt;
+/// Our own implementation of alpha numeric instead of std::isalnum to avoid
+/// taking global lock for performance reasons.
+/// &lt;/summary&gt;
+template&lt;class Elem&gt;
+inline bool __cdecl is_alnum(Elem ch) CPPREST_NOEXCEPT
+{
+    // assumes 'x' == L'x' for the ASCII range
+    typedef typename std::make_unsigned&lt;Elem&gt;::type UElem;
+    const auto uch = static_cast&lt;UElem&gt;(ch);
+    return (uch &lt;= static_cast&lt;UElem&gt;('z') &amp;&amp; is_alnum(static_cast&lt;unsigned char&gt;(uch)));
+}
+
+/// &lt;summary&gt;
+/// Our own implementation of whitespace test instead of std::isspace to avoid
+/// taking global lock for performance reasons.
+/// The following characters are considered whitespace:
+/// 0x09 == Horizontal Tab
+/// 0x0A == Line Feed
+/// 0x0B == Vertical Tab
+/// 0x0C == Form Feed
+/// 0x0D == Carrage Return
+/// 0x20 == Space
+/// &lt;/summary&gt;
+template&lt;class Elem&gt;
+inline bool __cdecl is_space(Elem ch) CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">{</span>
+    // assumes 'x' == L'x' for the ASCII range
+    typedef typename std::make_unsigned&lt;Elem&gt;::type UElem;
+<span style = "background-color:#fdd">    const auto uch = static_cast&lt;UElem&gt;(ch);
+    return uch == 0x20u || (uch &gt;= 0x09u &amp;&amp; uch &lt;= 0x0Du);
+}</span>
+
+/// &lt;summary&gt;
+/// Simplistic implementation of make_unique. A better implementation would be based on variadic templates
+/// and therefore not be compatible with Dev10.
+/// &lt;/summary&gt;
+template&lt;typename _Type&gt;
+std::unique_ptr&lt;_Type&gt; make_unique()
+<span style = "background-color:#fdd">{
+    return std::unique_ptr&lt;_Type&gt;(new _Type());
+}</span>
+
+template&lt;typename _Type, typename _Arg1&gt;
+std::unique_ptr&lt;_Type&gt; make_unique(_Arg1&amp;&amp; arg1)
+<span style = "background-color:#fdd">{
+    return std::unique_ptr&lt;_Type&gt;(new _Type(std::forward&lt;_Arg1&gt;(arg1)));
+}</span>
+
+template&lt;typename _Type, typename _Arg1, typename _Arg2&gt;
+std::unique_ptr&lt;_Type&gt; make_unique(_Arg1&amp;&amp; arg1, _Arg2&amp;&amp; arg2)
+<span style = "background-color:#fdd">{
+    return std::unique_ptr&lt;_Type&gt;(new _Type(std::forward&lt;_Arg1&gt;(arg1), std::forward&lt;_Arg2&gt;(arg2)));
+}</span>
+
+template&lt;typename _Type, typename _Arg1, typename _Arg2, typename _Arg3&gt;
+std::unique_ptr&lt;_Type&gt; make_unique(_Arg1&amp;&amp; arg1, _Arg2&amp;&amp; arg2, _Arg3&amp;&amp; arg3)
+{
+    return std::unique_ptr&lt;_Type&gt;(
+        new _Type(std::forward&lt;_Arg1&gt;(arg1), std::forward&lt;_Arg2&gt;(arg2), std::forward&lt;_Arg3&gt;(arg3)));
+}
+
+template&lt;typename _Type, typename _Arg1, typename _Arg2, typename _Arg3, typename _Arg4&gt;
+std::unique_ptr&lt;_Type&gt; make_unique(_Arg1&amp;&amp; arg1, _Arg2&amp;&amp; arg2, _Arg3&amp;&amp; arg3, _Arg4&amp;&amp; arg4)
+{
+    return std::unique_ptr&lt;_Type&gt;(new _Type(
+        std::forward&lt;_Arg1&gt;(arg1), std::forward&lt;_Arg2&gt;(arg2), std::forward&lt;_Arg3&gt;(arg3), std::forward&lt;_Arg4&gt;(arg4)));
+}
+
+template&lt;typename _Type, typename _Arg1, typename _Arg2, typename _Arg3, typename _Arg4, typename _Arg5&gt;
+std::unique_ptr&lt;_Type&gt; make_unique(_Arg1&amp;&amp; arg1, _Arg2&amp;&amp; arg2, _Arg3&amp;&amp; arg3, _Arg4&amp;&amp; arg4, _Arg5&amp;&amp; arg5)
+{
+    return std::unique_ptr&lt;_Type&gt;(new _Type(std::forward&lt;_Arg1&gt;(arg1),
+                                            std::forward&lt;_Arg2&gt;(arg2),
+                                            std::forward&lt;_Arg3&gt;(arg3),
+                                            std::forward&lt;_Arg4&gt;(arg4),
+                                            std::forward&lt;_Arg5&gt;(arg5)));
+}
+
+template&lt;typename _Type, typename _Arg1, typename _Arg2, typename _Arg3, typename _Arg4, typename _Arg5, typename _Arg6&gt;
+std::unique_ptr&lt;_Type&gt; make_unique(_Arg1&amp;&amp; arg1, _Arg2&amp;&amp; arg2, _Arg3&amp;&amp; arg3, _Arg4&amp;&amp; arg4, _Arg5&amp;&amp; arg5, _Arg6&amp;&amp; arg6)
+{
+    return std::unique_ptr&lt;_Type&gt;(new _Type(std::forward&lt;_Arg1&gt;(arg1),
+                                            std::forward&lt;_Arg2&gt;(arg2),
+                                            std::forward&lt;_Arg3&gt;(arg3),
+                                            std::forward&lt;_Arg4&gt;(arg4),
+                                            std::forward&lt;_Arg5&gt;(arg5),
+                                            std::forward&lt;_Arg6&gt;(arg6)));
+}
+
+/// &lt;summary&gt;
+/// Cross platform utility function for performing case insensitive string equality comparison.
+/// &lt;/summary&gt;
+/// &lt;param name="left"&gt;First string to compare.&lt;/param&gt;
+/// &lt;param name="right"&gt;Second strong to compare.&lt;/param&gt;
+/// &lt;returns&gt;true if the strings are equivalent, false otherwise&lt;/returns&gt;
+_ASYNCRTIMP bool __cdecl str_iequal(const std::string&amp; left, const std::string&amp; right) CPPREST_NOEXCEPT;
+
+/// &lt;summary&gt;
+/// Cross platform utility function for performing case insensitive string equality comparison.
+/// &lt;/summary&gt;
+/// &lt;param name="left"&gt;First string to compare.&lt;/param&gt;
+/// &lt;param name="right"&gt;Second strong to compare.&lt;/param&gt;
+/// &lt;returns&gt;true if the strings are equivalent, false otherwise&lt;/returns&gt;
+_ASYNCRTIMP bool __cdecl str_iequal(const std::wstring&amp; left, const std::wstring&amp; right) CPPREST_NOEXCEPT;
+
+/// &lt;summary&gt;
+/// Cross platform utility function for performing case insensitive string less-than comparison.
+/// &lt;/summary&gt;
+/// &lt;param name="left"&gt;First string to compare.&lt;/param&gt;
+/// &lt;param name="right"&gt;Second strong to compare.&lt;/param&gt;
+/// &lt;returns&gt;true if a lowercase view of left is lexicographically less than a lowercase view of right; otherwise,
+/// false.&lt;/returns&gt;
+_ASYNCRTIMP bool __cdecl str_iless(const std::string&amp; left, const std::string&amp; right) CPPREST_NOEXCEPT;
+
+/// &lt;summary&gt;
+/// Cross platform utility function for performing case insensitive string less-than comparison.
+/// &lt;/summary&gt;
+/// &lt;param name="left"&gt;First string to compare.&lt;/param&gt;
+/// &lt;param name="right"&gt;Second strong to compare.&lt;/param&gt;
+/// &lt;returns&gt;true if a lowercase view of left is lexicographically less than a lowercase view of right; otherwise,
+/// false.&lt;/returns&gt;
+_ASYNCRTIMP bool __cdecl str_iless(const std::wstring&amp; left, const std::wstring&amp; right) CPPREST_NOEXCEPT;
+
+/// &lt;summary&gt;
+/// Convert a string to lowercase in place.
+/// &lt;/summary&gt;
+/// &lt;param name="target"&gt;The string to convert to lowercase.&lt;/param&gt;
+_ASYNCRTIMP void __cdecl inplace_tolower(std::string&amp; target) CPPREST_NOEXCEPT;
+
+/// &lt;summary&gt;
+/// Convert a string to lowercase in place.
+/// &lt;/summary&gt;
+/// &lt;param name="target"&gt;The string to convert to lowercase.&lt;/param&gt;
+_ASYNCRTIMP void __cdecl inplace_tolower(std::wstring&amp; target) CPPREST_NOEXCEPT;
+
+#ifdef _WIN32
+
+/// &lt;summary&gt;
+/// Category error type for Windows OS errors.
+/// &lt;/summary&gt;
+class windows_category_impl : public std::error_category
+{
+public:
+<span style = "background-color:#fdd">    virtual const char* name() const CPPREST_NOEXCEPT { return "windows"; }</span>
+
+    virtual std::string message(int errorCode) const CPPREST_NOEXCEPT;
+
+    virtual std::error_condition default_error_condition(int errorCode) const CPPREST_NOEXCEPT;
+};
+
+/// &lt;summary&gt;
+/// Gets the one global instance of the windows error category.
+/// &lt;/summary&gt;
+/// &lt;/returns&gt;An error category instance.&lt;/returns&gt;
+_ASYNCRTIMP const std::error_category&amp; __cdecl windows_category();
+
+#else
+
+/// &lt;summary&gt;
+/// Gets the one global instance of the linux error category.
+/// &lt;/summary&gt;
+/// &lt;/returns&gt;An error category instance.&lt;/returns&gt;
+_ASYNCRTIMP const std::error_category&amp; __cdecl linux_category();
+
+#endif
+
+/// &lt;summary&gt;
+/// Gets the one global instance of the current platform's error category.
+/// &lt;/summary&gt;
+_ASYNCRTIMP const std::error_category&amp; __cdecl platform_category();
+
+/// &lt;summary&gt;
+/// Creates an instance of std::system_error from a OS error code.
+/// &lt;/summary&gt;
+inline std::system_error __cdecl create_system_error(unsigned long errorCode)
+<span style = "background-color:#fdd">{
+    std::error_code code((int)errorCode, platform_category());
+    return std::system_error(code, code.message());
+}</span>
+
+/// &lt;summary&gt;
+/// Creates a std::error_code from a OS error code.
+/// &lt;/summary&gt;
+inline std::error_code __cdecl create_error_code(unsigned long errorCode)
+<span style = "background-color:#fdd">{
+    return std::error_code((int)errorCode, platform_category());
+}</span>
+
+/// &lt;summary&gt;
+/// Creates the corresponding error message from a OS error code.
+/// &lt;/summary&gt;
+inline utility::string_t __cdecl create_error_message(unsigned long errorCode)
+{
+    return utility::conversions::to_string_t(create_error_code(errorCode).message());
+}
+
+} // namespace details
+
+class datetime
+{
+public:
+    typedef uint64_t interval_type;
+
+    /// &lt;summary&gt;
+    /// Defines the supported date and time string formats.
+    /// &lt;/summary&gt;
+    enum date_format
+    {
+        RFC_1123,
+        ISO_8601
+    };
+
+    /// &lt;summary&gt;
+    /// Returns the current UTC time.
+    /// &lt;/summary&gt;
+    static _ASYNCRTIMP datetime __cdecl utc_now();
+
+    /// &lt;summary&gt;
+    /// An invalid UTC timestamp value.
+    /// &lt;/summary&gt;
+    enum : interval_type
+    {
+        utc_timestamp_invalid = static_cast&lt;interval_type&gt;(-1)
+    };
+
+    /// &lt;summary&gt;
+    /// Returns seconds since Unix/POSIX time epoch at 01-01-1970 00:00:00.
+    /// If time is before epoch, utc_timestamp_invalid is returned.
+    /// &lt;/summary&gt;
+    static interval_type utc_timestamp()
+<span style = "background-color:#fdd">    {
+        const auto seconds = utc_now().to_interval() / _secondTicks;
+        if (seconds &gt;= 11644473600LL)</span>
+        {
+<span style = "background-color:#fdd">            return seconds - 11644473600LL;
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            return utc_timestamp_invalid;</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    datetime() : m_interval(0) { }</span>
+
+    /// &lt;summary&gt;
+    /// Creates &lt;c&gt;datetime&lt;/c&gt; from a string representing time in UTC in RFC 1123 or ISO 8601 format.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Returns a &lt;c&gt;datetime&lt;/c&gt; of zero if not successful.&lt;/returns&gt;
+    static _ASYNCRTIMP datetime __cdecl from_string(const utility::string_t&amp; timestring, date_format format = RFC_1123);
+
+    /// &lt;summary&gt;
+    /// Creates &lt;c&gt;datetime&lt;/c&gt; from a string representing time in UTC in RFC 1123 or ISO 8601 format.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Returns &lt;c&gt;datetime::maximum()&lt;/c&gt; if not successful.&lt;/returns&gt;
+    static _ASYNCRTIMP datetime __cdecl from_string_maximum_error(const utility::string_t&amp; timestring,
+                                                                  date_format format = RFC_1123);
+
+    /// &lt;summary&gt;
+    /// Returns a string representation of the &lt;c&gt;datetime&lt;/c&gt;.
+    /// &lt;/summary&gt;
+    _ASYNCRTIMP utility::string_t to_string(date_format format = RFC_1123) const;
+
+    /// &lt;summary&gt;
+    /// Returns the integral time value.
+    /// &lt;/summary&gt;
+<span style = "background-color:#fdd">    interval_type to_interval() const { return m_interval; }</span>
+
+    static datetime from_interval(interval_type interval) { return datetime(interval); }
+
+    datetime operator-(interval_type value) const { return datetime(m_interval - value); }
+
+    datetime operator+(interval_type value) const { return datetime(m_interval + value); }
+
+<span style = "background-color:#fdd">    bool operator==(datetime dt) const { return m_interval == dt.m_interval; }</span>
+
+    bool operator!=(const datetime&amp; dt) const { return !(*this == dt); }
+
+    bool operator&gt;(const datetime&amp; dt) const { return this-&gt;m_interval &gt; dt.m_interval; }
+
+    bool operator&lt;(const datetime&amp; dt) const { return this-&gt;m_interval &lt; dt.m_interval; }
+
+    bool operator&gt;=(const datetime&amp; dt) const { return this-&gt;m_interval &gt;= dt.m_interval; }
+
+    bool operator&lt;=(const datetime&amp; dt) const { return this-&gt;m_interval &lt;= dt.m_interval; }
+
+    static interval_type from_milliseconds(unsigned int milliseconds) { return milliseconds * _msTicks; }
+
+    static interval_type from_seconds(unsigned int seconds) { return seconds * _secondTicks; }
+
+    static interval_type from_minutes(unsigned int minutes) { return minutes * _minuteTicks; }
+
+    static interval_type from_hours(unsigned int hours) { return hours * _hourTicks; }
+
+    static interval_type from_days(unsigned int days) { return days * _dayTicks; }
+
+    bool is_initialized() const { return m_interval != 0; }
+
+<span style = "background-color:#fdd">    static datetime maximum() { return datetime(static_cast&lt;interval_type&gt;(-1)); }</span>
+
+private:
+    friend int operator-(datetime t1, datetime t2);
+
+    static const interval_type _msTicks = static_cast&lt;interval_type&gt;(10000);
+    static const interval_type _secondTicks = 1000 * _msTicks;
+    static const interval_type _minuteTicks = 60 * _secondTicks;
+    static const interval_type _hourTicks = 60 * 60 * _secondTicks;
+    static const interval_type _dayTicks = 24 * 60 * 60 * _secondTicks;
+
+    // Private constructor. Use static methods to create an instance.
+<span style = "background-color:#fdd">    datetime(interval_type interval) : m_interval(interval) { }</span>
+
+    // Storing as hundreds of nanoseconds 10e-7, i.e. 1 here equals 100ns.
+    interval_type m_interval;
+};
+
+inline int operator-(datetime t1, datetime t2)
+{
+    auto diff = (t1.m_interval - t2.m_interval);
+
+    // Round it down to seconds
+    diff /= 10 * 1000 * 1000;
+
+    return static_cast&lt;int&gt;(diff);
+}
+
+/// &lt;summary&gt;
+/// Nonce string generator class.
+/// &lt;/summary&gt;
+class nonce_generator
+{
+public:
+    /// &lt;summary&gt;
+    /// Define default nonce length.
+    /// &lt;/summary&gt;
+    enum
+    {
+        default_length = 32
+    };
+
+    /// &lt;summary&gt;
+    /// Nonce generator constructor.
+    /// &lt;/summary&gt;
+    /// &lt;param name="length"&gt;Length of the generated nonce string.&lt;/param&gt;
+    nonce_generator(int length = default_length)
+        : m_random(static_cast&lt;unsigned int&gt;(utility::datetime::utc_timestamp())), m_length(length)
+    {
+    }
+
+    /// &lt;summary&gt;
+    /// Generate a nonce string containing random alphanumeric characters (A-Za-z0-9).
+    /// Length of the generated string is set by length().
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;The generated nonce string.&lt;/returns&gt;
+    _ASYNCRTIMP utility::string_t generate();
+
+    /// &lt;summary&gt;
+    /// Get length of generated nonce string.
+    /// &lt;/summary&gt;
+    /// &lt;returns&gt;Nonce string length.&lt;/returns&gt;
+<span style = "background-color:#fdd">    int length() const { return m_length; }</span>
+
+    /// &lt;summary&gt;
+    /// Set length of the generated nonce string.
+    /// &lt;/summary&gt;
+    /// &lt;param name="length"&gt;Lenght of nonce string.&lt;/param&gt;
+    void set_length(int length) { m_length = length; }
+
+private:
+    std::mt19937 m_random;
+    int m_length;
+};
+
+} // namespace utility</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

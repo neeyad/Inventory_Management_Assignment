@@ -1,0 +1,282 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>json_serialization.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: JSON parser and writer
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#include "stdafx.h"
+
+#include &lt;stdio.h&gt;
+
+#ifndef _WIN32
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+#include &lt;inttypes.h&gt;
+#endif
+
+using namespace web;
+using namespace web::json;
+using namespace utility;
+using namespace utility::conversions;
+
+//
+// JSON Serialization
+//
+
+#ifdef _WIN32
+void web::json::value::serialize(std::ostream&amp; stream) const
+<span style = "background-color:#fdd">{</span>
+    // This has better performance than writing directly to stream.
+<span style = "background-color:#fdd">    std::string str;
+    m_value-&gt;serialize_impl(str);
+    stream &lt;&lt; str;
+}
+void web::json::value::format(std::basic_string&lt;wchar_t&gt;&amp; string) const { m_value-&gt;format(string); }</span>
+#endif
+
+void web::json::value::serialize(utility::ostream_t&amp; stream) const
+<span style = "background-color:#fdd">{</span>
+#ifndef _WIN32
+    utility::details::scoped_c_thread_locale locale;
+#endif
+
+    // This has better performance than writing directly to stream.
+<span style = "background-color:#fdd">    utility::string_t str;
+    m_value-&gt;serialize_impl(str);
+    stream &lt;&lt; str;
+}</span>
+
+<span style = "background-color:#fdd">void web::json::value::format(std::basic_string&lt;char&gt;&amp; string) const { m_value-&gt;format(string); }</span>
+
+template&lt;typename CharType&gt;
+void web::json::details::append_escape_string(std::basic_string&lt;CharType&gt;&amp; str,
+                                              const std::basic_string&lt;CharType&gt;&amp; escaped)
+<span style = "background-color:#fdd">{
+    for (const auto&amp; ch : escaped)</span>
+    {
+<span style = "background-color:#fdd">        switch (ch)</span>
+        {
+            case '\"':
+<span style = "background-color:#fdd">                str += '\\';
+                str += '\"';
+                break;</span>
+            case '\\':
+<span style = "background-color:#fdd">                str += '\\';
+                str += '\\';
+                break;</span>
+            case '\b':
+<span style = "background-color:#fdd">                str += '\\';
+                str += 'b';
+                break;</span>
+            case '\f':
+<span style = "background-color:#fdd">                str += '\\';
+                str += 'f';
+                break;</span>
+            case '\r':
+<span style = "background-color:#fdd">                str += '\\';
+                str += 'r';
+                break;</span>
+            case '\n':
+<span style = "background-color:#fdd">                str += '\\';
+                str += 'n';
+                break;</span>
+            case '\t':
+<span style = "background-color:#fdd">                str += '\\';
+                str += 't';
+                break;</span>
+            default:
+
+                // If a control character then must unicode escaped.
+<span style = "background-color:#fdd">                if (ch &gt;= 0 &amp;&amp; ch &lt;= 0x1F)</span>
+                {
+                    static const std::array&lt;CharType, 16&gt; intToHex = {
+                        {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'}};
+<span style = "background-color:#fdd">                    str += '\\';
+                    str += 'u';
+                    str += '0';
+                    str += '0';
+                    str += intToHex[(ch &amp; 0xF0) &gt;&gt; 4];
+                    str += intToHex[ch &amp; 0x0F];
+                }</span>
+                else
+                {
+<span style = "background-color:#fdd">                    str += ch;</span>
+                }
+        }
+    }
+<span style = "background-color:#fdd">}</span>
+
+void web::json::details::format_string(const utility::string_t&amp; key, utility::string_t&amp; str)
+<span style = "background-color:#fdd">{
+    str.push_back('"');
+    append_escape_string(str, key);
+    str.push_back('"');
+}</span>
+
+#ifdef _WIN32
+void web::json::details::format_string(const utility::string_t&amp; key, std::string&amp; str)
+<span style = "background-color:#fdd">{
+    str.push_back('"');
+    append_escape_string(str, utility::conversions::to_utf8string(key));
+    str.push_back('"');
+}</span>
+#endif
+
+void web::json::details::_String::format(std::basic_string&lt;char&gt;&amp; str) const
+<span style = "background-color:#fdd">{
+    str.push_back('"');</span>
+
+<span style = "background-color:#fdd">    if (m_has_escape_char)</span>
+    {
+<span style = "background-color:#fdd">        append_escape_string(str, utility::conversions::to_utf8string(m_string));
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        str.append(utility::conversions::to_utf8string(m_string));</span>
+    }
+
+<span style = "background-color:#fdd">    str.push_back('"');
+}</span>
+
+void web::json::details::_Number::format(std::basic_string&lt;char&gt;&amp; stream) const
+<span style = "background-color:#fdd">{
+    if (m_number.m_type != number::type::double_type)</span>
+    {
+        // #digits + 1 to avoid loss + 1 for the sign + 1 for null terminator.
+<span style = "background-color:#fdd">        const size_t tempSize = std::numeric_limits&lt;uint64_t&gt;::digits10 + 3;</span>
+        char tempBuffer[tempSize];
+
+#ifdef _WIN32
+        // This can be improved performance-wise if we implement our own routine
+<span style = "background-color:#fdd">        if (m_number.m_type == number::type::signed_type)
+            _i64toa_s(m_number.m_intval, tempBuffer, tempSize, 10);</span>
+        else
+<span style = "background-color:#fdd">            _ui64toa_s(m_number.m_uintval, tempBuffer, tempSize, 10);</span>
+
+<span style = "background-color:#fdd">        const auto numChars = strnlen_s(tempBuffer, tempSize);</span>
+#else
+        int numChars;
+        if (m_number.m_type == number::type::signed_type)
+            numChars = snprintf(tempBuffer, tempSize, "%" PRId64, m_number.m_intval);
+        else
+            numChars = snprintf(tempBuffer, tempSize, "%" PRIu64, m_number.m_uintval);
+#endif
+<span style = "background-color:#fdd">        stream.append(tempBuffer, numChars);
+    }</span>
+    else
+    {
+        // #digits + 2 to avoid loss + 1 for the sign + 1 for decimal point + 5 for exponent (e+xxx) + 1 for null
+        // terminator
+<span style = "background-color:#fdd">        const size_t tempSize = std::numeric_limits&lt;double&gt;::digits10 + 10;</span>
+        char tempBuffer[tempSize];
+#ifdef _WIN32
+<span style = "background-color:#fdd">        const auto numChars = _sprintf_s_l(tempBuffer,</span>
+                                           tempSize,
+                                           "%.*g",
+                                           utility::details::scoped_c_thread_locale::c_locale(),
+                                           std::numeric_limits&lt;double&gt;::digits10 + 2,
+                                           m_number.m_value);
+#else
+        const auto numChars =
+            snprintf(tempBuffer, tempSize, "%.*g", std::numeric_limits&lt;double&gt;::digits10 + 2, m_number.m_value);
+#endif
+<span style = "background-color:#fdd">        stream.append(tempBuffer, numChars);</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+#ifdef _WIN32
+
+void web::json::details::_String::format(std::basic_string&lt;wchar_t&gt;&amp; str) const
+<span style = "background-color:#fdd">{
+    str.push_back(L'"');</span>
+
+<span style = "background-color:#fdd">    if (m_has_escape_char)</span>
+    {
+<span style = "background-color:#fdd">        append_escape_string(str, m_string);
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        str.append(m_string);</span>
+    }
+
+<span style = "background-color:#fdd">    str.push_back(L'"');
+}</span>
+
+void web::json::details::_Number::format(std::basic_string&lt;wchar_t&gt;&amp; stream) const
+<span style = "background-color:#fdd">{
+    if (m_number.m_type != number::type::double_type)</span>
+    {
+        // #digits + 1 to avoid loss + 1 for the sign + 1 for null terminator.
+<span style = "background-color:#fdd">        const size_t tempSize = std::numeric_limits&lt;uint64_t&gt;::digits10 + 3;</span>
+        wchar_t tempBuffer[tempSize];
+
+<span style = "background-color:#fdd">        if (m_number.m_type == number::type::signed_type)
+            _i64tow_s(m_number.m_intval, tempBuffer, tempSize, 10);</span>
+        else
+<span style = "background-color:#fdd">            _ui64tow_s(m_number.m_uintval, tempBuffer, tempSize, 10);</span>
+
+<span style = "background-color:#fdd">        stream.append(tempBuffer, wcsnlen_s(tempBuffer, tempSize));
+    }</span>
+    else
+    {
+        // #digits + 2 to avoid loss + 1 for the sign + 1 for decimal point + 5 for exponent (e+xxx) + 1 for null
+        // terminator
+<span style = "background-color:#fdd">        const size_t tempSize = std::numeric_limits&lt;double&gt;::digits10 + 10;</span>
+        wchar_t tempBuffer[tempSize];
+<span style = "background-color:#fdd">        const int numChars = _swprintf_s_l(tempBuffer,</span>
+                                           tempSize,
+                                           L"%.*g",
+                                           utility::details::scoped_c_thread_locale::c_locale(),
+                                           std::numeric_limits&lt;double&gt;::digits10 + 2,
+                                           m_number.m_value);
+<span style = "background-color:#fdd">        stream.append(tempBuffer, numChars);</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+#endif
+
+<span style = "background-color:#fdd">const utility::string_t&amp; web::json::details::_String::as_string() const { return m_string; }</span>
+
+<span style = "background-color:#fdd">const utility::string_t&amp; web::json::value::as_string() const { return m_value-&gt;as_string(); }</span>
+
+utility::string_t json::value::serialize() const
+<span style = "background-color:#fdd">{</span>
+#ifndef _WIN32
+    utility::details::scoped_c_thread_locale locale;
+#endif
+<span style = "background-color:#fdd">    return m_value-&gt;to_string();
+}</span></pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

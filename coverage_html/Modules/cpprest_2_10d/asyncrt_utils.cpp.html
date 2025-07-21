@@ -1,0 +1,1544 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>asyncrt_utils.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * Utilities
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#include "stdafx.h"
+
+#include &lt;algorithm&gt;
+#include &lt;cpprest/asyncrt_utils.h&gt;
+#include &lt;stdexcept&gt;
+#include &lt;string&gt;
+#include &lt;time.h&gt;
+
+using namespace web;
+using namespace utility;
+using namespace utility::conversions;
+
+namespace
+{
+struct to_lower_ch_impl
+{
+    char operator()(char c) const CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">    {
+        if (c &gt;= 'A' &amp;&amp; c &lt;= 'Z') return static_cast&lt;char&gt;(c - 'A' + 'a');
+        return c;
+    }</span>
+
+    wchar_t operator()(wchar_t c) const CPPREST_NOEXCEPT
+<span style = "background-color:#dfd">    {
+        if (c &gt;= L'A' &amp;&amp; c &lt;= L'Z') return static_cast&lt;wchar_t&gt;(c - L'A' + L'a');
+        return c;
+    }</span>
+};
+
+CPPREST_CONSTEXPR to_lower_ch_impl to_lower_ch {};
+
+struct eq_lower_ch_impl
+{
+    template&lt;class CharT&gt;
+    inline CharT operator()(const CharT left, const CharT right) const CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">    {
+        return to_lower_ch(left) == to_lower_ch(right);
+    }</span>
+};
+
+CPPREST_CONSTEXPR eq_lower_ch_impl eq_lower_ch {};
+
+struct lt_lower_ch_impl
+{
+    template&lt;class CharT&gt;
+    inline CharT operator()(const CharT left, const CharT right) const CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">    {
+        return to_lower_ch(left) &lt; to_lower_ch(right);
+    }</span>
+};
+
+CPPREST_CONSTEXPR lt_lower_ch_impl lt_lower_ch {};
+} // namespace
+
+namespace utility
+{
+namespace details
+{
+_ASYNCRTIMP bool __cdecl str_iequal(const std::string&amp; left, const std::string&amp; right) CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">{
+    return left.size() == right.size() &amp;&amp; std::equal(left.cbegin(), left.cend(), right.cbegin(), eq_lower_ch);
+}</span>
+
+_ASYNCRTIMP bool __cdecl str_iequal(const std::wstring&amp; left, const std::wstring&amp; right) CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">{
+    return left.size() == right.size() &amp;&amp; std::equal(left.cbegin(), left.cend(), right.cbegin(), eq_lower_ch);
+}</span>
+
+_ASYNCRTIMP bool __cdecl str_iless(const std::string&amp; left, const std::string&amp; right) CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">{
+    return std::lexicographical_compare(left.cbegin(), left.cend(), right.cbegin(), right.cend(), lt_lower_ch);
+}</span>
+
+_ASYNCRTIMP bool __cdecl str_iless(const std::wstring&amp; left, const std::wstring&amp; right) CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">{
+    return std::lexicographical_compare(left.cbegin(), left.cend(), right.cbegin(), right.cend(), lt_lower_ch);
+}</span>
+
+_ASYNCRTIMP void __cdecl inplace_tolower(std::string&amp; target) CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">{
+    for (auto&amp; ch : target)</span>
+    {
+<span style = "background-color:#fdd">        ch = to_lower_ch(ch);
+    }
+}</span>
+
+_ASYNCRTIMP void __cdecl inplace_tolower(std::wstring&amp; target) CPPREST_NOEXCEPT
+<span style = "background-color:#dfd">{
+    for (auto&amp; ch : target)</span>
+    {
+<span style = "background-color:#dfd">        ch = to_lower_ch(ch);
+    }
+}</span>
+
+#if !defined(ANDROID) &amp;&amp; !defined(__ANDROID__)
+std::once_flag g_c_localeFlag;
+<span style = "background-color:#dfd">std::unique_ptr&lt;scoped_c_thread_locale::xplat_locale, void (*)(scoped_c_thread_locale::xplat_locale*)&gt; g_c_locale(
+    nullptr, [](scoped_c_thread_locale::xplat_locale*) {});</span>
+scoped_c_thread_locale::xplat_locale scoped_c_thread_locale::c_locale()
+<span style = "background-color:#fdd">{
+    std::call_once(g_c_localeFlag, [&amp;]() {
+        scoped_c_thread_locale::xplat_locale* clocale = new scoped_c_thread_locale::xplat_locale();</span>
+#ifdef _WIN32
+<span style = "background-color:#fdd">        *clocale = _create_locale(LC_ALL, "C");
+        if (clocale == nullptr || *clocale == nullptr)</span>
+        {
+<span style = "background-color:#fdd">            throw std::runtime_error("Unable to create 'C' locale.");</span>
+        }
+<span style = "background-color:#fdd">        auto deleter = [](scoped_c_thread_locale::xplat_locale* clocale) {
+            _free_locale(*clocale);
+            delete clocale;
+        };</span>
+#else
+        *clocale = newlocale(LC_ALL_MASK, "C", nullptr);
+        if (clocale == nullptr || *clocale == nullptr)
+        {
+            throw std::runtime_error("Unable to create 'C' locale.");
+        }
+        auto deleter = [](scoped_c_thread_locale::xplat_locale *clocale)
+        {
+            freelocale(*clocale);
+            delete clocale;
+        };
+#endif
+<span style = "background-color:#fdd">        g_c_locale =</span>
+            std::unique_ptr&lt;scoped_c_thread_locale::xplat_locale, void (*)(scoped_c_thread_locale::xplat_locale*)&gt;(
+                clocale, deleter);
+<span style = "background-color:#fdd">    });
+    return *g_c_locale;
+}</span>
+#endif
+
+#ifdef _WIN32
+<span style = "background-color:#fdd">scoped_c_thread_locale::scoped_c_thread_locale() : m_prevLocale(), m_prevThreadSetting(-1)
+{
+    char* prevLocale = setlocale(LC_ALL, nullptr);
+    if (prevLocale == nullptr)</span>
+    {
+<span style = "background-color:#fdd">        throw std::runtime_error("Unable to retrieve current locale.");</span>
+    }
+
+<span style = "background-color:#fdd">    if (std::strcmp(prevLocale, "C") != 0)</span>
+    {
+<span style = "background-color:#fdd">        m_prevLocale = prevLocale;
+        m_prevThreadSetting = _configthreadlocale(_ENABLE_PER_THREAD_LOCALE);
+        if (m_prevThreadSetting == -1)</span>
+        {
+<span style = "background-color:#fdd">            throw std::runtime_error("Unable to enable per thread locale.");</span>
+        }
+<span style = "background-color:#fdd">        if (setlocale(LC_ALL, "C") == nullptr)</span>
+        {
+<span style = "background-color:#fdd">            _configthreadlocale(m_prevThreadSetting);
+            throw std::runtime_error("Unable to set locale");</span>
+        }
+    }
+<span style = "background-color:#fdd">}</span>
+
+scoped_c_thread_locale::~scoped_c_thread_locale()
+<span style = "background-color:#fdd">{
+    if (m_prevThreadSetting != -1)</span>
+    {
+<span style = "background-color:#fdd">        setlocale(LC_ALL, m_prevLocale.c_str());
+        _configthreadlocale(m_prevThreadSetting);</span>
+    }
+<span style = "background-color:#fdd">}</span>
+#elif (defined(ANDROID) || defined(__ANDROID__))
+scoped_c_thread_locale::scoped_c_thread_locale() { }
+scoped_c_thread_locale::~scoped_c_thread_locale() { }
+#else
+scoped_c_thread_locale::scoped_c_thread_locale() : m_prevLocale(nullptr)
+{
+    char* prevLocale = setlocale(LC_ALL, nullptr);
+    if (prevLocale == nullptr)
+    {
+        throw std::runtime_error("Unable to retrieve current locale.");
+    }
+
+    if (std::strcmp(prevLocale, "C") != 0)
+    {
+        m_prevLocale = uselocale(c_locale());
+        if (m_prevLocale == nullptr)
+        {
+            throw std::runtime_error("Unable to set locale");
+        }
+    }
+}
+
+scoped_c_thread_locale::~scoped_c_thread_locale()
+{
+    if (m_prevLocale != nullptr)
+    {
+        uselocale(m_prevLocale);
+    }
+}
+#endif
+} // namespace details
+
+namespace details
+{
+const std::error_category&amp; __cdecl platform_category()
+<span style = "background-color:#fdd">{</span>
+#ifdef _WIN32
+<span style = "background-color:#fdd">    return windows_category();</span>
+#else
+    return linux_category();
+#endif
+<span style = "background-color:#fdd">}</span>
+
+#ifdef _WIN32
+
+// Remove once VS 2013 is no longer supported.
+#if _MSC_VER &lt; 1900
+static details::windows_category_impl instance;
+#endif
+const std::error_category&amp; __cdecl windows_category()
+<span style = "background-color:#fdd">{</span>
+#if _MSC_VER &gt;= 1900
+<span style = "background-color:#fdd">    static details::windows_category_impl instance;</span>
+#endif
+<span style = "background-color:#fdd">    return instance;
+}</span>
+
+std::string windows_category_impl::message(int errorCode) const CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">{
+    const size_t buffer_size = 4096;
+    DWORD dwFlags = FORMAT_MESSAGE_FROM_SYSTEM;
+    LPCVOID lpSource = NULL;</span>
+
+#if !defined(__cplusplus_winrt)
+<span style = "background-color:#fdd">    if (errorCode &gt;= 12000)</span>
+    {
+<span style = "background-color:#fdd">        dwFlags = FORMAT_MESSAGE_FROM_HMODULE;
+        lpSource = GetModuleHandleA("winhttp.dll"); // this handle DOES NOT need to be freed</span>
+    }
+#endif
+
+<span style = "background-color:#fdd">    std::wstring buffer(buffer_size, 0);</span>
+
+<span style = "background-color:#fdd">    const auto result = ::FormatMessageW(dwFlags, lpSource, errorCode, 0, &amp;buffer[0], buffer_size, NULL);</span>
+
+<span style = "background-color:#fdd">    if (result == 0)</span>
+    {
+<span style = "background-color:#fdd">        return "Unable to get an error message for error code: " + std::to_string(errorCode) + ".";</span>
+    }
+
+    // strip exceeding characters of the initial resize call
+<span style = "background-color:#fdd">    buffer.resize(result);</span>
+
+<span style = "background-color:#fdd">    return utility::conversions::to_utf8string(buffer);
+}</span>
+
+std::error_condition windows_category_impl::default_error_condition(int errorCode) const CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">{</span>
+    // First see if the STL implementation can handle the mapping for common cases.
+<span style = "background-color:#fdd">    const std::error_condition errCondition = std::system_category().default_error_condition(errorCode);
+    const std::string errConditionMsg = errCondition.message();
+    if (!utility::details::str_iequal(errConditionMsg, "unknown error"))</span>
+    {
+<span style = "background-color:#fdd">        return errCondition;</span>
+    }
+
+<span style = "background-color:#fdd">    switch (errorCode)</span>
+    {
+#ifndef __cplusplus_winrt
+<span style = "background-color:#fdd">        case ERROR_WINHTTP_TIMEOUT: return std::errc::timed_out;
+        case ERROR_WINHTTP_CANNOT_CONNECT: return std::errc::host_unreachable;
+        case ERROR_WINHTTP_CONNECTION_ERROR: return std::errc::connection_aborted;</span>
+#endif
+        case INET_E_RESOURCE_NOT_FOUND:
+<span style = "background-color:#fdd">        case INET_E_CANNOT_CONNECT: return std::errc::host_unreachable;
+        case INET_E_CONNECTION_TIMEOUT: return std::errc::timed_out;
+        case INET_E_DOWNLOAD_FAILURE: return std::errc::connection_aborted;</span>
+        default: break;
+    }
+
+<span style = "background-color:#fdd">    return std::error_condition(errorCode, *this);
+}</span>
+
+#else
+
+const std::error_category&amp; __cdecl linux_category()
+{
+    // On Linux we are using boost error codes which have the exact same
+    // mapping and are equivalent with std::generic_category error codes.
+    return std::generic_category();
+}
+
+#endif
+
+} // namespace details
+
+#define LOW_3BITS 0x7
+#define LOW_4BITS 0xF
+#define LOW_5BITS 0x1F
+#define LOW_6BITS 0x3F
+#define BIT4 0x8
+#define BIT5 0x10
+#define BIT6 0x20
+#define BIT7 0x40
+#define BIT8 0x80
+#define L_SURROGATE_START 0xDC00
+#define L_SURROGATE_END 0xDFFF
+#define H_SURROGATE_START 0xD800
+#define H_SURROGATE_END 0xDBFF
+#define SURROGATE_PAIR_START 0x10000
+
+// Create a dedicated type for characters to avoid the issue
+// of different platforms defaulting char to be either signed
+// or unsigned.
+using UtilCharInternal_t = signed char;
+
+inline size_t count_utf8_to_utf16(const std::string&amp; s)
+<span style = "background-color:#dfd">{
+    const size_t sSize = s.size();
+    auto const sData = reinterpret_cast&lt;const UtilCharInternal_t*&gt;(s.data());
+    size_t result {sSize};</span>
+
+<span style = "background-color:#dfd">    for (size_t index = 0; index &lt; sSize;)</span>
+    {
+<span style = "background-color:#dfd">        if (sData[index] &gt;= 0)</span>
+        {
+            // use fast inner loop to skip single byte code points (which are
+            // expected to be the most frequent)
+<span style = "background-color:#dfd">            while ((++index &lt; sSize) &amp;&amp; (sData[index] &gt;= 0))
+                ;</span>
+
+<span style = "background-color:#dfd">            if (index &gt;= sSize) break;</span>
+        }
+
+        // start special handling for multi-byte code points
+<span style = "background-color:#fdd">        const UtilCharInternal_t c {sData[index++]};</span>
+
+<span style = "background-color:#fdd">        if ((c &amp; BIT7) == 0)</span>
+        {
+<span style = "background-color:#fdd">            throw std::range_error("UTF-8 string character can never start with 10xxxxxx");
+        }
+        else if ((c &amp; BIT6) == 0) // 2 byte character, 0x80 to 0x7FF</span>
+        {
+<span style = "background-color:#fdd">            if (index == sSize)</span>
+            {
+<span style = "background-color:#fdd">                throw std::range_error("UTF-8 string is missing bytes in character");</span>
+            }
+
+<span style = "background-color:#fdd">            const UtilCharInternal_t c2 {sData[index++]};
+            if ((c2 &amp; 0xC0) != BIT8)</span>
+            {
+<span style = "background-color:#fdd">                throw std::range_error("UTF-8 continuation byte is missing leading bit mask");</span>
+            }
+
+            // can't require surrogates for 7FF
+<span style = "background-color:#fdd">            --result;
+        }
+        else if ((c &amp; BIT5) == 0) // 3 byte character, 0x800 to 0xFFFF</span>
+        {
+<span style = "background-color:#fdd">            if (sSize - index &lt; 2)</span>
+            {
+<span style = "background-color:#fdd">                throw std::range_error("UTF-8 string is missing bytes in character");</span>
+            }
+
+<span style = "background-color:#fdd">            const UtilCharInternal_t c2 {sData[index++]};
+            const UtilCharInternal_t c3 {sData[index++]};
+            if (((c2 | c3) &amp; 0xC0) != BIT8)</span>
+            {
+<span style = "background-color:#fdd">                throw std::range_error("UTF-8 continuation byte is missing leading bit mask");</span>
+            }
+
+<span style = "background-color:#fdd">            result -= 2;
+        }
+        else if ((c &amp; BIT4) == 0) // 4 byte character, 0x10000 to 0x10FFFF</span>
+        {
+<span style = "background-color:#fdd">            if (sSize - index &lt; 3)</span>
+            {
+<span style = "background-color:#fdd">                throw std::range_error("UTF-8 string is missing bytes in character");</span>
+            }
+
+<span style = "background-color:#fdd">            const UtilCharInternal_t c2 {sData[index++]};
+            const UtilCharInternal_t c3 {sData[index++]};
+            const UtilCharInternal_t c4 {sData[index++]};
+            if (((c2 | c3 | c4) &amp; 0xC0) != BIT8)</span>
+            {
+<span style = "background-color:#fdd">                throw std::range_error("UTF-8 continuation byte is missing leading bit mask");</span>
+            }
+
+<span style = "background-color:#fdd">            const uint32_t codePoint =</span>
+                ((c &amp; LOW_3BITS) &lt;&lt; 18) | ((c2 &amp; LOW_6BITS) &lt;&lt; 12) | ((c3 &amp; LOW_6BITS) &lt;&lt; 6) | (c4 &amp; LOW_6BITS);
+<span style = "background-color:#fdd">            result -= (3 - (codePoint &gt;= SURROGATE_PAIR_START));
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            throw std::range_error("UTF-8 string has invalid Unicode code point");</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#dfd">    return result;
+}</span>
+
+utf16string __cdecl conversions::utf8_to_utf16(const std::string&amp; s)
+<span style = "background-color:#dfd">{</span>
+    // Save repeated heap allocations, use the length of resulting sequence.
+<span style = "background-color:#dfd">    const size_t srcSize = s.size();
+    auto const srcData = reinterpret_cast&lt;const UtilCharInternal_t*&gt;(s.data());
+    utf16string dest(count_utf8_to_utf16(s), L'\0');
+    utf16string::value_type* const destData = &amp;dest[0];
+    size_t destIndex = 0;</span>
+
+<span style = "background-color:#dfd">    for (size_t index = 0; index &lt; srcSize; ++index)</span>
+    {
+<span style = "background-color:#dfd">        UtilCharInternal_t src = srcData[index];
+        switch (src &amp; 0xF0)</span>
+        {
+            case 0xF0: // 4 byte character, 0x10000 to 0x10FFFF
+            {
+<span style = "background-color:#fdd">                const UtilCharInternal_t c2 {srcData[++index]};
+                const UtilCharInternal_t c3 {srcData[++index]};
+                const UtilCharInternal_t c4 {srcData[++index]};
+                uint32_t codePoint =</span>
+                    ((src &amp; LOW_3BITS) &lt;&lt; 18) | ((c2 &amp; LOW_6BITS) &lt;&lt; 12) | ((c3 &amp; LOW_6BITS) &lt;&lt; 6) | (c4 &amp; LOW_6BITS);
+<span style = "background-color:#fdd">                if (codePoint &gt;= SURROGATE_PAIR_START)</span>
+                {
+                    // In UTF-16 U+10000 to U+10FFFF are represented as two 16-bit code units, surrogate pairs.
+                    //  - 0x10000 is subtracted from the code point
+                    //  - high surrogate is 0xD800 added to the top ten bits
+                    //  - low surrogate is 0xDC00 added to the low ten bits
+<span style = "background-color:#fdd">                    codePoint -= SURROGATE_PAIR_START;
+                    destData[destIndex++] = static_cast&lt;utf16string::value_type&gt;((codePoint &gt;&gt; 10) | H_SURROGATE_START);
+                    destData[destIndex++] =</span>
+                        static_cast&lt;utf16string::value_type&gt;((codePoint &amp; 0x3FF) | L_SURROGATE_START);
+<span style = "background-color:#fdd">                }</span>
+                else
+                {
+                    // In UTF-16 U+0000 to U+D7FF and U+E000 to U+FFFF are represented exactly as the Unicode code point
+                    // value. U+D800 to U+DFFF are not valid characters, for simplicity we assume they are not present
+                    // but will encode them if encountered.
+<span style = "background-color:#fdd">                    destData[destIndex++] = static_cast&lt;utf16string::value_type&gt;(codePoint);</span>
+                }
+            }
+<span style = "background-color:#fdd">            break;</span>
+            case 0xE0: // 3 byte character, 0x800 to 0xFFFF
+            {
+<span style = "background-color:#fdd">                const UtilCharInternal_t c2 {srcData[++index]};
+                const UtilCharInternal_t c3 {srcData[++index]};
+                destData[destIndex++] = static_cast&lt;utf16string::value_type&gt;(</span>
+                    ((src &amp; LOW_4BITS) &lt;&lt; 12) | ((c2 &amp; LOW_6BITS) &lt;&lt; 6) | (c3 &amp; LOW_6BITS));
+            }
+<span style = "background-color:#fdd">            break;</span>
+            case 0xD0: // 2 byte character, 0x80 to 0x7FF
+            case 0xC0:
+            {
+<span style = "background-color:#fdd">                const UtilCharInternal_t c2 {srcData[++index]};
+                destData[destIndex++] =</span>
+                    static_cast&lt;utf16string::value_type&gt;(((src &amp; LOW_5BITS) &lt;&lt; 6) | (c2 &amp; LOW_6BITS));
+            }
+<span style = "background-color:#fdd">            break;</span>
+            default: // single byte character, 0x0 to 0x7F
+                // try to use a fast inner loop for following single byte characters,
+                // since they are quite probable
+                do
+                {
+<span style = "background-color:#dfd">                    destData[destIndex++] = static_cast&lt;utf16string::value_type&gt;(srcData[index++]);
+                } while (index &lt; srcSize &amp;&amp; srcData[index] &gt; 0);</span>
+                // adjust index since it will be incremented by the for loop
+<span style = "background-color:#dfd">                --index;</span>
+        }
+<span style = "background-color:#dfd">    }
+    return dest;
+}</span>
+
+inline size_t count_utf16_to_utf8(const utf16string&amp; w)
+<span style = "background-color:#fdd">{
+    const utf16string::value_type* const srcData = &amp;w[0];
+    const size_t srcSize = w.size();
+    size_t destSize(srcSize);
+    for (size_t index = 0; index &lt; srcSize; ++index)</span>
+    {
+<span style = "background-color:#fdd">        const utf16string::value_type ch(srcData[index]);
+        if (ch &lt;= 0x7FF)</span>
+        {
+<span style = "background-color:#fdd">            if (ch &gt; 0x7F) // 2 bytes needed (11 bits used)</span>
+            {
+<span style = "background-color:#fdd">                ++destSize;</span>
+            }
+<span style = "background-color:#fdd">        }</span>
+        // Check for high surrogate.
+<span style = "background-color:#fdd">        else if (ch &gt;= H_SURROGATE_START &amp;&amp; ch &lt;= H_SURROGATE_END) // 4 bytes needed (21 bits used)</span>
+        {
+<span style = "background-color:#fdd">            ++index;
+            if (index == srcSize)</span>
+            {
+<span style = "background-color:#fdd">                throw std::range_error("UTF-16 string is missing low surrogate");</span>
+            }
+
+<span style = "background-color:#fdd">            const auto lowSurrogate = srcData[index];
+            if (lowSurrogate &lt; L_SURROGATE_START || lowSurrogate &gt; L_SURROGATE_END)</span>
+            {
+<span style = "background-color:#fdd">                throw std::range_error("UTF-16 string has invalid low surrogate");</span>
+            }
+
+<span style = "background-color:#fdd">            destSize += 2;
+        }</span>
+        else // 3 bytes needed (16 bits used)
+        {
+<span style = "background-color:#fdd">            destSize += 2;</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    return destSize;
+}</span>
+
+std::string __cdecl conversions::utf16_to_utf8(const utf16string&amp; w)
+<span style = "background-color:#fdd">{
+    const size_t srcSize = w.size();
+    const utf16string::value_type* const srcData = &amp;w[0];
+    std::string dest(count_utf16_to_utf8(w), '\0');
+    std::string::value_type* const destData = &amp;dest[0];
+    size_t destIndex(0);</span>
+
+<span style = "background-color:#fdd">    for (size_t index = 0; index &lt; srcSize; ++index)</span>
+    {
+<span style = "background-color:#fdd">        const utf16string::value_type src = srcData[index];
+        if (src &lt;= 0x7FF)</span>
+        {
+<span style = "background-color:#fdd">            if (src &lt;= 0x7F) // single byte character</span>
+            {
+<span style = "background-color:#fdd">                destData[destIndex++] = static_cast&lt;char&gt;(src);
+            }</span>
+            else // 2 bytes needed (11 bits used)
+            {
+<span style = "background-color:#fdd">                destData[destIndex++] = static_cast&lt;char&gt;(char((src &gt;&gt; 6) | 0xC0));        // leading 5 bits
+                destData[destIndex++] = static_cast&lt;char&gt;(char((src &amp; LOW_6BITS) | BIT8)); // trailing 6 bits</span>
+            }
+<span style = "background-color:#fdd">        }</span>
+        // Check for high surrogate.
+<span style = "background-color:#fdd">        else if (src &gt;= H_SURROGATE_START &amp;&amp; src &lt;= H_SURROGATE_END)</span>
+        {
+<span style = "background-color:#fdd">            const auto highSurrogate = src;
+            const auto lowSurrogate = srcData[++index];</span>
+
+            // To get from surrogate pair to Unicode code point:
+            // - subtract 0xD800 from high surrogate, this forms top ten bits
+            // - subtract 0xDC00 from low surrogate, this forms low ten bits
+            // - add 0x10000
+            // Leaves a code point in U+10000 to U+10FFFF range.
+<span style = "background-color:#fdd">            uint32_t codePoint = highSurrogate - H_SURROGATE_START;
+            codePoint &lt;&lt;= 10;
+            codePoint |= lowSurrogate - L_SURROGATE_START;
+            codePoint += SURROGATE_PAIR_START;</span>
+
+            // 4 bytes needed (21 bits used)
+<span style = "background-color:#fdd">            destData[destIndex++] = static_cast&lt;char&gt;((codePoint &gt;&gt; 18) | 0xF0);               // leading 3 bits
+            destData[destIndex++] = static_cast&lt;char&gt;(((codePoint &gt;&gt; 12) &amp; LOW_6BITS) | BIT8); // next 6 bits
+            destData[destIndex++] = static_cast&lt;char&gt;(((codePoint &gt;&gt; 6) &amp; LOW_6BITS) | BIT8);  // next 6 bits
+            destData[destIndex++] = static_cast&lt;char&gt;((codePoint &amp; LOW_6BITS) | BIT8);         // trailing 6 bits
+        }</span>
+        else // 3 bytes needed (16 bits used)
+        {
+<span style = "background-color:#fdd">            destData[destIndex++] = static_cast&lt;char&gt;((src &gt;&gt; 12) | 0xE0);              // leading 4 bits
+            destData[destIndex++] = static_cast&lt;char&gt;(((src &gt;&gt; 6) &amp; LOW_6BITS) | BIT8); // middle 6 bits
+            destData[destIndex++] = static_cast&lt;char&gt;((src &amp; LOW_6BITS) | BIT8);        // trailing 6 bits</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    return dest;
+}</span>
+
+utf16string __cdecl conversions::usascii_to_utf16(const std::string&amp; s)
+<span style = "background-color:#fdd">{</span>
+    // Ascii is a subset of UTF-8 so just convert to UTF-16
+<span style = "background-color:#fdd">    return utf8_to_utf16(s);
+}</span>
+
+utf16string __cdecl conversions::latin1_to_utf16(const std::string&amp; s)
+<span style = "background-color:#fdd">{</span>
+    // Latin1 is the first 256 code points in Unicode.
+    // In UTF-16 encoding each of these is represented as exactly the numeric code point.
+<span style = "background-color:#fdd">    utf16string dest;</span>
+    // Prefer resize combined with for-loop over constructor dest(s.begin(), s.end())
+    // for faster assignment.
+<span style = "background-color:#fdd">    dest.resize(s.size());
+    for (size_t i = 0; i &lt; s.size(); ++i)</span>
+    {
+<span style = "background-color:#fdd">        dest[i] = utf16char(static_cast&lt;unsigned char&gt;(s[i]));
+    }
+    return dest;
+}</span>
+
+<span style = "background-color:#fdd">utf8string __cdecl conversions::latin1_to_utf8(const std::string&amp; s) { return utf16_to_utf8(latin1_to_utf16(s)); }</span>
+
+#ifndef _UTF16_STRINGS
+utility::string_t __cdecl conversions::to_string_t(utf16string&amp;&amp; s) { return utf16_to_utf8(std::move(s)); }
+#endif
+
+#ifdef _UTF16_STRINGS
+<span style = "background-color:#dfd">utility::string_t __cdecl conversions::to_string_t(std::string&amp;&amp; s) { return utf8_to_utf16(std::move(s)); }</span>
+#endif
+
+#ifndef _UTF16_STRINGS
+utility::string_t __cdecl conversions::to_string_t(const utf16string&amp; s) { return utf16_to_utf8(s); }
+#endif
+
+#ifdef _UTF16_STRINGS
+<span style = "background-color:#dfd">utility::string_t __cdecl conversions::to_string_t(const std::string&amp; s) { return utf8_to_utf16(s); }</span>
+#endif
+
+<span style = "background-color:#fdd">std::string __cdecl conversions::to_utf8string(const utf16string&amp; value) { return utf16_to_utf8(value); }</span>
+
+<span style = "background-color:#fdd">utf16string __cdecl conversions::to_utf16string(const std::string&amp; value) { return utf8_to_utf16(value); }</span>
+
+static const int64_t NtToUnixOffsetSeconds = 11644473600; // diff between windows and unix epochs (seconds)
+
+static bool year_is_leap_year_1601(int yearsSince1601)
+<span style = "background-color:#fdd">{
+    int decimalYear = yearsSince1601 + 1601;
+    return (decimalYear % 4 == 0 &amp;&amp; (decimalYear % 100 != 0 || decimalYear % 400 == 0));
+}</span>
+
+static const int SecondsInMinute = 60;
+static const int SecondsInHour = SecondsInMinute * 60;
+static const int SecondsInDay = SecondsInHour * 24;
+
+static const int DaysInYear = 365;
+static const int DaysIn4Years = DaysInYear * 4 + 1;
+static const int DaysIn100Years = DaysIn4Years * 25 - 1;
+static const int DaysIn400Years = DaysIn100Years * 4 + 1;
+
+static const int SecondsInYear = SecondsInDay * DaysInYear;
+static const int SecondsIn4Years = SecondsInDay * DaysIn4Years;
+static const int64_t SecondsIn100Years = static_cast&lt;int64_t&gt;(SecondsInDay) * DaysIn100Years;
+static const int64_t SecondsIn400Years = static_cast&lt;int64_t&gt;(SecondsInDay) * DaysIn400Years;
+
+static int count_leap_years_1601(int yearsSince1601)
+<span style = "background-color:#fdd">{
+    int year400 = yearsSince1601 / 400;
+    yearsSince1601 -= year400 * 400;
+    int result = year400 * 97;</span>
+
+<span style = "background-color:#fdd">    int year100 = yearsSince1601 / 100;
+    yearsSince1601 -= year100 * 100;
+    result += year100 * 24;</span>
+
+<span style = "background-color:#fdd">    result += yearsSince1601 / 4;</span>
+
+<span style = "background-color:#fdd">    return result;
+}</span>
+
+// The following table assumes no leap year; leap year is added separately
+static const unsigned short cumulative_days_to_month[12] = {
+    0,   // Jan
+    31,  // Feb
+    59,  // Mar
+    90,  // Apr
+    120, // May
+    151, // Jun
+    181, // Jul
+    212, // Aug
+    243, // Sep
+    273, // Oct
+    304, // Nov
+    334  // Dec
+};
+
+static const unsigned short cumulative_days_to_month_leap[12] = {
+    0,   // Jan
+    31,  // Feb
+    60,  // Mar
+    91,  // Apr
+    121, // May
+    152, // Jun
+    182, // Jul
+    213, // Aug
+    244, // Sep
+    274, // Oct
+    305, // Nov
+    335  // Dec
+};
+
+datetime __cdecl datetime::utc_now()
+<span style = "background-color:#fdd">{</span>
+#ifdef _WIN32
+    ULARGE_INTEGER largeInt;
+    FILETIME fileTime;
+<span style = "background-color:#fdd">    GetSystemTimeAsFileTime(&amp;fileTime);</span>
+
+<span style = "background-color:#fdd">    largeInt.LowPart = fileTime.dwLowDateTime;
+    largeInt.HighPart = fileTime.dwHighDateTime;</span>
+
+<span style = "background-color:#fdd">    return datetime(largeInt.QuadPart);</span>
+#else // LINUX
+    struct timeval time;
+    gettimeofday(&amp;time, nullptr);
+    int64_t result = NtToUnixOffsetSeconds + time.tv_sec;
+    result *= _secondTicks;      // convert to 10e-7
+    result += time.tv_usec * 10; // convert and add microseconds, 10e-6 to 10e-7
+    return datetime(static_cast&lt;interval_type&gt;(result));
+#endif
+<span style = "background-color:#fdd">}</span>
+
+static const char dayNames[] = "Sun\0Mon\0Tue\0Wed\0Thu\0Fri\0Sat";
+static const char monthNames[] = "Jan\0Feb\0Mar\0Apr\0May\0Jun\0Jul\0Aug\0Sep\0Oct\0Nov\0Dec";
+
+struct compute_year_result
+{
+    int year;
+    int secondsLeftThisYear;
+};
+
+static compute_year_result compute_year_1601(int64_t secondsSince1601)
+<span style = "background-color:#fdd">{
+    int year400 = static_cast&lt;int&gt;(secondsSince1601 / SecondsIn400Years);
+    secondsSince1601 -= year400 * SecondsIn400Years;</span>
+
+<span style = "background-color:#fdd">    int year100 = static_cast&lt;int&gt;(secondsSince1601 / SecondsIn100Years);
+    secondsSince1601 -= year100 * SecondsIn100Years;</span>
+
+<span style = "background-color:#fdd">    int year4 = static_cast&lt;int&gt;(secondsSince1601 / SecondsIn4Years);
+    int secondsInt = static_cast&lt;int&gt;(secondsSince1601 - year4 * SecondsIn4Years);</span>
+
+<span style = "background-color:#fdd">    int year1 = secondsInt / SecondsInYear;
+    if (year1 == 4)</span>
+    {
+        // this is the last day in a leap year
+<span style = "background-color:#fdd">        year1 = 3;</span>
+    }
+
+<span style = "background-color:#fdd">    secondsInt -= year1 * SecondsInYear;
+    return {year400 * 400 + year100 * 100 + year4 * 4 + year1, secondsInt};
+}</span>
+
+// The constant below was calculated by running the following test program on a Windows machine:
+// #include &lt;windows.h&gt;
+// #include &lt;stdio.h&gt;
+
+// int main() {
+//     SYSTEMTIME st;
+//     st.wYear = 9999;
+//     st.wMonth = 12;
+//     st.wDayOfWeek = 5;
+//     st.wDay = 31;
+//     st.wHour = 23;
+//     st.wMinute = 59;
+//     st.wSecond = 59;
+//     st.wMilliseconds = 999;
+
+//     unsigned long long ft;
+//     if (SystemTimeToFileTime(&amp;st, reinterpret_cast&lt;FILETIME*&gt;(&amp;ft))) {
+//         printf("0x%016llX\n", ft);
+//     } else {
+//         puts("failed!");
+//     }
+// }
+
+utility::string_t datetime::to_string(date_format format) const
+<span style = "background-color:#fdd">{
+    const int64_t interval = static_cast&lt;int64_t&gt;(m_interval);
+    if (interval &gt; INT64_C(0x24C85A5ED1C018F0))</span>
+    {
+<span style = "background-color:#fdd">        throw std::out_of_range("The requested year exceeds the year 9999.");</span>
+    }
+
+<span style = "background-color:#fdd">    const int64_t secondsSince1601 = interval / _secondTicks; // convert to seconds
+    const int fracSec = static_cast&lt;int&gt;(interval % _secondTicks);</span>
+
+<span style = "background-color:#fdd">    const auto yearData = compute_year_1601(secondsSince1601);
+    const int year = yearData.year;
+    const int yearDay = yearData.secondsLeftThisYear / SecondsInDay;
+    int leftover = yearData.secondsLeftThisYear % SecondsInDay;
+    const int hour = leftover / SecondsInHour;
+    leftover = leftover % SecondsInHour;
+    const int minute = leftover / SecondsInMinute;
+    leftover = leftover % SecondsInMinute;</span>
+
+<span style = "background-color:#fdd">    const auto&amp; monthTable = year_is_leap_year_1601(year) ? cumulative_days_to_month_leap : cumulative_days_to_month;
+    int month = 0;
+    while (month &lt; 11 &amp;&amp; monthTable[month + 1] &lt;= yearDay)</span>
+    {
+<span style = "background-color:#fdd">        ++month;
+    }</span>
+
+<span style = "background-color:#fdd">    const auto monthDay = yearDay - monthTable[month] + 1;
+    const auto weekday = static_cast&lt;int&gt;((secondsSince1601 / SecondsInDay + 1) % 7);</span>
+
+    char outBuffer[38]; // Thu, 01 Jan 1970 00:00:00 GMT\0
+                        // 1970-01-01T00:00:00.1234567Z\0
+<span style = "background-color:#fdd">    char* outCursor = outBuffer;
+    switch (format)</span>
+    {
+        case RFC_1123:
+#ifdef _MSC_VER
+<span style = "background-color:#fdd">            sprintf_s(outCursor,</span>
+                      26,
+                      "%s, %02d %s %04d %02d:%02d:%02d",
+                      dayNames + 4 * weekday,
+                      monthDay,
+                      monthNames + 4 * month,
+                      year + 1601,
+                      hour,
+                      minute,
+                      leftover);
+#else  // ^^^ _MSC_VER // !_MSC_VER vvv
+            sprintf(outCursor,
+                    "%s, %02d %s %04d %02d:%02d:%02d",
+                    dayNames + 4 * weekday,
+                    monthDay,
+                    monthNames + 4 * month,
+                    year + 1601,
+                    hour,
+                    minute,
+                    leftover);
+#endif // _MSC_VER
+<span style = "background-color:#fdd">            outCursor += 25;
+            memcpy(outCursor, " GMT", 4);
+            outCursor += 4;
+            return utility::string_t(outBuffer, outCursor);</span>
+        case ISO_8601:
+#ifdef _MSC_VER
+<span style = "background-color:#fdd">            sprintf_s(outCursor,</span>
+                      20,
+                      "%04d-%02d-%02dT%02d:%02d:%02d",
+                      year + 1601,
+                      month + 1,
+                      monthDay,
+                      hour,
+                      minute,
+                      leftover);
+#else  // ^^^ _MSC_VER // !_MSC_VER vvv
+            sprintf(
+                outCursor, "%04d-%02d-%02dT%02d:%02d:%02d", year + 1601, month + 1, monthDay, hour, minute, leftover);
+#endif // _MSC_VER
+<span style = "background-color:#fdd">            outCursor += 19;
+            if (fracSec != 0)</span>
+            {
+                // Append fractional second, which is a 7-digit value with no trailing zeros
+                // This way, '1200' becomes '00012'
+#ifdef _MSC_VER
+<span style = "background-color:#fdd">                size_t appended = sprintf_s(outCursor, 9, ".%07d", fracSec);</span>
+#else  // ^^^ _MSC_VER // !_MSC_VER vvv
+                size_t appended = sprintf(outCursor, ".%07d", fracSec);
+#endif // _MSC_VER
+<span style = "background-color:#fdd">                while (outCursor[appended - 1] == '0')</span>
+                {
+<span style = "background-color:#fdd">                    --appended; // trim trailing zeros
+                }</span>
+
+<span style = "background-color:#fdd">                outCursor += appended;</span>
+            }
+
+<span style = "background-color:#fdd">            *outCursor = 'Z';
+            ++outCursor;
+            return utility::string_t(outBuffer, outCursor);
+        default: throw std::invalid_argument("Unrecognized date format.");</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+template&lt;class CharT&gt;
+static bool string_starts_with(const CharT* haystack, const char* needle)
+<span style = "background-color:#fdd">{
+    while (*needle)</span>
+    {
+<span style = "background-color:#fdd">        if (*haystack != static_cast&lt;CharT&gt;(*needle))</span>
+        {
+<span style = "background-color:#fdd">            return false;</span>
+        }
+
+<span style = "background-color:#fdd">        ++haystack;
+        ++needle;
+    }</span>
+
+<span style = "background-color:#fdd">    return true;
+}</span>
+
+#define ascii_isdigit(c) ((unsigned char)((unsigned char)(c) - '0') &lt;= 9)
+#define ascii_isdigit6(c) ((unsigned char)((unsigned char)(c) - '0') &lt;= 6)
+#define ascii_isdigit5(c) ((unsigned char)((unsigned char)(c) - '0') &lt;= 5)
+#define ascii_isdigit3(c) ((unsigned char)((unsigned char)(c) - '0') &lt;= 3)
+#define ascii_isdigit2(c) ((unsigned char)((unsigned char)(c) - '0') &lt;= 2)
+#define ascii_isdigit1(c) ((unsigned char)((unsigned char)(c) - '0') &lt;= 1)
+
+static const unsigned char max_days_in_month[12] = {
+    31, // Jan
+    00, // Feb, special handling for leap years
+    31, // Mar
+    30, // Apr
+    31, // May
+    30, // Jun
+    31, // Jul
+    31, // Aug
+    30, // Sep
+    31, // Oct
+    30, // Nov
+    31  // Dec
+};
+
+static bool validate_day_month_1601(int day, int month, int year)
+<span style = "background-color:#fdd">{</span>
+    int maxDaysThisMonth;
+<span style = "background-color:#fdd">    if (month == 1)</span>
+    { // Feb needs leap year testing
+<span style = "background-color:#fdd">        maxDaysThisMonth = 28 + year_is_leap_year_1601(year);
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        maxDaysThisMonth = max_days_in_month[month];</span>
+    }
+
+<span style = "background-color:#fdd">    return day &gt;= 1 &amp;&amp; day &lt;= maxDaysThisMonth;
+}</span>
+
+static int get_year_day_1601(int month, int monthDay, int year)
+<span style = "background-color:#fdd">{
+    return cumulative_days_to_month[month] + monthDay + (year_is_leap_year_1601(year) &amp;&amp; month &gt; 1) - 1;
+}</span>
+
+template&lt;class CharT&gt;
+static int atoi2(const CharT* str)
+<span style = "background-color:#fdd">{
+    return (static_cast&lt;unsigned char&gt;(str[0]) - '0') * 10 + (static_cast&lt;unsigned char&gt;(str[1]) - '0');
+}</span>
+
+static int64_t timezone_adjust(int64_t result, unsigned char chSign, int adjustHours, int adjustMinutes)
+<span style = "background-color:#fdd">{
+    if (adjustHours &gt; 23)</span>
+    {
+<span style = "background-color:#fdd">        return -1;</span>
+    }
+
+    // adjustMinutes &gt; 59 is impossible due to digit 5 check
+<span style = "background-color:#fdd">    const int tzAdjust = adjustMinutes * 60 + adjustHours * 60 * 60;
+    if (chSign == '-')</span>
+    {
+<span style = "background-color:#fdd">        if (INT64_MAX - result &lt; tzAdjust)</span>
+        {
+<span style = "background-color:#fdd">            return -1;</span>
+        }
+
+<span style = "background-color:#fdd">        result += tzAdjust;
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        if (tzAdjust &gt; result)</span>
+        {
+<span style = "background-color:#fdd">            return -1;</span>
+        }
+
+<span style = "background-color:#fdd">        result -= tzAdjust;</span>
+    }
+
+<span style = "background-color:#fdd">    return result;
+}</span>
+
+/*
+https://tools.ietf.org/html/rfc822
+https://tools.ietf.org/html/rfc1123
+
+date-time   =  [ day "," ] date time        ; dd mm yy
+                                            ;  hh:mm:ss zzz
+
+day         =  "Mon"  / "Tue" /  "Wed"  / "Thu"
+            /  "Fri"  / "Sat" /  "Sun"
+
+date        =  1*2DIGIT month 2DIGIT        ; day month year
+                                            ;  e.g. 20 Jun 82
+RFC1123 changes this to:
+date        =  1*2DIGIT month 2*4DIGIT        ; day month year
+                                              ;  e.g. 20 Jun 1982
+This implementation only accepts 4 digit years.
+
+month       =  "Jan"  /  "Feb" /  "Mar"  /  "Apr"
+            /  "May"  /  "Jun" /  "Jul"  /  "Aug"
+            /  "Sep"  /  "Oct" /  "Nov"  /  "Dec"
+
+time        =  hour zone                    ; ANSI and Military
+
+hour        =  2DIGIT ":" 2DIGIT [":" 2DIGIT]
+                                            ; 00:00:00 - 23:59:59
+
+zone        =  "UT"  / "GMT"                ; Universal Time
+                                            ; North American : UT
+            /  "EST" / "EDT"                ;  Eastern:  - 5/ - 4
+            /  "CST" / "CDT"                ;  Central:  - 6/ - 5
+            /  "MST" / "MDT"                ;  Mountain: - 7/ - 6
+            /  "PST" / "PDT"                ;  Pacific:  - 8/ - 7
+
+// military time deleted by RFC 1123
+
+            / ( ("+" / "-") 4DIGIT )        ; Local differential
+                                            ;  hours+min. (HHMM)
+*/
+
+datetime __cdecl datetime::from_string(const utility::string_t&amp; dateString, date_format format)
+<span style = "background-color:#fdd">{
+    auto result = from_string_maximum_error(dateString, format);
+    if (result == datetime::maximum())</span>
+    {
+<span style = "background-color:#fdd">        return datetime();</span>
+    }
+
+<span style = "background-color:#fdd">    return result;
+}</span>
+
+datetime __cdecl datetime::from_string_maximum_error(const utility::string_t&amp; dateString, date_format format)
+<span style = "background-color:#fdd">{
+    datetime result = datetime::maximum();</span>
+    int64_t secondsSince1601;
+<span style = "background-color:#fdd">    uint64_t fracSec = 0;
+    auto str = dateString.c_str();
+    if (format == RFC_1123)</span>
+    {
+<span style = "background-color:#fdd">        int parsedWeekday = 0;
+        for (; parsedWeekday &lt; 7; ++parsedWeekday)</span>
+        {
+<span style = "background-color:#fdd">            if (string_starts_with(str, dayNames + parsedWeekday * 4) &amp;&amp; str[3] == _XPLATSTR(',') &amp;&amp;</span>
+                str[4] == _XPLATSTR(' '))
+            {
+<span style = "background-color:#fdd">                str += 5; // parsed day of week
+                break;</span>
+            }
+<span style = "background-color:#fdd">        }</span>
+
+        int monthDay;
+<span style = "background-color:#fdd">        if (ascii_isdigit3(str[0]) &amp;&amp; ascii_isdigit(str[1]) &amp;&amp; str[2] == _XPLATSTR(' '))</span>
+        {
+<span style = "background-color:#fdd">            monthDay = atoi2(str); // validity checked later
+            str += 3;              // parsed day
+        }
+        else if (ascii_isdigit(str[0]) &amp;&amp; str[1] == _XPLATSTR(' '))</span>
+        {
+<span style = "background-color:#fdd">            monthDay = str[0] - _XPLATSTR('0');
+            str += 2; // parsed day
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        if (monthDay == 0)</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        int month = 0;</span>
+        for (;;)
+        {
+<span style = "background-color:#fdd">            if (string_starts_with(str, monthNames + month * 4))</span>
+            {
+<span style = "background-color:#fdd">                break;</span>
+            }
+
+<span style = "background-color:#fdd">            ++month;
+            if (month == 12)</span>
+            {
+<span style = "background-color:#fdd">                return result;</span>
+            }
+<span style = "background-color:#fdd">        }</span>
+
+<span style = "background-color:#fdd">        if (str[3] != _XPLATSTR(' '))</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        str += 4; // parsed month</span>
+
+<span style = "background-color:#fdd">        if (!ascii_isdigit(str[0]) || !ascii_isdigit(str[1]) || !ascii_isdigit(str[2]) || !ascii_isdigit(str[3]) ||</span>
+            str[4] != ' ')
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        int year = (str[0] - _XPLATSTR('0')) * 1000 + (str[1] - _XPLATSTR('0')) * 100 + (str[2] - _XPLATSTR('0')) * 10 +</span>
+                   (str[3] - _XPLATSTR('0'));
+<span style = "background-color:#fdd">        if (year &lt; 1601)</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        year -= 1601;</span>
+
+        // days in month validity check
+<span style = "background-color:#fdd">        if (!validate_day_month_1601(monthDay, month, year))</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        str += 5; // parsed year
+        const int yearDay = get_year_day_1601(month, monthDay, year);</span>
+
+<span style = "background-color:#fdd">        if (!ascii_isdigit2(str[0]) || !ascii_isdigit(str[1]) || str[2] != _XPLATSTR(':') || !ascii_isdigit5(str[3]) ||</span>
+            !ascii_isdigit(str[4]))
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        const int hour = atoi2(str);
+        if (hour &gt; 23)</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        str += 3; // parsed hour
+        const int minute = atoi2(str);
+        str += 2; // parsed mins</span>
+
+        int sec;
+<span style = "background-color:#fdd">        if (str[0] == ':')</span>
+        {
+<span style = "background-color:#fdd">            if (!ascii_isdigit6(str[1]) || !ascii_isdigit(str[2]) || str[3] != _XPLATSTR(' '))</span>
+            {
+<span style = "background-color:#fdd">                return result;</span>
+            }
+
+<span style = "background-color:#fdd">            sec = atoi2(str + 1);
+            str += 4; // parsed seconds
+        }
+        else if (str[0] == _XPLATSTR(' '))</span>
+        {
+<span style = "background-color:#fdd">            sec = 0;
+            str += 1; // parsed seconds
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        if (sec &gt; 60)</span>
+        { // 60 to allow leap seconds
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        int daysSince1601 = year * DaysInYear + count_leap_years_1601(year) + yearDay;</span>
+
+<span style = "background-color:#fdd">        if (parsedWeekday != 7)</span>
+        {
+<span style = "background-color:#fdd">            const int actualWeekday = (daysSince1601 + 1) % 7;</span>
+
+<span style = "background-color:#fdd">            if (parsedWeekday != actualWeekday)</span>
+            {
+<span style = "background-color:#fdd">                return result;</span>
+            }
+        }
+
+<span style = "background-color:#fdd">        secondsSince1601 =</span>
+            static_cast&lt;int64_t&gt;(daysSince1601) * SecondsInDay + hour * SecondsInHour + minute * SecondsInMinute + sec;
+
+<span style = "background-color:#fdd">        if (!string_starts_with(str, "GMT") &amp;&amp; !string_starts_with(str, "UT"))</span>
+        {
+            // some timezone adjustment necessary
+<span style = "background-color:#fdd">            auto tzCh = _XPLATSTR('-');</span>
+            int tzHours;
+<span style = "background-color:#fdd">            int tzMinutes = 0;
+            if (string_starts_with(str, "EDT"))</span>
+            {
+<span style = "background-color:#fdd">                tzHours = 4;
+            }
+            else if (string_starts_with(str, "EST") || string_starts_with(str, "CDT"))</span>
+            {
+<span style = "background-color:#fdd">                tzHours = 5;
+            }
+            else if (string_starts_with(str, "CST") || string_starts_with(str, "MDT"))</span>
+            {
+<span style = "background-color:#fdd">                tzHours = 6;
+            }
+            else if (string_starts_with(str, "MST") || string_starts_with(str, "PDT"))</span>
+            {
+<span style = "background-color:#fdd">                tzHours = 7;
+            }
+            else if (string_starts_with(str, "PST"))</span>
+            {
+<span style = "background-color:#fdd">                tzHours = 8;
+            }</span>
+            else if ((str[0] == _XPLATSTR('+') || str[0] == _XPLATSTR('-')) &amp;&amp; ascii_isdigit2(str[1]) &amp;&amp;
+<span style = "background-color:#fdd">                     ascii_isdigit(str[2]) &amp;&amp; ascii_isdigit5(str[3]) &amp;&amp; ascii_isdigit(str[4]))</span>
+            {
+<span style = "background-color:#fdd">                tzCh = str[0];
+                tzHours = atoi2(str + 1);
+                tzMinutes = atoi2(str + 3);
+            }</span>
+            else
+            {
+<span style = "background-color:#fdd">                return result;</span>
+            }
+
+<span style = "background-color:#fdd">            secondsSince1601 = timezone_adjust(secondsSince1601, static_cast&lt;unsigned char&gt;(tzCh), tzHours, tzMinutes);
+            if (secondsSince1601 &lt; 0)</span>
+            {
+<span style = "background-color:#fdd">                return result;</span>
+            }
+        }
+<span style = "background-color:#fdd">    }
+    else if (format == ISO_8601)</span>
+    {
+        // parse year
+<span style = "background-color:#fdd">        if (!ascii_isdigit(str[0]) || !ascii_isdigit(str[1]) || !ascii_isdigit(str[2]) || !ascii_isdigit(str[3]))</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        int year = (str[0] - _XPLATSTR('0')) * 1000 + (str[1] - _XPLATSTR('0')) * 100 + (str[2] - _XPLATSTR('0')) * 10 +</span>
+                   (str[3] - _XPLATSTR('0'));
+<span style = "background-color:#fdd">        if (year &lt; 1601)</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        year -= 1601;</span>
+
+<span style = "background-color:#fdd">        str += 4;
+        if (*str == _XPLATSTR('-'))</span>
+        {
+<span style = "background-color:#fdd">            ++str;</span>
+        }
+
+        // parse month
+<span style = "background-color:#fdd">        if (!ascii_isdigit1(str[0]) || !ascii_isdigit(str[1]))</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        int month = atoi2(str);
+        if (month &lt; 1 || month &gt; 12)</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        month -= 1;
+        str += 2;</span>
+
+<span style = "background-color:#fdd">        if (*str == _XPLATSTR('-'))</span>
+        {
+<span style = "background-color:#fdd">            ++str;</span>
+        }
+
+        // parse day
+<span style = "background-color:#fdd">        if (!ascii_isdigit3(str[0]) || !ascii_isdigit(str[1]))</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        int monthDay = atoi2(str);
+        if (!validate_day_month_1601(monthDay, month, year))</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        const int yearDay = get_year_day_1601(month, monthDay, year);</span>
+
+<span style = "background-color:#fdd">        str += 2;
+        int daysSince1601 = year * DaysInYear + count_leap_years_1601(year) + yearDay;</span>
+
+<span style = "background-color:#fdd">        if (str[0] != _XPLATSTR('T') &amp;&amp; str[0] != _XPLATSTR('t'))</span>
+        {
+            // No time
+<span style = "background-color:#fdd">            secondsSince1601 = static_cast&lt;int64_t&gt;(daysSince1601) * SecondsInDay;</span>
+
+<span style = "background-color:#fdd">            result.m_interval = static_cast&lt;interval_type&gt;(secondsSince1601 * _secondTicks + fracSec);
+            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        ++str; // skip 'T'</span>
+
+        // parse hour
+<span style = "background-color:#fdd">        if (!ascii_isdigit2(str[0]) || !ascii_isdigit(str[1]))</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        const int hour = atoi2(str);
+        str += 2;
+        if (hour &gt; 23)</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        if (*str == _XPLATSTR(':'))</span>
+        {
+<span style = "background-color:#fdd">            ++str;</span>
+        }
+
+        // parse minute
+<span style = "background-color:#fdd">        if (!ascii_isdigit5(str[0]) || !ascii_isdigit(str[1]))</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        const int minute = atoi2(str);</span>
+        // minute &gt; 59 is impossible because we checked that the first digit is &lt;= 5 in the basic format
+        // check above
+
+<span style = "background-color:#fdd">        str += 2;</span>
+
+<span style = "background-color:#fdd">        if (*str == _XPLATSTR(':'))</span>
+        {
+<span style = "background-color:#fdd">            ++str;</span>
+        }
+
+        // parse seconds
+<span style = "background-color:#fdd">        if (!ascii_isdigit6(str[0]) || !ascii_isdigit(str[1]))</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        const int sec = atoi2(str);</span>
+        // We allow 60 to account for leap seconds
+<span style = "background-color:#fdd">        if (sec &gt; 60)</span>
+        {
+<span style = "background-color:#fdd">            return result;</span>
+        }
+
+<span style = "background-color:#fdd">        str += 2;
+        if (str[0] == _XPLATSTR('.') &amp;&amp; ascii_isdigit(str[1]))</span>
+        {
+<span style = "background-color:#fdd">            ++str;
+            int digits = 7;</span>
+            for (;;)
+            {
+<span style = "background-color:#fdd">                fracSec *= 10;
+                fracSec += *str - _XPLATSTR('0');
+                --digits;
+                ++str;
+                if (digits == 0)</span>
+                {
+<span style = "background-color:#fdd">                    while (ascii_isdigit(*str))</span>
+                    {
+                        // consume remaining fractional second digits we can't use
+<span style = "background-color:#fdd">                        ++str;
+                    }</span>
+
+<span style = "background-color:#fdd">                    break;</span>
+                }
+
+<span style = "background-color:#fdd">                if (!ascii_isdigit(*str))</span>
+                {
+                    // no more digits in the input, do the remaining multiplies we need
+<span style = "background-color:#fdd">                    for (; digits != 0; --digits)</span>
+                    {
+<span style = "background-color:#fdd">                        fracSec *= 10;
+                    }</span>
+
+<span style = "background-color:#fdd">                    break;</span>
+                }
+<span style = "background-color:#fdd">            }</span>
+        }
+
+<span style = "background-color:#fdd">        secondsSince1601 =</span>
+            static_cast&lt;int64_t&gt;(daysSince1601) * SecondsInDay + hour * SecondsInHour + minute * SecondsInMinute + sec;
+
+<span style = "background-color:#fdd">        if (str[0] == _XPLATSTR('Z') || str[0] == _XPLATSTR('z'))</span>
+        {
+            // no adjustment needed for zulu time
+<span style = "background-color:#fdd">        }
+        else if (str[0] == _XPLATSTR('+') || str[0] == _XPLATSTR('-'))</span>
+        {
+<span style = "background-color:#fdd">            const unsigned char offsetDirection = static_cast&lt;unsigned char&gt;(str[0]);</span>
+            if (!ascii_isdigit2(str[1]) || !ascii_isdigit(str[2]) || str[3] != _XPLATSTR(':') ||
+<span style = "background-color:#fdd">                !ascii_isdigit5(str[4]) || !ascii_isdigit(str[5]))</span>
+            {
+<span style = "background-color:#fdd">                return result;</span>
+            }
+
+<span style = "background-color:#fdd">            secondsSince1601 = timezone_adjust(secondsSince1601, offsetDirection, atoi2(str + 1), atoi2(str + 4));
+            if (secondsSince1601 &lt; 0)</span>
+            {
+<span style = "background-color:#fdd">                return result;</span>
+            }
+        }
+        else
+        {
+            // the timezone is malformed, but cpprestsdk currently accepts this as no timezone
+        }
+<span style = "background-color:#fdd">    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        throw std::invalid_argument("unrecognized date format");</span>
+    }
+
+<span style = "background-color:#fdd">    result.m_interval = static_cast&lt;interval_type&gt;(secondsSince1601 * _secondTicks + fracSec);
+    return result;
+}</span>
+
+/// &lt;summary&gt;
+/// Converts a timespan/interval in seconds to xml duration string as specified by
+/// http://www.w3.org/TR/xmlschema-2/#duration
+/// &lt;/summary&gt;
+utility::string_t __cdecl timespan::seconds_to_xml_duration(utility::seconds durationSecs)
+<span style = "background-color:#fdd">{
+    auto numSecs = durationSecs.count();</span>
+
+    // Find the number of minutes
+<span style = "background-color:#fdd">    auto numMins = numSecs / 60;
+    if (numMins &gt; 0)</span>
+    {
+<span style = "background-color:#fdd">        numSecs = numSecs % 60;</span>
+    }
+
+    // Hours
+<span style = "background-color:#fdd">    auto numHours = numMins / 60;
+    if (numHours &gt; 0)</span>
+    {
+<span style = "background-color:#fdd">        numMins = numMins % 60;</span>
+    }
+
+    // Days
+<span style = "background-color:#fdd">    auto numDays = numHours / 24;
+    if (numDays &gt; 0)</span>
+    {
+<span style = "background-color:#fdd">        numHours = numHours % 24;</span>
+    }
+
+    // The format is:
+    // PdaysDThoursHminutesMsecondsS
+<span style = "background-color:#fdd">    utility::string_t result;</span>
+    // (approximate mins/hours/secs as 2 digits each + 1 prefix character) + 1 for P prefix + 1 for T
+<span style = "background-color:#fdd">    size_t baseReserveSize = ((numHours &gt; 0) + (numMins &gt; 0) + (numSecs &gt; 0)) * 3 + 1;
+    if (numDays &gt; 0)</span>
+    {
+<span style = "background-color:#fdd">        utility::string_t daysStr = utility::conversions::details::to_string_t(numDays);
+        result.reserve(baseReserveSize + daysStr.size() + 1);
+        result += _XPLATSTR('P');
+        result += daysStr;
+        result += _XPLATSTR('D');
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        result.reserve(baseReserveSize);
+        result += _XPLATSTR('P');</span>
+    }
+
+<span style = "background-color:#fdd">    result += _XPLATSTR('T');</span>
+
+<span style = "background-color:#fdd">    if (numHours &gt; 0)</span>
+    {
+<span style = "background-color:#fdd">        result += utility::conversions::details::to_string_t(numHours);
+        result += _XPLATSTR('H');</span>
+    }
+
+<span style = "background-color:#fdd">    if (numMins &gt; 0)</span>
+    {
+<span style = "background-color:#fdd">        result += utility::conversions::details::to_string_t(numMins);
+        result += _XPLATSTR('M');</span>
+    }
+
+<span style = "background-color:#fdd">    if (numSecs &gt; 0)</span>
+    {
+<span style = "background-color:#fdd">        result += utility::conversions::details::to_string_t(numSecs);
+        result += _XPLATSTR('S');</span>
+    }
+
+<span style = "background-color:#fdd">    return result;
+}</span>
+
+utility::seconds __cdecl timespan::xml_duration_to_seconds(const utility::string_t&amp; timespanString)
+<span style = "background-color:#fdd">{</span>
+    // The format is:
+    // PnDTnHnMnS
+    // if n == 0 then the field could be omitted
+    // The final S could be omitted
+
+<span style = "background-color:#fdd">    int64_t numSecs = 0;
+    auto cursor = timespanString.c_str();
+    auto c = *cursor++; // skip 'P'
+    while (c)</span>
+    {
+<span style = "background-color:#fdd">        int val = 0;
+        c = *cursor++;</span>
+
+<span style = "background-color:#fdd">        while (ascii_isdigit(c))</span>
+        {
+<span style = "background-color:#fdd">            val = val * 10 + (c - _XPLATSTR('0'));
+            c = *cursor++;</span>
+
+<span style = "background-color:#fdd">            if (c == _XPLATSTR('.'))</span>
+            {
+                // decimal point is not handled
+                do
+                {
+<span style = "background-color:#fdd">                    c = *cursor++;
+                } while (ascii_isdigit(c));</span>
+            }
+<span style = "background-color:#fdd">        }</span>
+
+<span style = "background-color:#fdd">        if (c == _XPLATSTR('D')) numSecs += val * 24 * 3600; // days
+        if (c == _XPLATSTR('H')) numSecs += val * 3600;      // Hours
+        if (c == _XPLATSTR('M')) numSecs += val * 60;        // Minutes
+        if (c == _XPLATSTR('S') || c == _XPLATSTR('\0'))</span>
+        {
+<span style = "background-color:#fdd">            numSecs += val; // seconds
+            break;</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    return utility::seconds(numSecs);
+}</span>
+
+static const char c_allowed_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+static const int chars_count = static_cast&lt;int&gt;(sizeof(c_allowed_chars) - 1);
+
+utility::string_t nonce_generator::generate()
+<span style = "background-color:#fdd">{
+    std::uniform_int_distribution&lt;&gt; distr(0, chars_count - 1);
+    utility::string_t result;
+    result.reserve(length());
+    std::generate_n(std::back_inserter(result), length(), [&amp;] {
+        return static_cast&lt;utility::char_t&gt;(c_allowed_chars[distr(m_random)]);
+    });
+    return result;
+}</span>
+
+} // namespace utility</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

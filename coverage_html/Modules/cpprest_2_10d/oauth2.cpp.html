@@ -1,0 +1,254 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>oauth2.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: Oauth 2.0
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#include "stdafx.h"
+
+#include &lt;sstream&gt;
+
+using utility::conversions::to_utf8string;
+using web::http::client::http_client;
+using web::http::client::http_client_config;
+using web::http::details::mime_types;
+using web::http::oauth2::details::oauth2_strings;
+
+// Expose base64 conversion for arbitrary buffer.
+extern utility::string_t _to_base64(const unsigned char* ptr, size_t size);
+
+namespace web
+{
+namespace http
+{
+namespace oauth2
+{
+namespace details
+{
+#define _OAUTH2_STRINGS
+#define DAT(a_, b_) const oauth2_string oauth2_strings::a_(_XPLATSTR(b_));
+#include "cpprest/details/http_constants.dat"
+#undef _OAUTH2_STRINGS
+#undef DAT
+
+} // namespace details
+
+namespace experimental
+{
+utility::string_t oauth2_config::build_authorization_uri(bool generate_state)
+<span style = "background-color:#fdd">{
+    const utility::string_t response_type((implicit_grant()) ? oauth2_strings::token : oauth2_strings::code);
+    uri_builder ub(auth_endpoint());
+    ub.append_query(oauth2_strings::response_type, response_type);
+    ub.append_query(oauth2_strings::client_id, client_key());
+    ub.append_query(oauth2_strings::redirect_uri, redirect_uri());</span>
+
+<span style = "background-color:#fdd">    if (generate_state)</span>
+    {
+<span style = "background-color:#fdd">        m_state = m_state_generator.generate();</span>
+    }
+<span style = "background-color:#fdd">    ub.append_query(oauth2_strings::state, state());</span>
+
+<span style = "background-color:#fdd">    if (!scope().empty())</span>
+    {
+<span style = "background-color:#fdd">        ub.append_query(oauth2_strings::scope, scope());</span>
+    }
+<span style = "background-color:#fdd">    return ub.to_string();
+}</span>
+
+pplx::task&lt;void&gt; oauth2_config::token_from_redirected_uri(const web::http::uri&amp; redirected_uri)
+<span style = "background-color:#fdd">{
+    auto query = uri::split_query((implicit_grant()) ? redirected_uri.fragment() : redirected_uri.query());</span>
+
+<span style = "background-color:#fdd">    auto state_param = query.find(oauth2_strings::state);
+    if (state_param == query.end())</span>
+    {
+<span style = "background-color:#fdd">        return pplx::task_from_exception&lt;void&gt;(oauth2_exception(U("parameter 'state' missing from redirected URI.")));</span>
+    }
+<span style = "background-color:#fdd">    if (state() != state_param-&gt;second)</span>
+    {
+<span style = "background-color:#fdd">        utility::string_t err(_XPLATSTR("redirected URI parameter 'state'='"));
+        err += state_param-&gt;second;
+        err += _XPLATSTR("' does not match state='");
+        err += state();
+        err += _XPLATSTR("'.");
+        return pplx::task_from_exception&lt;void&gt;(oauth2_exception(std::move(err)));</span>
+    }
+
+<span style = "background-color:#fdd">    auto code_param = query.find(oauth2_strings::code);
+    if (code_param != query.end())</span>
+    {
+<span style = "background-color:#fdd">        return token_from_code(code_param-&gt;second);</span>
+    }
+
+    // NOTE: The redirected URI contains access token only in the implicit grant.
+    // The implicit grant never passes a refresh token.
+<span style = "background-color:#fdd">    auto token_param = query.find(oauth2_strings::access_token);
+    if (token_param == query.end())</span>
+    {
+<span style = "background-color:#fdd">        return pplx::task_from_exception&lt;void&gt;(</span>
+            oauth2_exception(U("either 'code' or 'access_token' parameter must be in the redirected URI.")));
+    }
+
+<span style = "background-color:#fdd">    set_token(token_param-&gt;second);
+    return pplx::task_from_result();
+}</span>
+
+pplx::task&lt;void&gt; oauth2_config::_request_token(uri_builder&amp; request_body_ub)
+<span style = "background-color:#fdd">{
+    http_request request;
+    request.set_method(methods::POST);
+    request.set_request_uri(utility::string_t());</span>
+
+<span style = "background-color:#fdd">    if (!user_agent().empty())</span>
+    {
+<span style = "background-color:#fdd">        request.headers().add(web::http::header_names::user_agent, user_agent());</span>
+    }
+
+<span style = "background-color:#fdd">    if (!scope().empty())</span>
+    {
+<span style = "background-color:#fdd">        request_body_ub.append_query(oauth2_strings::scope, uri::encode_data_string(scope()), false);</span>
+    }
+
+<span style = "background-color:#fdd">    if (http_basic_auth())</span>
+    {
+        // Build HTTP Basic authorization header.
+<span style = "background-color:#fdd">        const std::string creds_utf8(</span>
+            to_utf8string(uri::encode_data_string(client_key()) + U(":") + uri::encode_data_string(client_secret())));
+<span style = "background-color:#fdd">        request.headers().add(</span>
+            header_names::authorization,
+            U("Basic ") + _to_base64(reinterpret_cast&lt;const unsigned char*&gt;(creds_utf8.data()), creds_utf8.size()));
+<span style = "background-color:#fdd">    }</span>
+    else
+    {
+        // Add credentials to query as-is.
+<span style = "background-color:#fdd">        request_body_ub.append_query(oauth2_strings::client_id, uri::encode_data_string(client_key()), false);
+        request_body_ub.append_query(oauth2_strings::client_secret, uri::encode_data_string(client_secret()), false);</span>
+    }
+<span style = "background-color:#fdd">    request.set_body(request_body_ub.query(), mime_types::application_x_www_form_urlencoded);</span>
+
+    // configure proxy
+<span style = "background-color:#fdd">    http_client_config config;
+    config.set_proxy(m_proxy);</span>
+
+<span style = "background-color:#fdd">    http_client token_client(token_endpoint(), config);</span>
+
+<span style = "background-color:#fdd">    return token_client.request(request)
+        .then([](http_response resp) { return resp.extract_json(); })
+        .then([this](json::value json_resp) -&gt; void { set_token(_parse_token_from_json(json_resp)); });
+}</span>
+
+oauth2_token oauth2_config::_parse_token_from_json(const json::value&amp; token_json)
+<span style = "background-color:#fdd">{
+    oauth2_token result;</span>
+
+<span style = "background-color:#fdd">    if (token_json.has_string_field(oauth2_strings::access_token))</span>
+    {
+<span style = "background-color:#fdd">        result.set_access_token(token_json.at(oauth2_strings::access_token).as_string());
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        throw oauth2_exception(U("response json contains no 'access_token': ") + token_json.serialize());</span>
+    }
+
+<span style = "background-color:#fdd">    if (token_json.has_string_field(oauth2_strings::token_type))</span>
+    {
+<span style = "background-color:#fdd">        result.set_token_type(token_json.at(oauth2_strings::token_type).as_string());
+    }</span>
+    else
+    {
+        // Some services don't return 'token_type' while it's required by OAuth 2.0 spec:
+        // http://tools.ietf.org/html/rfc6749#section-5.1
+        // As workaround we act as if 'token_type=bearer' was received.
+<span style = "background-color:#fdd">        result.set_token_type(oauth2_strings::bearer);</span>
+    }
+<span style = "background-color:#fdd">    if (!utility::details::str_iequal(result.token_type(), oauth2_strings::bearer))</span>
+    {
+<span style = "background-color:#fdd">        throw oauth2_exception(U("only 'token_type=bearer' access tokens are currently supported: ") +</span>
+                               token_json.serialize());
+    }
+
+<span style = "background-color:#fdd">    if (token_json.has_string_field(oauth2_strings::refresh_token))</span>
+    {
+<span style = "background-color:#fdd">        result.set_refresh_token(token_json.at(oauth2_strings::refresh_token).as_string());</span>
+    }
+    else
+    {
+        // Do nothing. Preserves the old refresh token.
+    }
+
+<span style = "background-color:#fdd">    if (token_json.has_field(oauth2_strings::expires_in))</span>
+    {
+<span style = "background-color:#fdd">        const auto&amp; json_expires_in_val = token_json.at(oauth2_strings::expires_in);</span>
+
+<span style = "background-color:#fdd">        if (json_expires_in_val.is_number())
+            result.set_expires_in(json_expires_in_val.as_number().to_int64());</span>
+        else
+        {
+            // Handle the case of a number as a JSON "string".
+            // Using streams because std::stoll isn't avaliable on Android.
+            int64_t expires;
+<span style = "background-color:#fdd">            utility::istringstream_t iss(json_expires_in_val.as_string());
+            iss.exceptions(std::ios::badbit | std::ios::failbit);
+            iss &gt;&gt; expires;
+            result.set_expires_in(expires);
+        }
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        result.set_expires_in(oauth2_token::undefined_expiration);</span>
+    }
+
+<span style = "background-color:#fdd">    if (token_json.has_string_field(oauth2_strings::scope))</span>
+    {
+        // The authorization server may return different scope from the one requested.
+        // This however doesn't necessarily mean the token authorization scope is different.
+        // See: http://tools.ietf.org/html/rfc6749#section-3.3
+<span style = "background-color:#fdd">        result.set_scope(token_json.at(oauth2_strings::scope).as_string());
+    }</span>
+    else
+    {
+        // Use the requested scope() if no scope parameter was returned.
+<span style = "background-color:#fdd">        result.set_scope(scope());</span>
+    }
+
+<span style = "background-color:#fdd">    return result;
+}</span>
+
+} // namespace experimental
+} // namespace oauth2
+} // namespace http
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

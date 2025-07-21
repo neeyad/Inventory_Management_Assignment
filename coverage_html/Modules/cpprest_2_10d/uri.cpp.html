@@ -1,0 +1,893 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>uri.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * Protocol independent support for URIs.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#include "stdafx.h"
+
+#include &lt;sstream&gt;
+
+using namespace utility::conversions;
+
+namespace web
+{
+namespace details
+{
+namespace
+{
+/// &lt;summary&gt;
+/// Unreserved characters are those that are allowed in a URI but do not have a reserved purpose. They include:
+/// - A-Z
+/// - a-z
+/// - 0-9
+/// - '-' (hyphen)
+/// - '.' (period)
+/// - '_' (underscore)
+/// - '~' (tilde)
+/// &lt;/summary&gt;
+inline bool is_unreserved(int c)
+<span style = "background-color:#dfd">{
+    return ::utility::details::is_alnum((char)c) || c == '-' || c == '.' || c == '_' || c == '~';
+}</span>
+
+/// &lt;summary&gt;
+/// General delimiters serve as the delimiters between different uri components.
+/// General delimiters include:
+/// - All of these :/?#[]@
+/// &lt;/summary&gt;
+inline bool is_gen_delim(int c)
+<span style = "background-color:#fdd">{
+    return c == ':' || c == '/' || c == '?' || c == '#' || c == '[' || c == ']' || c == '@';
+}</span>
+
+/// &lt;summary&gt;
+/// Subdelimiters are those characters that may have a defined meaning within component
+/// of a uri for a particular scheme. They do not serve as delimiters in any case between
+/// uri segments. sub_delimiters include:
+/// - All of these !$&amp;'()*+,;=
+/// &lt;/summary&gt;
+inline bool is_sub_delim(int c)
+<span style = "background-color:#dfd">{
+    switch (c)</span>
+    {
+        case '!':
+        case '$':
+        case '&amp;':
+        case '\'':
+        case '(':
+        case ')':
+        case '*':
+        case '+':
+        case ',':
+        case ';':
+<span style = "background-color:#fdd">        case '=': return true;</span>
+<span style = "background-color:#dfd">        default: return false;</span>
+    }
+<span style = "background-color:#dfd">}</span>
+
+/// &lt;summary&gt;
+/// Reserved characters includes the general delimiters and sub delimiters. Some characters
+/// are neither reserved nor unreserved, and must be percent-encoded.
+/// &lt;/summary&gt;
+<span style = "background-color:#fdd">inline bool is_reserved(int c) { return is_gen_delim(c) || is_sub_delim(c); }</span>
+
+/// &lt;summary&gt;
+/// Legal characters in the scheme portion include:
+/// - Any alphanumeric character
+/// - '+' (plus)
+/// - '-' (hyphen)
+/// - '.' (period)
+///
+/// Note that the scheme must BEGIN with an alpha character.
+/// &lt;/summary&gt;
+inline bool is_scheme_character(int c)
+<span style = "background-color:#dfd">{
+    return ::utility::details::is_alnum((char)c) || c == '+' || c == '-' || c == '.';
+}</span>
+
+/// &lt;summary&gt;
+/// Legal characters in the user information portion include:
+/// - Any unreserved character
+/// - The percent character ('%'), and thus any percent-endcoded octet
+/// - The sub-delimiters
+/// - ':' (colon)
+/// &lt;/summary&gt;
+<span style = "background-color:#dfd">inline bool is_user_info_character(int c) { return is_unreserved(c) || is_sub_delim(c) || c == '%' || c == ':'; }</span>
+
+/// &lt;summary&gt;
+/// Legal characters in the authority portion include:
+/// - Any unreserved character
+/// - The percent character ('%'), and thus any percent-endcoded octet
+/// - The sub-delimiters
+/// - ':' (colon)
+/// - IPv6 requires '[]' allowed for it to be valid URI and passed to underlying platform for IPv6 support
+/// &lt;/summary&gt;
+inline bool is_authority_character(int c)
+<span style = "background-color:#dfd">{
+    return is_unreserved(c) || is_sub_delim(c) || c == '%' || c == '@' || c == ':' || c == '[' || c == ']';
+}</span>
+
+/// &lt;summary&gt;
+/// Legal characters in the path portion include:
+/// - Any unreserved character
+/// - The percent character ('%'), and thus any percent-endcoded octet
+/// - The sub-delimiters
+/// - ':' (colon)
+/// - '@' (at sign)
+/// &lt;/summary&gt;
+inline bool is_path_character(int c)
+<span style = "background-color:#dfd">{
+    return is_unreserved(c) || is_sub_delim(c) || c == '%' || c == '/' || c == ':' || c == '@';
+}</span>
+
+/// &lt;summary&gt;
+/// Legal characters in the query portion include:
+/// - Any path character
+/// - '?' (question mark)
+/// &lt;/summary&gt;
+<span style = "background-color:#fdd">inline bool is_query_character(int c) { return is_path_character(c) || c == '?'; }</span>
+
+/// &lt;summary&gt;
+/// Legal characters in the fragment portion include:
+/// - Any path character
+/// - '?' (question mark)
+/// &lt;/summary&gt;
+inline bool is_fragment_character(int c)
+<span style = "background-color:#fdd">{</span>
+    // this is intentional, they have the same set of legal characters
+<span style = "background-color:#fdd">    return is_query_character(c);
+}</span>
+
+struct inner_parse_out
+{
+    const utility::char_t* scheme_begin = nullptr;
+    const utility::char_t* scheme_end = nullptr;
+    const utility::char_t* uinfo_begin = nullptr;
+    const utility::char_t* uinfo_end = nullptr;
+    const utility::char_t* host_begin = nullptr;
+    const utility::char_t* host_end = nullptr;
+    int port = 0;
+    const utility::char_t* path_begin = nullptr;
+    const utility::char_t* path_end = nullptr;
+    const utility::char_t* query_begin = nullptr;
+    const utility::char_t* query_end = nullptr;
+    const utility::char_t* fragment_begin = nullptr;
+    const utility::char_t* fragment_end = nullptr;
+
+    /// &lt;summary&gt;
+    /// Parses the uri, setting the given pointers to locations inside the given buffer.
+    /// 'encoded' is expected to point to an encoded zero-terminated string containing a uri
+    /// &lt;/summary&gt;
+    bool parse_from(const utility::char_t* encoded)
+<span style = "background-color:#dfd">    {
+        const utility::char_t* p = encoded;</span>
+
+        // IMPORTANT -- A uri may either be an absolute uri, or an relative-reference
+        // Absolute: 'http://host.com'
+        // Relative-Reference: '//:host.com', '/path1/path2?query', './path1:path2'
+        // A Relative-Reference can be disambiguated by parsing for a ':' before the first slash
+
+<span style = "background-color:#dfd">        bool is_relative_reference = true;
+        const utility::char_t* p2 = p;
+        for (; *p2 != _XPLATSTR('/') &amp;&amp; *p2 != _XPLATSTR('\0'); p2++)</span>
+        {
+<span style = "background-color:#dfd">            if (*p2 == _XPLATSTR(':'))</span>
+            {
+                // found a colon, the first portion is a scheme
+<span style = "background-color:#dfd">                is_relative_reference = false;
+                break;</span>
+            }
+<span style = "background-color:#dfd">        }</span>
+
+<span style = "background-color:#dfd">        if (!is_relative_reference)</span>
+        {
+            // the first character of a scheme must be a letter
+<span style = "background-color:#dfd">            if (!isalpha(*p))</span>
+            {
+<span style = "background-color:#fdd">                return false;</span>
+            }
+
+            // start parsing the scheme, it's always delimited by a colon (must be present)
+<span style = "background-color:#dfd">            scheme_begin = p++;
+            for (; *p != ':'; p++)</span>
+            {
+<span style = "background-color:#dfd">                if (!is_scheme_character(*p))</span>
+                {
+<span style = "background-color:#fdd">                    return false;</span>
+                }
+<span style = "background-color:#dfd">            }
+            scheme_end = p;</span>
+
+            // skip over the colon
+<span style = "background-color:#dfd">            p++;</span>
+        }
+
+        // if we see two slashes next, then we're going to parse the authority portion
+        // later on we'll break up the authority into the port and host
+<span style = "background-color:#dfd">        const utility::char_t* authority_begin = nullptr;
+        const utility::char_t* authority_end = nullptr;
+        if (*p == _XPLATSTR('/') &amp;&amp; p[1] == _XPLATSTR('/'))</span>
+        {
+            // skip over the slashes
+<span style = "background-color:#dfd">            p += 2;
+            authority_begin = p;</span>
+
+            // the authority is delimited by a slash (resource), question-mark (query) or octothorpe (fragment)
+            // or by EOS. The authority could be empty ('file:///C:\file_name.txt')
+<span style = "background-color:#dfd">            for (; *p != _XPLATSTR('/') &amp;&amp; *p != _XPLATSTR('?') &amp;&amp; *p != _XPLATSTR('#') &amp;&amp; *p != _XPLATSTR('\0'); p++)</span>
+            {
+                // We're NOT currently supporting IPvFuture or username/password in authority
+                // IPv6 as the host (i.e. http://[:::::::]) is allowed as valid URI and passed to subsystem for support.
+<span style = "background-color:#dfd">                if (!is_authority_character(*p))</span>
+                {
+<span style = "background-color:#fdd">                    return false;</span>
+                }
+<span style = "background-color:#dfd">            }
+            authority_end = p;</span>
+
+            // now lets see if we have a port specified -- by working back from the end
+<span style = "background-color:#dfd">            if (authority_begin != authority_end)</span>
+            {
+                // the port is made up of all digits
+<span style = "background-color:#dfd">                const utility::char_t* port_begin = authority_end - 1;
+                for (; isdigit(*port_begin) &amp;&amp; port_begin != authority_begin; port_begin--)</span>
+                {
+<span style = "background-color:#dfd">                }</span>
+
+<span style = "background-color:#dfd">                if (*port_begin == _XPLATSTR(':'))</span>
+                {
+                    // has a port
+<span style = "background-color:#dfd">                    host_begin = authority_begin;
+                    host_end = port_begin;</span>
+
+                    // skip the colon
+<span style = "background-color:#dfd">                    port_begin++;</span>
+
+<span style = "background-color:#dfd">                    port =</span>
+                        utility::conversions::details::scan_string&lt;int&gt;(utility::string_t(port_begin, authority_end));
+<span style = "background-color:#dfd">                }</span>
+                else
+                {
+                    // no port
+<span style = "background-color:#fdd">                    host_begin = authority_begin;
+                    host_end = authority_end;</span>
+                }
+
+                // look for a user_info component
+<span style = "background-color:#dfd">                const utility::char_t* u_end = host_begin;
+                for (; is_user_info_character(*u_end) &amp;&amp; u_end != host_end; u_end++)</span>
+                {
+<span style = "background-color:#dfd">                }</span>
+
+<span style = "background-color:#dfd">                if (*u_end == _XPLATSTR('@'))</span>
+                {
+<span style = "background-color:#fdd">                    host_begin = u_end + 1;
+                    uinfo_begin = authority_begin;
+                    uinfo_end = u_end;</span>
+                }
+            }
+        }
+
+        // if we see a path character or a slash, then the
+        // if we see a slash, or any other legal path character, parse the path next
+<span style = "background-color:#dfd">        if (*p == _XPLATSTR('/') || is_path_character(*p))</span>
+        {
+<span style = "background-color:#dfd">            path_begin = p;</span>
+
+            // the path is delimited by a question-mark (query) or octothorpe (fragment) or by EOS
+<span style = "background-color:#dfd">            for (; *p != _XPLATSTR('?') &amp;&amp; *p != _XPLATSTR('#') &amp;&amp; *p != _XPLATSTR('\0'); p++)</span>
+            {
+<span style = "background-color:#dfd">                if (!is_path_character(*p))</span>
+                {
+<span style = "background-color:#fdd">                    return false;</span>
+                }
+<span style = "background-color:#dfd">            }
+            path_end = p;</span>
+        }
+
+        // if we see a ?, then the query is next
+<span style = "background-color:#dfd">        if (*p == _XPLATSTR('?'))</span>
+        {
+            // skip over the question mark
+<span style = "background-color:#fdd">            p++;
+            query_begin = p;</span>
+
+            // the query is delimited by a '#' (fragment) or EOS
+<span style = "background-color:#fdd">            for (; *p != _XPLATSTR('#') &amp;&amp; *p != _XPLATSTR('\0'); p++)</span>
+            {
+<span style = "background-color:#fdd">                if (!is_query_character(*p))</span>
+                {
+<span style = "background-color:#fdd">                    return false;</span>
+                }
+<span style = "background-color:#fdd">            }
+            query_end = p;</span>
+        }
+
+        // if we see a #, then the fragment is next
+<span style = "background-color:#dfd">        if (*p == _XPLATSTR('#'))</span>
+        {
+            // skip over the hash mark
+<span style = "background-color:#fdd">            p++;
+            fragment_begin = p;</span>
+
+            // the fragment is delimited by EOS
+<span style = "background-color:#fdd">            for (; *p != _XPLATSTR('\0'); p++)</span>
+            {
+<span style = "background-color:#fdd">                if (!is_fragment_character(*p))</span>
+                {
+<span style = "background-color:#fdd">                    return false;</span>
+                }
+<span style = "background-color:#fdd">            }
+            fragment_end = p;</span>
+        }
+
+<span style = "background-color:#dfd">        return true;
+    }</span>
+
+    void write_to(uri_components&amp; components)
+<span style = "background-color:#dfd">    {
+        if (scheme_begin)</span>
+        {
+<span style = "background-color:#dfd">            components.m_scheme.assign(scheme_begin, scheme_end);
+            utility::details::inplace_tolower(components.m_scheme);
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            components.m_scheme.clear();</span>
+        }
+
+<span style = "background-color:#dfd">        if (uinfo_begin)</span>
+        {
+<span style = "background-color:#fdd">            components.m_user_info.assign(uinfo_begin, uinfo_end);</span>
+        }
+
+<span style = "background-color:#dfd">        if (host_begin)</span>
+        {
+<span style = "background-color:#dfd">            components.m_host.assign(host_begin, host_end);
+            utility::details::inplace_tolower(components.m_host);
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            components.m_host.clear();</span>
+        }
+
+<span style = "background-color:#dfd">        components.m_port = port;</span>
+
+<span style = "background-color:#dfd">        if (path_begin)</span>
+        {
+<span style = "background-color:#dfd">            components.m_path.assign(path_begin, path_end);
+        }</span>
+        else
+        {
+            // default path to begin with a slash for easy comparison
+<span style = "background-color:#fdd">            components.m_path = _XPLATSTR("/");</span>
+        }
+
+<span style = "background-color:#dfd">        if (query_begin)</span>
+        {
+<span style = "background-color:#fdd">            components.m_query.assign(query_begin, query_end);
+        }</span>
+        else
+        {
+<span style = "background-color:#dfd">            components.m_query.clear();</span>
+        }
+
+<span style = "background-color:#dfd">        if (fragment_begin)</span>
+        {
+<span style = "background-color:#fdd">            components.m_fragment.assign(fragment_begin, fragment_end);
+        }</span>
+        else
+        {
+<span style = "background-color:#dfd">            components.m_fragment.clear();</span>
+        }
+<span style = "background-color:#dfd">    }</span>
+};
+
+// Encodes all characters not in given set determined by given function.
+template&lt;class F&gt;
+utility::string_t encode_impl(const utf8string&amp; raw, F should_encode)
+<span style = "background-color:#fdd">{
+    const utility::char_t* const hex = _XPLATSTR("0123456789ABCDEF");
+    utility::string_t encoded;
+    for (auto iter = raw.begin(); iter != raw.end(); ++iter)</span>
+    {
+        // for utf8 encoded string, char ASCII can be greater than 127.
+<span style = "background-color:#fdd">        int ch = static_cast&lt;unsigned char&gt;(*iter);</span>
+        // ch should be same under both utf8 and utf16.
+<span style = "background-color:#fdd">        if (should_encode(ch))</span>
+        {
+<span style = "background-color:#fdd">            encoded.push_back(_XPLATSTR('%'));
+            encoded.push_back(hex[(ch &gt;&gt; 4) &amp; 0xF]);
+            encoded.push_back(hex[ch &amp; 0xF]);
+        }</span>
+        else
+        {
+            // ASCII don't need to be encoded, which should be same on both utf8 and utf16.
+<span style = "background-color:#fdd">            encoded.push_back((utility::char_t)ch);
+        }
+    }
+    return encoded;
+}</span>
+
+// 5.2.3. Merge Paths https://tools.ietf.org/html/rfc3986#section-5.2.3
+utility::string_t mergePaths(const utility::string_t&amp; base, const utility::string_t&amp; relative)
+<span style = "background-color:#fdd">{
+    const auto lastSlash = base.rfind(_XPLATSTR('/'));
+    if (lastSlash == utility::string_t::npos)</span>
+    {
+<span style = "background-color:#fdd">        return base + _XPLATSTR('/') + relative;
+    }
+    else if (lastSlash == base.size() - 1)</span>
+    {
+<span style = "background-color:#fdd">        return base + relative;</span>
+    }
+    // path contains and does not end with '/', we remove segment after last '/'
+<span style = "background-color:#fdd">    return base.substr(0, lastSlash + 1) + relative;
+}</span>
+
+// 5.2.4. Remove Dot Segments https://tools.ietf.org/html/rfc3986#section-5.2.4
+void removeDotSegments(uri_builder&amp; builder)
+<span style = "background-color:#fdd">{
+    const ::utility::string_t dotSegment = _XPLATSTR(".");
+    const ::utility::string_t dotDotSegment = _XPLATSTR("..");</span>
+
+<span style = "background-color:#fdd">    if (builder.path().find(_XPLATSTR('.')) == utility::string_t::npos) return;</span>
+
+<span style = "background-color:#fdd">    const auto segments = uri::split_path(builder.path());
+    std::vector&lt;std::reference_wrapper&lt;const utility::string_t&gt;&gt; result;
+    for (auto&amp; segment : segments)</span>
+    {
+<span style = "background-color:#fdd">        if (segment == dotSegment)
+            continue;
+        else if (segment != dotDotSegment)
+            result.push_back(segment);
+        else if (!result.empty())
+            result.pop_back();
+    }
+    if (result.empty())</span>
+    {
+<span style = "background-color:#fdd">        builder.set_path(utility::string_t());
+        return;</span>
+    }
+<span style = "background-color:#fdd">    utility::string_t path = result.front().get();
+    for (size_t i = 1; i != result.size(); ++i)</span>
+    {
+<span style = "background-color:#fdd">        path += _XPLATSTR('/');
+        path += result[i].get();
+    }
+    if (segments.back() == dotDotSegment || segments.back() == dotSegment || builder.path().back() == _XPLATSTR('/'))</span>
+    {
+<span style = "background-color:#fdd">        path += _XPLATSTR('/');</span>
+    }
+
+<span style = "background-color:#fdd">    builder.set_path(std::move(path));
+}</span>
+} // namespace
+
+utility::string_t uri_components::join()
+<span style = "background-color:#dfd">{</span>
+    // canonicalize components first
+
+    // convert scheme to lowercase
+<span style = "background-color:#dfd">    utility::details::inplace_tolower(m_scheme);</span>
+    // convert host to lowercase
+<span style = "background-color:#dfd">    utility::details::inplace_tolower(m_host);</span>
+
+    // canonicalize the path to have a leading slash if it's a full uri
+<span style = "background-color:#dfd">    if (!m_host.empty() &amp;&amp; m_path.empty())</span>
+    {
+<span style = "background-color:#fdd">        m_path = _XPLATSTR("/");
+    }</span>
+<span style = "background-color:#dfd">    else if (!m_host.empty() &amp;&amp; m_path[0] != _XPLATSTR('/'))</span>
+    {
+<span style = "background-color:#fdd">        m_path.insert(m_path.begin(), 1, _XPLATSTR('/'));</span>
+    }
+
+<span style = "background-color:#dfd">    utility::string_t ret;</span>
+
+<span style = "background-color:#dfd">    if (!m_scheme.empty())</span>
+    {
+<span style = "background-color:#dfd">        ret.append(m_scheme);
+        ret.push_back(_XPLATSTR(':'));</span>
+    }
+
+<span style = "background-color:#dfd">    if (!m_host.empty())</span>
+    {
+<span style = "background-color:#dfd">        ret.append(_XPLATSTR("//"));</span>
+
+<span style = "background-color:#dfd">        if (!m_user_info.empty())</span>
+        {
+<span style = "background-color:#fdd">            ret.append(m_user_info).append({_XPLATSTR('@')});</span>
+        }
+
+<span style = "background-color:#dfd">        ret.append(m_host);</span>
+
+<span style = "background-color:#dfd">        if (m_port &gt; 0)</span>
+        {
+<span style = "background-color:#dfd">            ret.append({_XPLATSTR(':')}).append(utility::conversions::details::to_string_t(m_port));</span>
+        }
+    }
+
+<span style = "background-color:#dfd">    if (!m_path.empty())</span>
+    {
+        // only add the leading slash when the host is present
+<span style = "background-color:#dfd">        if (!m_host.empty() &amp;&amp; m_path.front() != _XPLATSTR('/'))</span>
+        {
+<span style = "background-color:#fdd">            ret.push_back(_XPLATSTR('/'));</span>
+        }
+
+<span style = "background-color:#dfd">        ret.append(m_path);</span>
+    }
+
+<span style = "background-color:#dfd">    if (!m_query.empty())</span>
+    {
+<span style = "background-color:#fdd">        ret.push_back(_XPLATSTR('?'));
+        ret.append(m_query);</span>
+    }
+
+<span style = "background-color:#dfd">    if (!m_fragment.empty())</span>
+    {
+<span style = "background-color:#fdd">        ret.push_back(_XPLATSTR('#'));
+        ret.append(m_fragment);</span>
+    }
+
+<span style = "background-color:#dfd">    return ret;
+}</span>
+} // namespace details
+
+<span style = "background-color:#fdd">uri::uri(const details::uri_components&amp; components) : m_components(components)
+{
+    m_uri = m_components.join();</span>
+
+<span style = "background-color:#fdd">    if (!uri::validate(m_uri.c_str()))</span>
+    {
+<span style = "background-color:#fdd">        throw uri_exception("provided uri is invalid: " + utility::conversions::to_utf8string(m_uri));</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+<span style = "background-color:#dfd">uri::uri(const utility::string_t&amp; uri_string) : uri(uri_string.c_str()) {}</span>
+
+uri::uri(const utility::char_t* uri_string)
+<span style = "background-color:#dfd">{
+    details::inner_parse_out out;</span>
+
+<span style = "background-color:#dfd">    if (!out.parse_from(uri_string))</span>
+    {
+<span style = "background-color:#fdd">        throw uri_exception("provided uri is invalid: " + utility::conversions::to_utf8string(uri_string));</span>
+    }
+
+<span style = "background-color:#dfd">    out.write_to(m_components);
+    m_uri = m_components.join();
+}</span>
+
+utility::string_t uri::encode_query_impl(const utf8string&amp; raw)
+<span style = "background-color:#fdd">{
+    return details::encode_impl(raw, [](int ch) -&gt; bool {
+        switch (ch)</span>
+        {
+                // Encode '&amp;', ';', and '=' since they are used
+                // as delimiters in query component.
+            case '&amp;':
+            case ';':
+            case '=':
+            case '%':
+<span style = "background-color:#fdd">            case '+': return true;
+            default: return !details::is_query_character(ch);</span>
+        }
+<span style = "background-color:#fdd">    });
+}</span>
+
+/// &lt;/summary&gt;
+/// Encodes a string by converting all characters except for RFC 3986 unreserved characters to their
+/// hexadecimal representation.
+/// &lt;/summary&gt;
+utility::string_t uri::encode_data_string(const utility::string_t&amp; data)
+<span style = "background-color:#fdd">{
+    auto&amp;&amp; raw = utility::conversions::to_utf8string(data);</span>
+
+<span style = "background-color:#fdd">    return details::encode_impl(raw, [](int ch) -&gt; bool { return !details::is_unreserved(ch); });
+}</span>
+
+utility::string_t uri::encode_uri(const utility::string_t&amp; raw, uri::components::component component)
+<span style = "background-color:#fdd">{
+    auto&amp;&amp; raw_utf8 = utility::conversions::to_utf8string(raw);</span>
+
+    // Note: we also encode the '+' character because some non-standard implementations
+    // encode the space character as a '+' instead of %20. To better interoperate we encode
+    // '+' to avoid any confusion and be mistaken as a space.
+<span style = "background-color:#fdd">    switch (component)</span>
+    {
+        case components::user_info:
+<span style = "background-color:#fdd">            return details::encode_impl(raw_utf8, [](int ch) -&gt; bool {
+                return !details::is_user_info_character(ch) || ch == '%' || ch == '+';
+            });</span>
+        case components::host:
+<span style = "background-color:#fdd">            return details::encode_impl(raw_utf8, [](int ch) -&gt; bool {</span>
+                // No encoding of ASCII characters in host name (RFC 3986 3.2.2)
+<span style = "background-color:#fdd">                return ch &gt; 127;
+            });</span>
+        case components::path:
+<span style = "background-color:#fdd">            return details::encode_impl(
+                raw_utf8, [](int ch) -&gt; bool { return !details::is_path_character(ch) || ch == '%' || ch == '+'; });</span>
+        case components::query:
+<span style = "background-color:#fdd">            return details::encode_impl(
+                raw_utf8, [](int ch) -&gt; bool { return !details::is_query_character(ch) || ch == '%' || ch == '+'; });</span>
+        case components::fragment:
+<span style = "background-color:#fdd">            return details::encode_impl(
+                raw_utf8, [](int ch) -&gt; bool { return !details::is_fragment_character(ch) || ch == '%' || ch == '+'; });</span>
+        case components::full_uri:
+        default:
+<span style = "background-color:#fdd">            return details::encode_impl(
+                raw_utf8, [](int ch) -&gt; bool { return !details::is_unreserved(ch) &amp;&amp; !details::is_reserved(ch); });</span>
+    };
+<span style = "background-color:#fdd">}</span>
+
+/// &lt;summary&gt;
+/// Helper function to convert a hex character digit to a decimal character value.
+/// Throws an exception if not a valid hex digit.
+/// &lt;/summary&gt;
+static int hex_char_digit_to_decimal_char(int hex)
+<span style = "background-color:#fdd">{</span>
+    int decimal;
+<span style = "background-color:#fdd">    if (hex &gt;= '0' &amp;&amp; hex &lt;= '9')</span>
+    {
+<span style = "background-color:#fdd">        decimal = hex - '0';
+    }
+    else if (hex &gt;= 'A' &amp;&amp; hex &lt;= 'F')</span>
+    {
+<span style = "background-color:#fdd">        decimal = 10 + (hex - 'A');
+    }
+    else if (hex &gt;= 'a' &amp;&amp; hex &lt;= 'f')</span>
+    {
+<span style = "background-color:#fdd">        decimal = 10 + (hex - 'a');
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        throw uri_exception("Invalid hexadecimal digit");</span>
+    }
+<span style = "background-color:#fdd">    return decimal;
+}</span>
+
+template&lt;class String&gt;
+static std::string decode_template(const String&amp; encoded)
+<span style = "background-color:#dfd">{
+    std::string raw;
+    for (auto iter = encoded.begin(); iter != encoded.end(); ++iter)</span>
+    {
+<span style = "background-color:#dfd">        if (*iter == '%')</span>
+        {
+<span style = "background-color:#fdd">            if (++iter == encoded.end())</span>
+            {
+<span style = "background-color:#fdd">                throw uri_exception("Invalid URI string, two hexadecimal digits must follow '%'");</span>
+            }
+<span style = "background-color:#fdd">            int decimal_value = hex_char_digit_to_decimal_char(static_cast&lt;int&gt;(*iter)) &lt;&lt; 4;
+            if (++iter == encoded.end())</span>
+            {
+<span style = "background-color:#fdd">                throw uri_exception("Invalid URI string, two hexadecimal digits must follow '%'");</span>
+            }
+<span style = "background-color:#fdd">            decimal_value += hex_char_digit_to_decimal_char(static_cast&lt;int&gt;(*iter));</span>
+
+<span style = "background-color:#fdd">            raw.push_back(static_cast&lt;char&gt;(decimal_value));
+        }</span>
+<span style = "background-color:#dfd">        else if (*iter &gt; 127 || *iter &lt; 0)</span>
+        {
+<span style = "background-color:#fdd">            throw uri_exception("Invalid encoded URI string, must be entirely ascii");
+        }</span>
+        else
+        {
+            // encoded string has to be ASCII.
+<span style = "background-color:#dfd">            raw.push_back(static_cast&lt;char&gt;(*iter));
+        }
+    }
+    return raw;
+}</span>
+
+<span style = "background-color:#dfd">utility::string_t uri::decode(const utility::string_t&amp; encoded) { return to_string_t(decode_template(encoded)); }</span>
+
+std::vector&lt;utility::string_t&gt; uri::split_path(const utility::string_t&amp; path)
+<span style = "background-color:#fdd">{
+    std::vector&lt;utility::string_t&gt; results;
+    utility::istringstream_t iss(path);
+    iss.imbue(std::locale::classic());
+    utility::string_t s;</span>
+
+<span style = "background-color:#fdd">    while (std::getline(iss, s, _XPLATSTR('/')))</span>
+    {
+<span style = "background-color:#fdd">        if (!s.empty())</span>
+        {
+<span style = "background-color:#fdd">            results.push_back(s);</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    return results;
+}</span>
+
+std::map&lt;utility::string_t, utility::string_t&gt; uri::split_query(const utility::string_t&amp; query)
+<span style = "background-color:#fdd">{
+    std::map&lt;utility::string_t, utility::string_t&gt; results;</span>
+
+    // Split into key value pairs separated by '&amp;'.
+<span style = "background-color:#fdd">    size_t prev_amp_index = 0;
+    while (prev_amp_index != utility::string_t::npos)</span>
+    {
+<span style = "background-color:#fdd">        size_t amp_index = query.find_first_of(_XPLATSTR('&amp;'), prev_amp_index);
+        if (amp_index == utility::string_t::npos) amp_index = query.find_first_of(_XPLATSTR(';'), prev_amp_index);</span>
+
+<span style = "background-color:#fdd">        utility::string_t key_value_pair = query.substr(</span>
+            prev_amp_index,
+            amp_index == utility::string_t::npos ? query.size() - prev_amp_index : amp_index - prev_amp_index);
+<span style = "background-color:#fdd">        prev_amp_index = amp_index == utility::string_t::npos ? utility::string_t::npos : amp_index + 1;</span>
+
+<span style = "background-color:#fdd">        size_t equals_index = key_value_pair.find_first_of(_XPLATSTR('='));
+        if (equals_index == utility::string_t::npos)</span>
+        {
+<span style = "background-color:#fdd">            continue;
+        }
+        else if (equals_index == 0)</span>
+        {
+<span style = "background-color:#fdd">            utility::string_t value(key_value_pair.begin() + equals_index + 1, key_value_pair.end());
+            results[utility::string_t {}] = value;
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            utility::string_t key(key_value_pair.begin(), key_value_pair.begin() + equals_index);
+            utility::string_t value(key_value_pair.begin() + equals_index + 1, key_value_pair.end());
+            results[key] = value;
+        }
+    }</span>
+
+<span style = "background-color:#fdd">    return results;
+}</span>
+
+bool uri::validate(const utility::string_t&amp; uri_string)
+<span style = "background-color:#fdd">{
+    details::inner_parse_out out;
+    return out.parse_from(uri_string.c_str());
+}</span>
+
+uri uri::authority() const
+<span style = "background-color:#fdd">{
+    return uri_builder()</span>
+        .set_scheme(this-&gt;scheme())
+        .set_host(this-&gt;host())
+        .set_port(this-&gt;port())
+        .set_user_info(this-&gt;user_info())
+        .to_uri();
+<span style = "background-color:#fdd">}</span>
+
+uri uri::resource() const
+<span style = "background-color:#fdd">{
+    return uri_builder().set_path(this-&gt;path()).set_query(this-&gt;query()).set_fragment(this-&gt;fragment()).to_uri();
+}</span>
+
+bool uri::operator==(const uri&amp; other) const
+<span style = "background-color:#fdd">{</span>
+    // Each individual URI component must be decoded before performing comparison.
+    // TFS # 375865
+
+<span style = "background-color:#fdd">    if (this-&gt;is_empty() &amp;&amp; other.is_empty())</span>
+    {
+<span style = "background-color:#fdd">        return true;
+    }
+    else if (this-&gt;is_empty() || other.is_empty())</span>
+    {
+<span style = "background-color:#fdd">        return false;
+    }
+    else if (this-&gt;scheme() != other.scheme())</span>
+    {
+        // scheme is canonicalized to lowercase
+<span style = "background-color:#fdd">        return false;
+    }
+    else if (uri::decode(this-&gt;user_info()) != uri::decode(other.user_info()))</span>
+    {
+<span style = "background-color:#fdd">        return false;
+    }
+    else if (uri::decode(this-&gt;host()) != uri::decode(other.host()))</span>
+    {
+        // host is canonicalized to lowercase
+<span style = "background-color:#fdd">        return false;
+    }
+    else if (this-&gt;port() != other.port())</span>
+    {
+<span style = "background-color:#fdd">        return false;
+    }
+    else if (uri::decode(this-&gt;path()) != uri::decode(other.path()))</span>
+    {
+<span style = "background-color:#fdd">        return false;
+    }
+    else if (uri::decode(this-&gt;query()) != uri::decode(other.query()))</span>
+    {
+<span style = "background-color:#fdd">        return false;
+    }
+    else if (uri::decode(this-&gt;fragment()) != uri::decode(other.fragment()))</span>
+    {
+<span style = "background-color:#fdd">        return false;</span>
+    }
+
+<span style = "background-color:#fdd">    return true;
+}</span>
+
+// resolving URI according to RFC3986, Section 5 https://tools.ietf.org/html/rfc3986#section-5
+utility::string_t uri::resolve_uri(const utility::string_t&amp; relativeUri) const
+<span style = "background-color:#fdd">{
+    if (relativeUri.empty())</span>
+    {
+<span style = "background-color:#fdd">        return to_string();</span>
+    }
+
+<span style = "background-color:#fdd">    if (relativeUri[0] == _XPLATSTR('/')) // starts with '/'</span>
+    {
+<span style = "background-color:#fdd">        if (relativeUri.size() &gt;= 2 &amp;&amp; relativeUri[1] == _XPLATSTR('/')) // starts with '//'</span>
+        {
+<span style = "background-color:#fdd">            return this-&gt;scheme() + _XPLATSTR(':') + relativeUri;</span>
+        }
+
+        // otherwise relative to root
+<span style = "background-color:#fdd">        auto builder = uri_builder(this-&gt;authority());
+        builder.append(relativeUri);
+        details::removeDotSegments(builder);
+        return builder.to_string();</span>
+    }
+
+<span style = "background-color:#fdd">    const auto url = uri(relativeUri);
+    if (!url.scheme().empty()) return relativeUri;</span>
+
+<span style = "background-color:#fdd">    if (!url.authority().is_empty())</span>
+    {
+<span style = "background-color:#fdd">        return uri_builder(url).set_scheme(this-&gt;scheme()).to_string();</span>
+    }
+
+    // relative url
+<span style = "background-color:#fdd">    auto builder = uri_builder(*this);
+    if (url.path() == _XPLATSTR("/") || url.path().empty()) // web::uri considers empty path as '/'</span>
+    {
+<span style = "background-color:#fdd">        if (!url.query().empty())</span>
+        {
+<span style = "background-color:#fdd">            builder.set_query(url.query());</span>
+        }
+<span style = "background-color:#fdd">    }
+    else if (!this-&gt;path().empty())</span>
+    {
+<span style = "background-color:#fdd">        builder.set_path(details::mergePaths(this-&gt;path(), url.path()));
+        details::removeDotSegments(builder);
+        builder.set_query(url.query());</span>
+    }
+
+<span style = "background-color:#fdd">    return builder.set_fragment(url.fragment()).to_string();
+}</span>
+
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

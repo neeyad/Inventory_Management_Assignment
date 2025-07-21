@@ -1,0 +1,204 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>uri_builder.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * Builder for constructing URIs.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#include "stdafx.h"
+
+<span style = "background-color:#dfd">static const utility::string_t oneSlash = _XPLATSTR("/");</span>
+
+namespace web
+{
+uri_builder&amp; uri_builder::append_path(const utility::string_t&amp; toAppend, bool do_encode)
+<span style = "background-color:#fdd">{
+    if (!toAppend.empty() &amp;&amp; toAppend != oneSlash)</span>
+    {
+<span style = "background-color:#fdd">        auto&amp; thisPath = m_uri.m_path;
+        if (&amp;thisPath == &amp;toAppend)</span>
+        {
+<span style = "background-color:#fdd">            auto appendCopy = toAppend;
+            return append_path(appendCopy, do_encode);</span>
+        }
+
+<span style = "background-color:#fdd">        if (thisPath.empty() || thisPath == oneSlash)</span>
+        {
+<span style = "background-color:#fdd">            thisPath.clear();
+            if (toAppend.front() != _XPLATSTR('/'))</span>
+            {
+<span style = "background-color:#fdd">                thisPath.push_back(_XPLATSTR('/'));</span>
+            }
+<span style = "background-color:#fdd">        }
+        else if (thisPath.back() == _XPLATSTR('/') &amp;&amp; toAppend.front() == _XPLATSTR('/'))</span>
+        {
+<span style = "background-color:#fdd">            thisPath.pop_back();
+        }
+        else if (thisPath.back() != _XPLATSTR('/') &amp;&amp; toAppend.front() != _XPLATSTR('/'))</span>
+        {
+<span style = "background-color:#fdd">            thisPath.push_back(_XPLATSTR('/'));</span>
+        }
+        else
+        {
+            // Only one slash.
+        }
+
+<span style = "background-color:#fdd">        if (do_encode)</span>
+        {
+<span style = "background-color:#fdd">            thisPath.append(uri::encode_uri(toAppend, uri::components::path));
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            thisPath.append(toAppend);</span>
+        }
+    }
+
+<span style = "background-color:#fdd">    return *this;
+}</span>
+
+uri_builder&amp; uri_builder::append_path_raw(const utility::string_t&amp; toAppend, bool do_encode)
+<span style = "background-color:#fdd">{
+    if (!toAppend.empty())</span>
+    {
+<span style = "background-color:#fdd">        auto&amp; thisPath = m_uri.m_path;
+        if (&amp;thisPath == &amp;toAppend)</span>
+        {
+<span style = "background-color:#fdd">            auto appendCopy = toAppend;
+            return append_path_raw(appendCopy, do_encode);</span>
+        }
+
+<span style = "background-color:#fdd">        if (thisPath != oneSlash)</span>
+        {
+<span style = "background-color:#fdd">            thisPath.push_back(_XPLATSTR('/'));</span>
+        }
+
+<span style = "background-color:#fdd">        if (do_encode)</span>
+        {
+<span style = "background-color:#fdd">            thisPath.append(uri::encode_uri(toAppend, uri::components::path));
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            thisPath.append(toAppend);</span>
+        }
+    }
+
+<span style = "background-color:#fdd">    return *this;
+}</span>
+
+uri_builder&amp; uri_builder::append_query(const utility::string_t&amp; toAppend, bool do_encode)
+<span style = "background-color:#fdd">{
+    if (!toAppend.empty())</span>
+    {
+<span style = "background-color:#fdd">        auto&amp; thisQuery = m_uri.m_query;
+        if (&amp;thisQuery == &amp;toAppend)</span>
+        {
+<span style = "background-color:#fdd">            auto appendCopy = toAppend;
+            return append_query(appendCopy, do_encode);</span>
+        }
+
+<span style = "background-color:#fdd">        if (thisQuery.empty())</span>
+        {
+<span style = "background-color:#fdd">            thisQuery.clear();
+        }
+        else if (thisQuery.back() == _XPLATSTR('&amp;') &amp;&amp; toAppend.front() == _XPLATSTR('&amp;'))</span>
+        {
+<span style = "background-color:#fdd">            thisQuery.pop_back();
+        }
+        else if (thisQuery.back() != _XPLATSTR('&amp;') &amp;&amp; toAppend.front() != _XPLATSTR('&amp;'))</span>
+        {
+<span style = "background-color:#fdd">            thisQuery.push_back(_XPLATSTR('&amp;'));</span>
+        }
+        else
+        {
+            // Only one ampersand.
+        }
+
+<span style = "background-color:#fdd">        if (do_encode)</span>
+        {
+<span style = "background-color:#fdd">            thisQuery.append(uri::encode_uri(toAppend, uri::components::query));
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            thisQuery.append(toAppend);</span>
+        }
+    }
+
+<span style = "background-color:#fdd">    return *this;
+}</span>
+
+uri_builder&amp; uri_builder::set_port(const utility::string_t&amp; port)
+<span style = "background-color:#fdd">{
+    utility::istringstream_t portStream(port);
+    portStream.imbue(std::locale::classic());</span>
+    int port_tmp;
+<span style = "background-color:#fdd">    portStream &gt;&gt; port_tmp;
+    if (portStream.fail() || portStream.bad())</span>
+    {
+<span style = "background-color:#fdd">        throw std::invalid_argument("invalid port argument, must be non empty string containing integer value");</span>
+    }
+<span style = "background-color:#fdd">    m_uri.m_port = port_tmp;
+    return *this;
+}</span>
+
+uri_builder&amp; uri_builder::append(const http::uri&amp; relative_uri)
+<span style = "background-color:#fdd">{
+    append_path(relative_uri.path());
+    append_query(relative_uri.query());
+    this-&gt;set_fragment(this-&gt;fragment() + relative_uri.fragment());
+    return *this;
+}</span>
+
+<span style = "background-color:#fdd">utility::string_t uri_builder::to_string() const { return to_uri().to_string(); }</span>
+
+<span style = "background-color:#fdd">uri uri_builder::to_uri() const { return uri(m_uri); }</span>
+
+<span style = "background-color:#fdd">bool uri_builder::is_valid() { return uri::validate(m_uri.join()); }</span>
+
+void uri_builder::append_query_encode_impl(const utility::string_t&amp; name, const utf8string&amp; value)
+<span style = "background-color:#fdd">{
+    utility::string_t encodedQuery = uri::encode_query_impl(utility::conversions::to_utf8string(name));
+    encodedQuery.push_back(_XPLATSTR('='));
+    encodedQuery.append(uri::encode_query_impl(value));</span>
+
+    // The query key value pair was already encoded by us or the user separately.
+<span style = "background-color:#fdd">    append_query(encodedQuery, false);
+}</span>
+
+void uri_builder::append_query_no_encode_impl(const utility::string_t&amp; name, const utility::string_t&amp; value)
+<span style = "background-color:#fdd">{
+    append_query(name + _XPLATSTR("=") + value, false);
+}</span>
+
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

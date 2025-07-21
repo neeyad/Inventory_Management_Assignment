@@ -1,0 +1,523 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>json.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: JSON parser and writer
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#include "stdafx.h"
+
+using namespace web;
+
+bool json::details::g_keep_json_object_unsorted = false;
+<span style = "background-color:#fdd">void json::keep_object_element_order(bool keep_order) { json::details::g_keep_json_object_unsorted = keep_order; }</span>
+
+utility::ostream_t&amp; web::json::operator&lt;&lt;(utility::ostream_t&amp; os, const web::json::value&amp; val)
+<span style = "background-color:#fdd">{
+    val.serialize(os);
+    return os;
+}</span>
+
+utility::istream_t&amp; web::json::operator&gt;&gt;(utility::istream_t&amp; is, json::value&amp; val)
+<span style = "background-color:#fdd">{
+    val = json::value::parse(is);
+    return is;
+}</span>
+
+web::json::value::value()
+<span style = "background-color:#fdd">    : m_value(utility::details::make_unique&lt;web::json::details::_Null&gt;())</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(value::Null)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value::value(int value)
+<span style = "background-color:#fdd">    : m_value(utility::details::make_unique&lt;web::json::details::_Number&gt;(value))</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(value::Number)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value::value(unsigned value)
+<span style = "background-color:#fdd">    : m_value(utility::details::make_unique&lt;web::json::details::_Number&gt;(value))</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(value::Number)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+
+web::json::value::value(long value)
+<span style = "background-color:#fdd">    : m_value(utility::details::make_unique&lt;web::json::details::_Number&gt;(value))</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(value::Number)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value::value(unsigned long value)
+<span style = "background-color:#fdd">    : m_value(utility::details::make_unique&lt;web::json::details::_Number&gt;(value))</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(value::Number)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value::value(long long value)
+<span style = "background-color:#fdd">    : m_value(utility::details::make_unique&lt;web::json::details::_Number&gt;(value))</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(value::Number)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value::value(unsigned long long value)
+<span style = "background-color:#fdd">    : m_value(utility::details::make_unique&lt;web::json::details::_Number&gt;(value))</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(value::Number)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value::value(double value)
+<span style = "background-color:#fdd">    : m_value(utility::details::make_unique&lt;web::json::details::_Number&gt;(value))</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(value::Number)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value::value(bool value)
+<span style = "background-color:#fdd">    : m_value(utility::details::make_unique&lt;web::json::details::_Boolean&gt;(value))</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(value::Boolean)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value::value(utility::string_t value)
+<span style = "background-color:#fdd">    : m_value(utility::details::make_unique&lt;web::json::details::_String&gt;(std::move(value)))</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(value::String)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value::value(utility::string_t value, bool has_escape_chars)
+<span style = "background-color:#fdd">    : m_value(utility::details::make_unique&lt;web::json::details::_String&gt;(std::move(value), has_escape_chars))</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(value::String)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value::value(const utility::char_t* value)
+<span style = "background-color:#fdd">    : m_value(utility::details::make_unique&lt;web::json::details::_String&gt;(value))</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(value::String)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value::value(const utility::char_t* value, bool has_escape_chars)
+<span style = "background-color:#fdd">    : m_value(utility::details::make_unique&lt;web::json::details::_String&gt;(utility::string_t(value), has_escape_chars))</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(value::String)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value::value(const value&amp; other)
+<span style = "background-color:#fdd">    : m_value(other.m_value-&gt;_copy_value())</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">    , m_kind(other.m_kind)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value&amp; web::json::value::operator=(const value&amp; other)
+<span style = "background-color:#fdd">{
+    if (this != &amp;other)</span>
+    {
+<span style = "background-color:#fdd">        m_value = std::unique_ptr&lt;details::_Value&gt;(other.m_value-&gt;_copy_value());</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">        m_kind = other.m_kind;</span>
+#endif
+    }
+<span style = "background-color:#fdd">    return *this;
+}</span>
+
+<span style = "background-color:#fdd">web::json::value::value(value&amp;&amp; other) CPPREST_NOEXCEPT : m_value(std::move(other.m_value))</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+    ,
+<span style = "background-color:#fdd">                                                          m_kind(other.m_kind)</span>
+#endif
+<span style = "background-color:#fdd">{
+}</span>
+
+web::json::value&amp; web::json::value::operator=(web::json::value&amp;&amp; other) CPPREST_NOEXCEPT
+<span style = "background-color:#fdd">{
+    if (this != &amp;other)</span>
+    {
+<span style = "background-color:#fdd">        m_value.swap(other.m_value);</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">        m_kind = other.m_kind;</span>
+#endif
+    }
+<span style = "background-color:#fdd">    return *this;
+}</span>
+
+<span style = "background-color:#fdd">web::json::value web::json::value::null() { return web::json::value(); }</span>
+
+<span style = "background-color:#fdd">web::json::value web::json::value::number(double value) { return web::json::value(value); }</span>
+
+<span style = "background-color:#fdd">web::json::value web::json::value::number(int value) { return web::json::value(value); }</span>
+
+<span style = "background-color:#fdd">web::json::value web::json::value::number(unsigned value) { return web::json::value(value); }</span>
+
+<span style = "background-color:#fdd">web::json::value web::json::value::number(long value) { return web::json::value(value); }</span>
+
+<span style = "background-color:#fdd">web::json::value web::json::value::number(unsigned long value) { return web::json::value(value); }</span>
+
+<span style = "background-color:#fdd">web::json::value web::json::value::number(long long value) { return web::json::value(value); }</span>
+
+<span style = "background-color:#fdd">web::json::value web::json::value::number(unsigned long long value) { return web::json::value(value); }</span>
+
+<span style = "background-color:#fdd">web::json::value web::json::value::boolean(bool value) { return web::json::value(value); }</span>
+
+web::json::value web::json::value::string(utility::string_t value)
+<span style = "background-color:#fdd">{
+    std::unique_ptr&lt;details::_Value&gt; ptr = utility::details::make_unique&lt;details::_String&gt;(std::move(value));
+    return web::json::value(std::move(ptr)</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+                                ,
+                            value::String
+#endif
+    );
+<span style = "background-color:#fdd">}</span>
+
+web::json::value web::json::value::string(utility::string_t value, bool has_escape_chars)
+<span style = "background-color:#fdd">{
+    std::unique_ptr&lt;details::_Value&gt; ptr =</span>
+        utility::details::make_unique&lt;details::_String&gt;(std::move(value), has_escape_chars);
+<span style = "background-color:#fdd">    return web::json::value(std::move(ptr)</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+                                ,
+                            value::String
+#endif
+    );
+<span style = "background-color:#fdd">}</span>
+
+#ifdef _WIN32
+web::json::value web::json::value::string(const std::string&amp; value)
+<span style = "background-color:#fdd">{
+    std::unique_ptr&lt;details::_Value&gt; ptr =</span>
+        utility::details::make_unique&lt;details::_String&gt;(utility::conversions::to_utf16string(value));
+<span style = "background-color:#fdd">    return web::json::value(std::move(ptr)</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+                                ,
+                            value::String
+#endif
+    );
+<span style = "background-color:#fdd">}</span>
+#endif
+
+web::json::value web::json::value::object(bool keep_order)
+<span style = "background-color:#fdd">{
+    std::unique_ptr&lt;details::_Value&gt; ptr = utility::details::make_unique&lt;details::_Object&gt;(keep_order);
+    return web::json::value(std::move(ptr)</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+                                ,
+                            value::Object
+#endif
+    );
+<span style = "background-color:#fdd">}</span>
+
+web::json::value web::json::value::object(std::vector&lt;std::pair&lt;::utility::string_t, value&gt;&gt; fields, bool keep_order)
+<span style = "background-color:#fdd">{
+    std::unique_ptr&lt;details::_Value&gt; ptr =</span>
+        utility::details::make_unique&lt;details::_Object&gt;(std::move(fields), keep_order);
+<span style = "background-color:#fdd">    return web::json::value(std::move(ptr)</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+                                ,
+                            value::Object
+#endif
+    );
+<span style = "background-color:#fdd">}</span>
+
+web::json::value web::json::value::array()
+<span style = "background-color:#fdd">{
+    std::unique_ptr&lt;details::_Value&gt; ptr = utility::details::make_unique&lt;details::_Array&gt;();
+    return web::json::value(std::move(ptr)</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+                                ,
+                            value::Array
+#endif
+    );
+<span style = "background-color:#fdd">}</span>
+
+web::json::value web::json::value::array(size_t size)
+<span style = "background-color:#fdd">{
+    std::unique_ptr&lt;details::_Value&gt; ptr = utility::details::make_unique&lt;details::_Array&gt;(size);
+    return web::json::value(std::move(ptr)</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+                                ,
+                            value::Array
+#endif
+    );
+<span style = "background-color:#fdd">}</span>
+
+web::json::value web::json::value::array(std::vector&lt;value&gt; elements)
+<span style = "background-color:#fdd">{
+    std::unique_ptr&lt;details::_Value&gt; ptr = utility::details::make_unique&lt;details::_Array&gt;(std::move(elements));
+    return web::json::value(std::move(ptr)</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+                                ,
+                            value::Array
+#endif
+    );
+<span style = "background-color:#fdd">}</span>
+
+<span style = "background-color:#fdd">const web::json::number&amp; web::json::value::as_number() const { return m_value-&gt;as_number(); }</span>
+
+<span style = "background-color:#fdd">double web::json::value::as_double() const { return m_value-&gt;as_double(); }</span>
+
+<span style = "background-color:#fdd">int web::json::value::as_integer() const { return m_value-&gt;as_integer(); }</span>
+
+<span style = "background-color:#fdd">bool web::json::value::as_bool() const { return m_value-&gt;as_bool(); }</span>
+
+<span style = "background-color:#fdd">json::array&amp; web::json::value::as_array() { return m_value-&gt;as_array(); }</span>
+
+<span style = "background-color:#fdd">const json::array&amp; web::json::value::as_array() const { return m_value-&gt;as_array(); }</span>
+
+<span style = "background-color:#fdd">json::object&amp; web::json::value::as_object() { return m_value-&gt;as_object(); }</span>
+
+<span style = "background-color:#fdd">const json::object&amp; web::json::value::as_object() const { return m_value-&gt;as_object(); }</span>
+
+bool web::json::number::is_int32() const
+<span style = "background-color:#fdd">{
+    switch (m_type)</span>
+    {
+        case signed_type:
+<span style = "background-color:#fdd">            return m_intval &gt;= (std::numeric_limits&lt;int32_t&gt;::min)() &amp;&amp;</span>
+                   m_intval &lt;= (std::numeric_limits&lt;int32_t&gt;::max)();
+<span style = "background-color:#fdd">        case unsigned_type: return m_uintval &lt;= (uint32_t)(std::numeric_limits&lt;int32_t&gt;::max)();</span>
+        case double_type:
+<span style = "background-color:#fdd">        default: return false;</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+bool web::json::number::is_uint32() const
+<span style = "background-color:#fdd">{
+    switch (m_type)</span>
+    {
+<span style = "background-color:#fdd">        case signed_type: return m_intval &gt;= 0 &amp;&amp; m_intval &lt;= (std::numeric_limits&lt;uint32_t&gt;::max)();
+        case unsigned_type: return m_uintval &lt;= (std::numeric_limits&lt;uint32_t&gt;::max)();</span>
+        case double_type:
+<span style = "background-color:#fdd">        default: return false;</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+bool web::json::number::is_int64() const
+<span style = "background-color:#fdd">{
+    switch (m_type)</span>
+    {
+<span style = "background-color:#fdd">        case signed_type: return true;
+        case unsigned_type: return m_uintval &lt;= static_cast&lt;uint64_t&gt;((std::numeric_limits&lt;int64_t&gt;::max)());</span>
+        case double_type:
+<span style = "background-color:#fdd">        default: return false;</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+bool web::json::details::_String::has_escape_chars(const _String&amp; str)
+<span style = "background-color:#fdd">{
+    return std::any_of(std::begin(str.m_string), std::end(str.m_string), [](utility::string_t::value_type const x) {
+        if (x &lt;= 31)</span>
+        {
+<span style = "background-color:#fdd">            return true;</span>
+        }
+<span style = "background-color:#fdd">        if (x == '"')</span>
+        {
+<span style = "background-color:#fdd">            return true;</span>
+        }
+<span style = "background-color:#fdd">        if (x == '\\')</span>
+        {
+<span style = "background-color:#fdd">            return true;</span>
+        }
+<span style = "background-color:#fdd">        return false;
+    });
+}</span>
+
+<span style = "background-color:#fdd">web::json::value::value_type json::value::type() const { return m_value-&gt;type(); }</span>
+
+bool json::value::is_integer() const
+<span style = "background-color:#fdd">{
+    if (!is_number())</span>
+    {
+<span style = "background-color:#fdd">        return false;</span>
+    }
+<span style = "background-color:#fdd">    return m_value-&gt;is_integer();
+}</span>
+
+bool json::value::is_double() const
+<span style = "background-color:#fdd">{
+    if (!is_number())</span>
+    {
+<span style = "background-color:#fdd">        return false;</span>
+    }
+<span style = "background-color:#fdd">    return m_value-&gt;is_double();
+}</span>
+
+<span style = "background-color:#fdd">json::value&amp; web::json::details::_Object::index(const utility::string_t&amp; key) { return m_object[key]; }</span>
+
+bool web::json::details::_Object::has_field(const utility::string_t&amp; key) const
+<span style = "background-color:#fdd">{
+    return m_object.find(key) != m_object.end();
+}</span>
+
+bool web::json::value::has_number_field(const utility::string_t&amp; key) const
+<span style = "background-color:#fdd">{
+    return has_field(key) &amp;&amp; at(key).is_number();
+}</span>
+
+bool web::json::value::has_integer_field(const utility::string_t&amp; key) const
+<span style = "background-color:#fdd">{
+    return has_field(key) &amp;&amp; at(key).is_integer();
+}</span>
+
+bool web::json::value::has_double_field(const utility::string_t&amp; key) const
+<span style = "background-color:#fdd">{
+    return has_field(key) &amp;&amp; at(key).is_double();
+}</span>
+
+bool web::json::value::has_boolean_field(const utility::string_t&amp; key) const
+<span style = "background-color:#fdd">{
+    return has_field(key) &amp;&amp; at(key).is_boolean();
+}</span>
+
+bool web::json::value::has_string_field(const utility::string_t&amp; key) const
+<span style = "background-color:#fdd">{
+    return has_field(key) &amp;&amp; at(key).is_string();
+}</span>
+
+bool web::json::value::has_array_field(const utility::string_t&amp; key) const
+<span style = "background-color:#fdd">{
+    return has_field(key) &amp;&amp; at(key).is_array();
+}</span>
+
+bool web::json::value::has_object_field(const utility::string_t&amp; key) const
+<span style = "background-color:#fdd">{
+    return has_field(key) &amp;&amp; at(key).is_object();
+}</span>
+
+utility::string_t json::value::to_string() const
+<span style = "background-color:#fdd">{</span>
+#ifndef _WIN32
+    utility::details::scoped_c_thread_locale locale;
+#endif
+<span style = "background-color:#fdd">    return m_value-&gt;to_string();
+}</span>
+
+bool json::value::operator==(const json::value&amp; other) const
+<span style = "background-color:#fdd">{
+    if (this-&gt;m_value.get() == other.m_value.get()) return true;
+    if (this-&gt;type() != other.type()) return false;</span>
+
+<span style = "background-color:#fdd">    switch (this-&gt;type())</span>
+    {
+<span style = "background-color:#fdd">        case Null: return true;
+        case Number: return this-&gt;as_number() == other.as_number();
+        case Boolean: return this-&gt;as_bool() == other.as_bool();
+        case String: return this-&gt;as_string() == other.as_string();</span>
+        case Object:
+<span style = "background-color:#fdd">            return static_cast&lt;const json::details::_Object*&gt;(this-&gt;m_value.get())</span>
+                -&gt;is_equal(static_cast&lt;const json::details::_Object*&gt;(other.m_value.get()));
+        case Array:
+<span style = "background-color:#fdd">            return static_cast&lt;const json::details::_Array*&gt;(this-&gt;m_value.get())</span>
+                -&gt;is_equal(static_cast&lt;const json::details::_Array*&gt;(other.m_value.get()));
+    }
+    __assume(0);
+<span style = "background-color:#fdd">}</span>
+
+<span style = "background-color:#fdd">void web::json::value::erase(size_t index) { return this-&gt;as_array().erase(index); }</span>
+
+<span style = "background-color:#fdd">void web::json::value::erase(const utility::string_t&amp; key) { return this-&gt;as_object().erase(key); }</span>
+
+// at() overloads
+<span style = "background-color:#fdd">web::json::value&amp; web::json::value::at(size_t index) { return this-&gt;as_array().at(index); }</span>
+
+<span style = "background-color:#fdd">const web::json::value&amp; web::json::value::at(size_t index) const { return this-&gt;as_array().at(index); }</span>
+
+<span style = "background-color:#fdd">web::json::value&amp; web::json::value::at(const utility::string_t&amp; key) { return this-&gt;as_object().at(key); }</span>
+
+<span style = "background-color:#fdd">const web::json::value&amp; web::json::value::at(const utility::string_t&amp; key) const { return this-&gt;as_object().at(key); }</span>
+
+web::json::value&amp; web::json::value::operator[](const utility::string_t&amp; key)
+<span style = "background-color:#fdd">{
+    if (this-&gt;is_null())</span>
+    {
+<span style = "background-color:#fdd">        m_value.reset(new web::json::details::_Object(details::g_keep_json_object_unsorted));</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">        m_kind = value::Object;</span>
+#endif
+    }
+<span style = "background-color:#fdd">    return m_value-&gt;index(key);
+}</span>
+
+web::json::value&amp; web::json::value::operator[](size_t index)
+<span style = "background-color:#fdd">{
+    if (this-&gt;is_null())</span>
+    {
+<span style = "background-color:#fdd">        m_value.reset(new web::json::details::_Array());</span>
+#ifdef ENABLE_JSON_VALUE_VISUALIZER
+<span style = "background-color:#fdd">        m_kind = value::Array;</span>
+#endif
+    }
+<span style = "background-color:#fdd">    return m_value-&gt;index(index);
+}</span>
+
+// Remove once VS 2013 is no longer supported.
+#if defined(_WIN32) &amp;&amp; _MSC_VER &lt; 1900
+static web::json::details::json_error_category_impl instance;
+#endif
+const web::json::details::json_error_category_impl&amp; web::json::details::json_error_category()
+<span style = "background-color:#fdd">{</span>
+#if !defined(_WIN32) || _MSC_VER &gt;= 1900
+<span style = "background-color:#fdd">    static web::json::details::json_error_category_impl instance;</span>
+#endif
+<span style = "background-color:#fdd">    return instance;
+}</span></pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

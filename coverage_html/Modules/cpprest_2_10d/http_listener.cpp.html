@@ -1,0 +1,198 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>http_listener.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: HTTP listener (server-side) APIs
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#include "stdafx.h"
+
+#if !defined(_WIN32) || (_WIN32_WINNT &gt;= _WIN32_WINNT_VISTA &amp;&amp; !defined(__cplusplus_winrt)) ||                         \
+    defined(CPPREST_FORCE_HTTP_LISTENER_ASIO)
+
+using namespace web::http::experimental;
+
+namespace web
+{
+namespace http
+{
+namespace experimental
+{
+namespace listener
+{
+// Helper function to check URI components.
+static void check_listener_uri(const http::uri&amp; address)
+<span style = "background-color:#dfd">{</span>
+    // Some things like proper URI schema are verified by the URI class.
+    // We only need to check certain things specific to HTTP.
+
+    // HTTP Server API includes SSL support
+<span style = "background-color:#dfd">    if (address.scheme() != U("http") &amp;&amp; address.scheme() != U("https"))</span>
+    {
+<span style = "background-color:#fdd">        throw std::invalid_argument("URI scheme must be 'http' or 'https'");</span>
+    }
+
+<span style = "background-color:#dfd">    if (address.host().empty())</span>
+    {
+<span style = "background-color:#fdd">        throw std::invalid_argument("URI must contain a hostname.");</span>
+    }
+
+<span style = "background-color:#dfd">    if (!address.query().empty())</span>
+    {
+<span style = "background-color:#fdd">        throw std::invalid_argument("URI can't contain a query.");</span>
+    }
+
+<span style = "background-color:#dfd">    if (!address.fragment().empty())</span>
+    {
+<span style = "background-color:#fdd">        throw std::invalid_argument("URI can't contain a fragment.");</span>
+    }
+<span style = "background-color:#dfd">}</span>
+
+<span style = "background-color:#dfd">details::http_listener_impl::http_listener_impl(http::uri address) : m_uri(std::move(address)), m_closed(true)
+{
+    check_listener_uri(m_uri);
+}</span>
+
+details::http_listener_impl::http_listener_impl(http::uri address, http_listener_config config)
+<span style = "background-color:#fdd">    : m_uri(std::move(address)), m_config(std::move(config)), m_closed(true)
+{
+    check_listener_uri(m_uri);
+}</span>
+
+pplx::task&lt;void&gt; details::http_listener_impl::open()
+<span style = "background-color:#dfd">{</span>
+    // Do nothing if the open operation was already attempted
+    // Not thread safe
+<span style = "background-color:#dfd">    if (!m_closed) return pplx::task_from_result();</span>
+
+<span style = "background-color:#dfd">    if (m_uri.is_empty()) throw std::invalid_argument("No URI defined for listener.");
+    m_closed = false;</span>
+
+<span style = "background-color:#dfd">    return web::http::experimental::details::http_server_api::register_listener(this).then(
+        [this](pplx::task&lt;void&gt; openOp) {</span>
+            try
+            {
+                // If failed to open need to mark as closed.
+<span style = "background-color:#dfd">                openOp.wait();</span>
+            }
+            catch (...)
+<span style = "background-color:#fdd">            {
+                m_closed = true;
+                throw;
+            }</span>
+<span style = "background-color:#dfd">            return openOp;
+        });
+}</span>
+
+pplx::task&lt;void&gt; details::http_listener_impl::close()
+<span style = "background-color:#dfd">{</span>
+    // Do nothing if the close operation was already attempted
+    // Not thread safe.
+    // Note: Return the previous close task
+<span style = "background-color:#dfd">    if (m_closed) return m_close_task;</span>
+
+<span style = "background-color:#dfd">    m_closed = true;
+    m_close_task = web::http::experimental::details::http_server_api::unregister_listener(this);
+    return m_close_task;
+}</span>
+
+void details::http_listener_impl::handle_request(http_request msg)
+<span style = "background-color:#fdd">{</span>
+    // Specific method handler takes priority over general.
+<span style = "background-color:#fdd">    const method&amp; mtd = msg.method();
+    if (m_supported_methods.count(mtd))</span>
+    {
+<span style = "background-color:#fdd">        m_supported_methods[mtd](msg);
+    }
+    else if (mtd == methods::OPTIONS)</span>
+    {
+<span style = "background-color:#fdd">        handle_options(msg);
+    }
+    else if (mtd == methods::TRCE)</span>
+    {
+<span style = "background-color:#fdd">        handle_trace(msg);
+    }
+    else if (m_all_requests != nullptr)</span>
+    {
+<span style = "background-color:#fdd">        m_all_requests(msg);
+    }</span>
+    else
+    {
+        // Method is not supported.
+        // Send back a list of supported methods to the client.
+<span style = "background-color:#fdd">        http_response response(status_codes::MethodNotAllowed);
+        response.headers().add(U("Allow"), get_supported_methods());
+        msg.reply(response);
+    }
+}</span>
+
+utility::string_t details::http_listener_impl::get_supported_methods() const
+<span style = "background-color:#fdd">{
+    utility::string_t allowed;
+    bool first = true;
+    for (auto iter = m_supported_methods.begin(); iter != m_supported_methods.end(); ++iter)</span>
+    {
+<span style = "background-color:#fdd">        if (!first)</span>
+        {
+<span style = "background-color:#fdd">            allowed += U(", ");
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            first = false;</span>
+        }
+<span style = "background-color:#fdd">        allowed += (iter-&gt;first);
+    }
+    return allowed;
+}</span>
+
+void details::http_listener_impl::handle_trace(http_request message)
+<span style = "background-color:#fdd">{
+    utility::string_t data = message.to_string();
+    message.reply(status_codes::OK, data, U("message/http"));
+}</span>
+
+void details::http_listener_impl::handle_options(http_request message)
+<span style = "background-color:#fdd">{
+    http_response response(status_codes::OK);
+    response.headers().add(U("Allow"), get_supported_methods());
+    message.reply(response);
+}</span>
+
+} // namespace listener
+} // namespace experimental
+} // namespace http
+} // namespace web
+
+#endif</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

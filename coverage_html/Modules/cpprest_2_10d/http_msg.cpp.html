@@ -1,0 +1,1213 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>http_msg.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: Request and reply message definitions.
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+#include "stdafx.h"
+
+#include "../common/internal_http_helpers.h"
+#include "cpprest/producerconsumerstream.h"
+#include &lt;sstream&gt;
+
+using namespace web;
+using namespace utility;
+using namespace concurrency;
+using namespace utility::conversions;
+using namespace http::details;
+
+namespace web
+{
+namespace http
+{
+#define CRLF _XPLATSTR("\r\n")
+
+utility::string_t http_headers::content_type() const
+<span style = "background-color:#fdd">{
+    utility::string_t result;
+    match(http::header_names::content_type, result);
+    return result;
+}</span>
+
+/// Helper functions to convert a series of bytes from a charset to utf-8 or utf-16.
+/// These APIs deal with checking for and handling byte order marker (BOM).
+namespace
+{
+enum endianness
+{
+    little_endian,
+    big_endian,
+    unknown
+};
+endianness check_byte_order_mark(const utf16string&amp; str)
+<span style = "background-color:#fdd">{
+    if (str.empty())</span>
+    {
+<span style = "background-color:#fdd">        return unknown;</span>
+    }
+<span style = "background-color:#fdd">    const unsigned char* src = reinterpret_cast&lt;const unsigned char*&gt;(str.data());</span>
+
+    // little endian
+<span style = "background-color:#fdd">    if (src[0] == 0xFF &amp;&amp; src[1] == 0xFE)</span>
+    {
+<span style = "background-color:#fdd">        return little_endian;
+    }</span>
+
+    // big endian
+<span style = "background-color:#fdd">    else if (src[0] == 0xFE &amp;&amp; src[1] == 0xFF)</span>
+    {
+<span style = "background-color:#fdd">        return big_endian;</span>
+    }
+
+<span style = "background-color:#fdd">    return unknown;
+}</span>
+
+std::string convert_utf16le_to_utf8(utf16string src, bool erase_bom)
+<span style = "background-color:#fdd">{
+    if (erase_bom &amp;&amp; !src.empty())</span>
+    {
+<span style = "background-color:#fdd">        src.erase(0, 1);</span>
+    }
+<span style = "background-color:#fdd">    return utf16_to_utf8(std::move(src));
+}</span>
+
+utility::string_t convert_utf16le_to_string_t(utf16string src, bool erase_bom)
+<span style = "background-color:#fdd">{
+    if (erase_bom &amp;&amp; !src.empty())</span>
+    {
+<span style = "background-color:#fdd">        src.erase(0, 1);</span>
+    }
+#ifdef _UTF16_STRINGS
+<span style = "background-color:#fdd">    return src;</span>
+#else
+    return utf16_to_utf8(std::move(src));
+#endif
+<span style = "background-color:#fdd">}</span>
+
+// Helper function to change endian ness from big endian to little endian
+utf16string big_endian_to_little_endian(utf16string src, bool erase_bom)
+<span style = "background-color:#fdd">{
+    if (erase_bom &amp;&amp; !src.empty())</span>
+    {
+<span style = "background-color:#fdd">        src.erase(0, 1);</span>
+    }
+<span style = "background-color:#fdd">    if (src.empty())</span>
+    {
+<span style = "background-color:#fdd">        return src;</span>
+    }
+
+<span style = "background-color:#fdd">    const size_t size = src.size();
+    for (size_t i = 0; i &lt; size; ++i)</span>
+    {
+<span style = "background-color:#fdd">        utf16char ch = src[i];
+        src[i] = static_cast&lt;utf16char&gt;(ch &lt;&lt; 8);
+        src[i] = static_cast&lt;utf16char&gt;(src[i] | ch &gt;&gt; 8);
+    }</span>
+
+<span style = "background-color:#fdd">    return src;
+}</span>
+
+std::string convert_utf16be_to_utf8(utf16string src, bool erase_bom)
+<span style = "background-color:#fdd">{
+    return utf16_to_utf8(big_endian_to_little_endian(std::move(src), erase_bom));
+}</span>
+
+utf16string convert_utf16be_to_utf16le(utf16string src, bool erase_bom)
+<span style = "background-color:#fdd">{
+    return big_endian_to_little_endian(std::move(src), erase_bom);
+}</span>
+
+utility::string_t convert_utf16be_to_string_t(utf16string src, bool erase_bom)
+<span style = "background-color:#fdd">{</span>
+#ifdef _UTF16_STRINGS
+<span style = "background-color:#fdd">    return convert_utf16be_to_utf16le(std::move(src), erase_bom);</span>
+#else
+    return convert_utf16be_to_utf8(std::move(src), erase_bom);
+#endif
+<span style = "background-color:#fdd">}</span>
+
+std::string convert_utf16_to_utf8(utf16string src)
+<span style = "background-color:#fdd">{
+    const endianness endian = check_byte_order_mark(src);
+    switch (endian)</span>
+    {
+<span style = "background-color:#fdd">        case little_endian: return convert_utf16le_to_utf8(std::move(src), true);
+        case big_endian: return convert_utf16be_to_utf8(std::move(src), true);</span>
+        case unknown:
+            // unknown defaults to big endian.
+<span style = "background-color:#fdd">            return convert_utf16be_to_utf8(std::move(src), false);</span>
+    }
+<span style = "background-color:#fdd">    __assume(0);
+}</span>
+
+utf16string convert_utf16_to_utf16(utf16string src)
+<span style = "background-color:#fdd">{
+    const endianness endian = check_byte_order_mark(src);
+    switch (endian)</span>
+    {
+<span style = "background-color:#fdd">        case little_endian: src.erase(0, 1); return src;
+        case big_endian: return convert_utf16be_to_utf16le(std::move(src), true);</span>
+        case unknown:
+            // unknown defaults to big endian.
+<span style = "background-color:#fdd">            return convert_utf16be_to_utf16le(std::move(src), false);</span>
+    }
+<span style = "background-color:#fdd">    __assume(0);
+}</span>
+utility::string_t convert_utf16_to_string_t(utf16string src)
+<span style = "background-color:#fdd">{</span>
+#ifdef _UTF16_STRINGS
+<span style = "background-color:#fdd">    return convert_utf16_to_utf16(std::move(src));</span>
+#else
+    return convert_utf16_to_utf8(std::move(src));
+#endif
+<span style = "background-color:#fdd">}</span>
+} // namespace
+
+void http_headers::set_content_type(utility::string_t type)
+<span style = "background-color:#fdd">{
+    m_headers[http::header_names::content_type] = std::move(type);
+}</span>
+
+utility::string_t http_headers::cache_control() const
+<span style = "background-color:#fdd">{
+    utility::string_t result;
+    match(http::header_names::cache_control, result);
+    return result;
+}</span>
+
+void http_headers::set_cache_control(utility::string_t control)
+<span style = "background-color:#fdd">{
+    add(http::header_names::cache_control, std::move(control));
+}</span>
+
+utility::string_t http_headers::date() const
+<span style = "background-color:#fdd">{
+    utility::string_t result;
+    match(http::header_names::date, result);
+    return result;
+}</span>
+
+void http_headers::set_date(const utility::datetime&amp; date)
+<span style = "background-color:#fdd">{
+    m_headers[http::header_names::date] = date.to_string(utility::datetime::RFC_1123);
+}</span>
+
+utility::size64_t http_headers::content_length() const
+<span style = "background-color:#fdd">{
+    utility::size64_t length = 0;
+    match(http::header_names::content_length, length);
+    return length;
+}</span>
+
+void http_headers::set_content_length(utility::size64_t length)
+<span style = "background-color:#fdd">{
+    m_headers[http::header_names::content_length] = utility::conversions::details::to_string_t(length);
+}</span>
+
+namespace details
+{
+utility::string_t flatten_http_headers(const http_headers&amp; headers)
+<span style = "background-color:#fdd">{
+    utility::string_t flattened_headers;
+    for (auto iter = headers.begin(); iter != headers.end(); ++iter)</span>
+    {
+<span style = "background-color:#fdd">        flattened_headers.append(iter-&gt;first);
+        flattened_headers.push_back(':');
+        flattened_headers.append(iter-&gt;second);
+        flattened_headers.append(CRLF);
+    }
+    return flattened_headers;
+}</span>
+
+void parse_headers_string(_Inout_z_ utility::char_t* headersStr, web::http::http_headers&amp; headers)
+<span style = "background-color:#fdd">{
+    utility::string_t str(headersStr);
+    std::size_t pos = str.find_first_of(_XPLATSTR("\r\n"));
+    std::size_t startpos = 0;
+    while (pos!=std::string::npos)</span>
+    {
+<span style = "background-color:#fdd">        const utility::string_t header_line(str, startpos, pos - startpos);
+        const size_t colonIndex = header_line.find_first_of(_XPLATSTR(":"));
+        if (colonIndex != utility::string_t::npos)</span>
+        {
+<span style = "background-color:#fdd">            utility::string_t key = header_line.substr(0, colonIndex);
+            utility::string_t value = header_line.substr(colonIndex + 1, header_line.length() - colonIndex - 1);
+            web::http::details::trim_whitespace(key);
+            web::http::details::trim_whitespace(value);
+            headers.add(key, value);
+        }
+        startpos = pos + 1;
+        pos = str.find_first_of(_XPLATSTR("\r\n"), pos + 1);
+    }
+}</span>
+
+} // namespace details
+
+http_version __cdecl http_version::from_string(const std::string&amp; http_version_string)
+<span style = "background-color:#fdd">{
+    std::istringstream str(http_version_string);
+    str.imbue(std::locale::classic());</span>
+
+<span style = "background-color:#fdd">    std::string http;
+    std::getline(str, http, '/');
+    unsigned int major = 0;
+    str &gt;&gt; major;
+    char dot = '\0';
+    str &gt;&gt; dot;
+    unsigned int minor = 0;
+    str &gt;&gt; minor;</span>
+
+    // check no failure, fully consumed, and correct fixed text
+<span style = "background-color:#fdd">    if (!str.fail() &amp;&amp; str.eof() &amp;&amp; "HTTP" == http &amp;&amp; '.' == dot)</span>
+    {
+<span style = "background-color:#fdd">        return {(uint8_t)major, (uint8_t)minor};</span>
+    }
+<span style = "background-color:#fdd">    return {0, 0};
+}</span>
+
+std::string http_version::to_utf8string() const
+<span style = "background-color:#fdd">{
+    std::string ret;
+    ret.reserve(8);
+    ret.append("HTTP/");
+    ret.append(std::to_string(static_cast&lt;unsigned int&gt;(major)));
+    ret.append(".");
+    ret.append(std::to_string(static_cast&lt;unsigned int&gt;(minor)));
+    return ret;
+}</span>
+
+static const utility::char_t* stream_was_set_explicitly =
+    _XPLATSTR("A stream was set on the message and extraction is not possible");
+static const utility::char_t* unsupported_charset =
+    _XPLATSTR("Charset must be iso-8859-1, utf-8, utf-16, utf-16le, or utf-16be to be extracted.");
+
+<span style = "background-color:#fdd">http_msg_base::http_msg_base() : m_http_version(http::http_version {0, 0}), m_headers(), m_default_outstream(false) {}</span>
+
+void http_msg_base::_prepare_to_receive_data()
+<span style = "background-color:#fdd">{</span>
+    // See if the user specified an outstream
+<span style = "background-color:#fdd">    if (!outstream())</span>
+    {
+        // The user did not specify an outstream.
+        // We will create one...
+<span style = "background-color:#fdd">        concurrency::streams::producer_consumer_buffer&lt;uint8_t&gt; buf;
+        set_outstream(buf.create_ostream(), true);</span>
+
+        // Since we are creating the streambuffer, set the input stream
+        // so that the user can retrieve the data.
+<span style = "background-color:#fdd">        set_instream(buf.create_istream());
+    }</span>
+
+    // If the user did specify an outstream we leave the instream
+    // as invalid. It is assumed that user either has a read head
+    // to the out streambuffer or the data is streamed into a container
+    // or media (like file) that the user can read from...
+<span style = "background-color:#fdd">}</span>
+
+size_t http_msg_base::_get_stream_length()
+<span style = "background-color:#fdd">{
+    auto&amp; stream = instream();</span>
+
+<span style = "background-color:#fdd">    if (stream.can_seek())</span>
+    {
+<span style = "background-color:#fdd">        auto offset = stream.tell();
+        auto end = stream.seek(0, std::ios_base::end);
+        stream.seek(offset);
+        return static_cast&lt;size_t&gt;(end - offset);</span>
+    }
+
+<span style = "background-color:#fdd">    return (std::numeric_limits&lt;size_t&gt;::max)();
+}</span>
+
+size_t http_msg_base::_get_content_length(bool honor_compression)
+<span style = "background-color:#fdd">{</span>
+    // An invalid response_stream indicates that there is no body
+<span style = "background-color:#fdd">    if ((bool)instream())</span>
+    {
+        size_t content_length;
+<span style = "background-color:#fdd">        utility::string_t transfer_encoding;</span>
+
+<span style = "background-color:#fdd">        if (headers().match(header_names::transfer_encoding, transfer_encoding))</span>
+        {
+            // Transfer encoding is set; it trumps any content length that may or may not be present
+<span style = "background-color:#fdd">            if (honor_compression &amp;&amp; m_compressor)</span>
+            {
+<span style = "background-color:#fdd">                http::http_headers tmp;</span>
+
+                // Build a header for comparison with the existing one
+<span style = "background-color:#fdd">                tmp.add(header_names::transfer_encoding, m_compressor-&gt;algorithm());
+                tmp.add(header_names::transfer_encoding, _XPLATSTR("chunked"));</span>
+
+<span style = "background-color:#fdd">                if (!utility::details::str_iequal(transfer_encoding, tmp[header_names::transfer_encoding]))</span>
+                {
+                    // Some external entity added this header, and it doesn't match our
+                    // expectations; bail out, since the caller's intentions are not clear
+<span style = "background-color:#fdd">                    throw http_exception("Transfer-Encoding header is internally managed when compressing");</span>
+                }
+<span style = "background-color:#fdd">            }</span>
+
+<span style = "background-color:#fdd">            return (std::numeric_limits&lt;size_t&gt;::max)();</span>
+        }
+
+<span style = "background-color:#fdd">        if (honor_compression &amp;&amp; m_compressor)</span>
+        {
+            // A compressor is set; this implies transfer encoding, since we don't know the compressed length
+            // up front for content encoding.  We return the uncompressed length if we can figure it out.
+<span style = "background-color:#fdd">            headers().add(header_names::transfer_encoding, m_compressor-&gt;algorithm());
+            headers().add(header_names::transfer_encoding, _XPLATSTR("chunked"));
+            return (std::numeric_limits&lt;size_t&gt;::max)();</span>
+        }
+
+<span style = "background-color:#fdd">        if (headers().match(header_names::content_length, content_length))</span>
+        {
+            // An explicit content length is set; trust it, since we
+            // may not be required to send the stream's entire contents
+<span style = "background-color:#fdd">            return content_length;</span>
+        }
+
+<span style = "background-color:#fdd">        content_length = _get_stream_length();
+        if (content_length != (std::numeric_limits&lt;size_t&gt;::max)())</span>
+        {
+            // The content length wasn't explicitly set, but we figured it out;
+            // use it, since sending this way is more efficient than chunking
+<span style = "background-color:#fdd">            headers().add(header_names::content_length, content_length);
+            return content_length;</span>
+        }
+
+        // We don't know the content length; we'll chunk the stream
+<span style = "background-color:#fdd">        headers().add(header_names::transfer_encoding, _XPLATSTR("chunked"));
+        return (std::numeric_limits&lt;size_t&gt;::max)();</span>
+    }
+
+    // There is no content
+<span style = "background-color:#fdd">    return 0;
+}</span>
+
+<span style = "background-color:#fdd">size_t http_msg_base::_get_content_length_and_set_compression() { return _get_content_length(true); }</span>
+
+<span style = "background-color:#fdd">size_t http_msg_base::_get_content_length() { return _get_content_length(false); }</span>
+
+// Helper function to inline continuation if possible.
+struct inline_continuation
+{
+    inline_continuation(pplx::task&lt;void&gt;&amp; prev, const std::function&lt;void(pplx::task&lt;void&gt;)&gt;&amp; next)
+<span style = "background-color:#fdd">        : m_prev(prev), m_next(next)
+    {
+    }</span>
+    ~inline_continuation()
+<span style = "background-color:#fdd">    {
+        if (m_prev.is_done())</span>
+        {
+<span style = "background-color:#fdd">            m_next(m_prev);
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            m_prev.then(m_next);</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+    pplx::task&lt;void&gt;&amp; m_prev;
+    std::function&lt;void(pplx::task&lt;void&gt;)&gt; m_next;
+
+private:
+    inline_continuation(const inline_continuation&amp;);
+    inline_continuation&amp; operator=(const inline_continuation&amp;);
+};
+
+void http_msg_base::_complete(utility::size64_t body_size, const std::exception_ptr&amp; exceptionPtr)
+<span style = "background-color:#fdd">{
+    const auto&amp; completionEvent = _get_data_available();
+    auto closeTask = pplx::task_from_result();
+    if (m_default_outstream)</span>
+    {
+        // if the outstream is one we created by default on the customer's behalf, try to close it
+<span style = "background-color:#fdd">        auto&amp; out = outstream();
+        if (out.is_valid())</span>
+        {
+<span style = "background-color:#fdd">            if (exceptionPtr == std::exception_ptr())</span>
+            {
+<span style = "background-color:#fdd">                closeTask = out.close();
+            }</span>
+            else
+            {
+<span style = "background-color:#fdd">                closeTask = out.close(exceptionPtr);</span>
+            }
+        }
+    }
+
+<span style = "background-color:#fdd">    if (exceptionPtr == std::exception_ptr())</span>
+    {
+<span style = "background-color:#fdd">        inline_continuation(closeTask, [completionEvent, body_size](pplx::task&lt;void&gt; t) {</span>
+            try
+            {
+<span style = "background-color:#fdd">                t.get();
+                completionEvent.set(body_size);</span>
+            }
+            catch (...)
+<span style = "background-color:#fdd">            {</span>
+                // If close throws an exception report back to user.
+<span style = "background-color:#fdd">                completionEvent.set_exception(std::current_exception());
+                pplx::create_task(completionEvent).then([](pplx::task&lt;utility::size64_t&gt; t) {</span>
+                    try
+                    {
+<span style = "background-color:#fdd">                        t.get();</span>
+                    }
+                    catch (...)
+<span style = "background-color:#fdd">                    {
+                    }
+                });
+            }
+        });
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        inline_continuation(closeTask, [completionEvent, exceptionPtr](pplx::task&lt;void&gt; t) {</span>
+            // If closing stream throws an exception ignore since we already have an error.
+            try
+            {
+<span style = "background-color:#fdd">                t.get();</span>
+            }
+            catch (...)
+<span style = "background-color:#fdd">            {
+            }
+            completionEvent.set_exception(exceptionPtr);
+            pplx::create_task(completionEvent).then([](pplx::task&lt;utility::size64_t&gt; t) {</span>
+                try
+                {
+<span style = "background-color:#fdd">                    t.get();</span>
+                }
+                catch (...)
+<span style = "background-color:#fdd">                {
+                }
+            });
+        });</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+static bool is_content_type_one_of(const utility::string_t* first,
+                                   const utility::string_t* last,
+                                   const utility::string_t&amp; value)
+<span style = "background-color:#fdd">{
+    while (first != last)</span>
+    {
+<span style = "background-color:#fdd">        if (utility::details::str_iequal(*first, value))</span>
+        {
+<span style = "background-color:#fdd">            return true;</span>
+        }
+<span style = "background-color:#fdd">        ++first;
+    }
+    return false;
+}</span>
+
+// Remove once VS 2013 is no longer supported.
+#if defined(_WIN32) &amp;&amp; _MSC_VER &lt; 1900
+// Not referring to mime_types to avoid static initialization order fiasco.
+static const utility::string_t textual_types[] = {U("message/http"),
+                                                  U("application/json"),
+                                                  U("application/xml"),
+                                                  U("application/atom+xml"),
+                                                  U("application/http"),
+                                                  U("application/x-www-form-urlencoded")};
+#endif
+
+/// &lt;summary&gt;
+/// Determines whether or not the given content type is 'textual' according the feature specifications.
+/// &lt;/summary&gt;
+static bool is_content_type_textual(const utility::string_t&amp; content_type)
+<span style = "background-color:#fdd">{</span>
+#if !defined(_WIN32) || _MSC_VER &gt;= 1900
+<span style = "background-color:#fdd">    static const utility::string_t textual_types[] = {mime_types::message_http,
+                                                      mime_types::application_json,
+                                                      mime_types::application_xml,
+                                                      mime_types::application_atom_xml,
+                                                      mime_types::application_http,
+                                                      mime_types::application_x_www_form_urlencoded};</span>
+#endif
+
+<span style = "background-color:#fdd">    if (content_type.size() &gt;= 4 &amp;&amp; utility::details::str_iequal(content_type.substr(0, 4), _XPLATSTR("text")))</span>
+    {
+<span style = "background-color:#fdd">        return true;</span>
+    }
+<span style = "background-color:#fdd">    return (is_content_type_one_of(std::begin(textual_types), std::end(textual_types), content_type));
+}</span>
+
+// Remove once VS 2013 is no longer supported.
+#if defined(_WIN32) &amp;&amp; _MSC_VER &lt; 1900
+// Not referring to mime_types to avoid static initialization order fiasco.
+static const utility::string_t json_types[] = {U("application/json"),
+                                               U("application/x-json"),
+                                               U("text/json"),
+                                               U("text/x-json"),
+                                               U("text/javascript"),
+                                               U("text/x-javascript"),
+                                               U("application/javascript"),
+                                               U("application/x-javascript")};
+#endif
+
+/// &lt;summary&gt;
+/// Determines whether or not the given content type is JSON according the feature specifications.
+/// &lt;/summary&gt;
+static bool is_content_type_json(const utility::string_t&amp; content_type)
+<span style = "background-color:#fdd">{</span>
+#if !defined(_WIN32) || _MSC_VER &gt;= 1900
+<span style = "background-color:#fdd">    static const utility::string_t json_types[] = {mime_types::application_json,
+                                                   mime_types::application_xjson,
+                                                   mime_types::text_json,
+                                                   mime_types::text_xjson,
+                                                   mime_types::text_javascript,
+                                                   mime_types::text_xjavascript,
+                                                   mime_types::application_javascript,
+                                                   mime_types::application_xjavascript};</span>
+#endif
+
+<span style = "background-color:#fdd">    return (is_content_type_one_of(std::begin(json_types), std::end(json_types), content_type));
+}</span>
+
+/// &lt;summary&gt;
+/// Gets the default charset for given content type. If the MIME type is not textual or recognized Latin1 will be
+/// returned.
+/// &lt;/summary&gt;
+static utility::string_t get_default_charset(const utility::string_t&amp; content_type)
+<span style = "background-color:#fdd">{</span>
+    // We are defaulting everything to Latin1 except JSON which is utf-8.
+<span style = "background-color:#fdd">    if (is_content_type_json(content_type))</span>
+    {
+<span style = "background-color:#fdd">        return charset_types::utf8;
+    }</span>
+    else
+    {
+<span style = "background-color:#fdd">        return charset_types::latin1;</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+/// &lt;summary&gt;
+/// Parses the given Content-Type header value to get out actual content type and charset.
+/// If the charset isn't specified the default charset for the content type will be set.
+/// &lt;/summary&gt;
+static void parse_content_type_and_charset(const utility::string_t&amp; content_type,
+                                           utility::string_t&amp; content,
+                                           utility::string_t&amp; charset)
+<span style = "background-color:#fdd">{
+    const size_t semi_colon_index = content_type.find_first_of(_XPLATSTR(";"));</span>
+
+    // No charset specified.
+<span style = "background-color:#fdd">    if (semi_colon_index == utility::string_t::npos)</span>
+    {
+<span style = "background-color:#fdd">        content = content_type;
+        trim_whitespace(content);
+        charset = get_default_charset(content);
+        return;</span>
+    }
+
+    // Split into content type and second part which could be charset.
+<span style = "background-color:#fdd">    content = content_type.substr(0, semi_colon_index);
+    trim_whitespace(content);
+    utility::string_t possible_charset = content_type.substr(semi_colon_index + 1);
+    trim_whitespace(possible_charset);
+    const size_t equals_index = possible_charset.find_first_of(_XPLATSTR("="));</span>
+
+    // No charset specified.
+<span style = "background-color:#fdd">    if (equals_index == utility::string_t::npos)</span>
+    {
+<span style = "background-color:#fdd">        charset = get_default_charset(content);
+        return;</span>
+    }
+
+    // Split and make sure 'charset'
+<span style = "background-color:#fdd">    utility::string_t charset_key = possible_charset.substr(0, equals_index);
+    trim_whitespace(charset_key);
+    if (!utility::details::str_iequal(charset_key, _XPLATSTR("charset")))</span>
+    {
+<span style = "background-color:#fdd">        charset = get_default_charset(content);
+        return;</span>
+    }
+<span style = "background-color:#fdd">    charset = possible_charset.substr(equals_index + 1);</span>
+    // Remove the redundant ';' at the end of charset.
+<span style = "background-color:#fdd">    while (charset.back() == ';')</span>
+    {
+<span style = "background-color:#fdd">        charset.pop_back();
+    }
+    trim_whitespace(charset);
+    if (charset.front() == _XPLATSTR('"') &amp;&amp; charset.back() == _XPLATSTR('"'))</span>
+    {
+<span style = "background-color:#fdd">        charset = charset.substr(1, charset.size() - 2);
+        trim_whitespace(charset);</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+utility::string_t details::http_msg_base::parse_and_check_content_type(
+    bool ignore_content_type, const std::function&lt;bool(const utility::string_t&amp;)&gt;&amp; check_content_type)
+<span style = "background-color:#fdd">{
+    if (!instream())</span>
+    {
+<span style = "background-color:#fdd">        throw http_exception(stream_was_set_explicitly);</span>
+    }
+
+<span style = "background-color:#fdd">    utility::string_t content, charset = charset_types::utf8;
+    if (!ignore_content_type)</span>
+    {
+<span style = "background-color:#fdd">        parse_content_type_and_charset(headers().content_type(), content, charset);</span>
+
+        // If no Content-Type or empty body then just return an empty string.
+<span style = "background-color:#fdd">        if (content.empty() || instream().streambuf().in_avail() == 0)</span>
+        {
+<span style = "background-color:#fdd">            return utility::string_t();</span>
+        }
+
+<span style = "background-color:#fdd">        if (!check_content_type(content))</span>
+        {
+<span style = "background-color:#fdd">            throw http_exception(</span>
+                _XPLATSTR("Incorrect Content-Type: must be textual to extract_string, JSON to extract_json."));
+        }
+    }
+<span style = "background-color:#fdd">    return charset;
+}</span>
+
+utf8string details::http_msg_base::extract_utf8string(bool ignore_content_type)
+<span style = "background-color:#fdd">{
+    const auto&amp; charset = parse_and_check_content_type(ignore_content_type, is_content_type_textual);
+    if (charset.empty())</span>
+    {
+<span style = "background-color:#fdd">        return utf8string();</span>
+    }
+<span style = "background-color:#fdd">    auto buf_r = instream().streambuf();</span>
+
+    // Perform the correct character set conversion if one is necessary.
+    if (utility::details::str_iequal(charset, charset_types::utf8) ||
+<span style = "background-color:#fdd">        utility::details::str_iequal(charset, charset_types::usascii) ||</span>
+        utility::details::str_iequal(charset, charset_types::ascii))
+    {
+<span style = "background-color:#fdd">        std::string body;
+        body.resize((std::string::size_type)buf_r.in_avail());
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())), body.size())</span>
+            .get(); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return body;
+    }</span>
+
+    // Latin1
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::latin1))</span>
+    {
+<span style = "background-color:#fdd">        std::string body;
+        body.resize((std::string::size_type)buf_r.in_avail());
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())), body.size())</span>
+            .get(); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return latin1_to_utf8(std::move(body));
+    }</span>
+
+    // utf-16
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(buf_r.in_avail() / sizeof(utf16string::value_type));
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())),</span>
+                   body.size() * sizeof(utf16string::value_type)); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return convert_utf16_to_utf8(std::move(body));
+    }</span>
+
+    // utf-16le
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16le))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(buf_r.in_avail() / sizeof(utf16string::value_type));
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())),</span>
+                   body.size() * sizeof(utf16string::value_type)); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return utility::conversions::utf16_to_utf8(std::move(body));
+    }</span>
+
+    // utf-16be
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16be))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(buf_r.in_avail() / sizeof(utf16string::value_type));
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())),</span>
+                   body.size() * sizeof(utf16string::value_type)); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return convert_utf16be_to_utf8(std::move(body), false);
+    }</span>
+
+    else
+    {
+<span style = "background-color:#fdd">        throw http_exception(unsupported_charset);</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+utf16string details::http_msg_base::extract_utf16string(bool ignore_content_type)
+<span style = "background-color:#fdd">{
+    const auto&amp; charset = parse_and_check_content_type(ignore_content_type, is_content_type_textual);
+    if (charset.empty())</span>
+    {
+<span style = "background-color:#fdd">        return utf16string();</span>
+    }
+<span style = "background-color:#fdd">    auto buf_r = instream().streambuf();</span>
+
+    // Perform the correct character set conversion if one is necessary.
+<span style = "background-color:#fdd">    if (utility::details::str_iequal(charset, charset_types::utf16le))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(buf_r.in_avail() / sizeof(utf16string::value_type));
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())),</span>
+                   body.size() * sizeof(utf16string::value_type)); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return body;
+    }</span>
+
+    // utf-8, ascii
+    else if (utility::details::str_iequal(charset, charset_types::utf8) ||
+<span style = "background-color:#fdd">             utility::details::str_iequal(charset, charset_types::usascii) ||</span>
+             utility::details::str_iequal(charset, charset_types::ascii))
+    {
+<span style = "background-color:#fdd">        std::string body;
+        body.resize((std::string::size_type)buf_r.in_avail());
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())), body.size())</span>
+            .get(); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return utility::conversions::utf8_to_utf16(std::move(body));
+    }</span>
+
+    // Latin1
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::latin1))</span>
+    {
+<span style = "background-color:#fdd">        std::string body;
+        body.resize((std::string::size_type)buf_r.in_avail());
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())), body.size())</span>
+            .get(); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return latin1_to_utf16(std::move(body));
+    }</span>
+
+    // utf-16
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(buf_r.in_avail() / sizeof(utf16string::value_type));
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())),</span>
+                   body.size() * sizeof(utf16string::value_type)); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return convert_utf16_to_utf16(std::move(body));
+    }</span>
+
+    // utf-16be
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16be))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(buf_r.in_avail() / sizeof(utf16string::value_type));
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())),</span>
+                   body.size() * sizeof(utf16string::value_type)); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return convert_utf16be_to_utf16le(std::move(body), false);
+    }</span>
+
+    else
+    {
+<span style = "background-color:#fdd">        throw http_exception(unsupported_charset);</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+utility::string_t details::http_msg_base::extract_string(bool ignore_content_type)
+<span style = "background-color:#fdd">{
+    const auto&amp; charset = parse_and_check_content_type(ignore_content_type, is_content_type_textual);
+    if (charset.empty())</span>
+    {
+<span style = "background-color:#fdd">        return utility::string_t();</span>
+    }
+<span style = "background-color:#fdd">    auto buf_r = instream().streambuf();</span>
+
+    // Perform the correct character set conversion if one is necessary.
+<span style = "background-color:#fdd">    if (utility::details::str_iequal(charset, charset_types::usascii) ||</span>
+        utility::details::str_iequal(charset, charset_types::ascii))
+    {
+<span style = "background-color:#fdd">        std::string body;
+        body.resize((std::string::size_type)buf_r.in_avail());
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())), body.size())</span>
+            .get(); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return to_string_t(std::move(body));</span>
+    }
+
+    // Latin1
+<span style = "background-color:#fdd">    if (utility::details::str_iequal(charset, charset_types::latin1))</span>
+    {
+<span style = "background-color:#fdd">        std::string body;
+        body.resize((std::string::size_type)buf_r.in_avail());
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())), body.size())</span>
+            .get(); // There is no risk of blocking.
+        // Could optimize for linux in the future if a latin1_to_utf8 function was written.
+<span style = "background-color:#fdd">        return to_string_t(latin1_to_utf16(std::move(body)));
+    }</span>
+
+    // utf-8.
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf8))</span>
+    {
+<span style = "background-color:#fdd">        std::string body;
+        body.resize((std::string::size_type)buf_r.in_avail());
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())), body.size())</span>
+            .get(); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return to_string_t(std::move(body));
+    }</span>
+
+    // utf-16.
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(buf_r.in_avail() / sizeof(utf16string::value_type));
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())),</span>
+                   body.size() * sizeof(utf16string::value_type)); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return convert_utf16_to_string_t(std::move(body));
+    }</span>
+
+    // utf-16le
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16le))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(buf_r.in_avail() / sizeof(utf16string::value_type));
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())),</span>
+                   body.size() * sizeof(utf16string::value_type)); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return convert_utf16le_to_string_t(std::move(body), false);
+    }</span>
+
+    // utf-16be
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16be))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(buf_r.in_avail() / sizeof(utf16string::value_type));
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())),</span>
+                   body.size() * sizeof(utf16string::value_type)); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return convert_utf16be_to_string_t(std::move(body), false);
+    }</span>
+
+    else
+    {
+<span style = "background-color:#fdd">        throw http_exception(unsupported_charset);</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+json::value details::http_msg_base::_extract_json(bool ignore_content_type)
+<span style = "background-color:#fdd">{
+    const auto&amp; charset = parse_and_check_content_type(ignore_content_type, is_content_type_json);
+    if (charset.empty())</span>
+    {
+<span style = "background-color:#fdd">        return json::value();</span>
+    }
+<span style = "background-color:#fdd">    auto buf_r = instream().streambuf();</span>
+
+    // Latin1
+<span style = "background-color:#fdd">    if (utility::details::str_iequal(charset, charset_types::latin1))</span>
+    {
+<span style = "background-color:#fdd">        std::string body;
+        body.resize(buf_r.in_avail());
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())), body.size())</span>
+            .get(); // There is no risk of blocking.
+        // On Linux could optimize in the future if a latin1_to_utf8 function is written.
+<span style = "background-color:#fdd">        return json::value::parse(to_string_t(latin1_to_utf16(std::move(body))));
+    }</span>
+
+    // utf-8, usascii and ascii
+    else if (utility::details::str_iequal(charset, charset_types::utf8) ||
+<span style = "background-color:#fdd">             utility::details::str_iequal(charset, charset_types::usascii) ||</span>
+             utility::details::str_iequal(charset, charset_types::ascii))
+    {
+<span style = "background-color:#fdd">        std::string body;
+        body.resize(buf_r.in_avail());
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())), body.size())</span>
+            .get(); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return json::value::parse(to_string_t(std::move(body)));
+    }</span>
+
+    // utf-16.
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(buf_r.in_avail() / sizeof(utf16string::value_type));
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())),</span>
+                   body.size() * sizeof(utf16string::value_type)); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return json::value::parse(convert_utf16_to_string_t(std::move(body)));
+    }</span>
+
+    // utf-16le
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16le))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(buf_r.in_avail() / sizeof(utf16string::value_type));
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())),</span>
+                   body.size() * sizeof(utf16string::value_type)); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return json::value::parse(convert_utf16le_to_string_t(std::move(body), false));
+    }</span>
+
+    // utf-16be
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16be))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(buf_r.in_avail() / sizeof(utf16string::value_type));
+        buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())),</span>
+                   body.size() * sizeof(utf16string::value_type)); // There is no risk of blocking.
+<span style = "background-color:#fdd">        return json::value::parse(convert_utf16be_to_string_t(std::move(body), false));
+    }</span>
+
+    else
+    {
+<span style = "background-color:#fdd">        throw http_exception(unsupported_charset);</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+std::vector&lt;uint8_t&gt; details::http_msg_base::_extract_vector()
+<span style = "background-color:#fdd">{
+    if (!instream())</span>
+    {
+<span style = "background-color:#fdd">        throw http_exception(stream_was_set_explicitly);</span>
+    }
+
+<span style = "background-color:#fdd">    std::vector&lt;uint8_t&gt; body;
+    auto buf_r = instream().streambuf();
+    const size_t size = buf_r.in_avail();
+    body.resize(size);
+    buf_r.getn(const_cast&lt;uint8_t*&gt;(reinterpret_cast&lt;const uint8_t*&gt;(body.data())), size)</span>
+        .get(); // There is no risk of blocking.
+
+<span style = "background-color:#fdd">    return body;
+}</span>
+
+// Helper function to convert message body without extracting.
+static utility::string_t convert_body_to_string_t(const utility::string_t&amp; content_type,
+                                                  concurrency::streams::istream instream)
+<span style = "background-color:#fdd">{
+    if (!instream)</span>
+    {
+        // The instream is not yet set
+<span style = "background-color:#fdd">        return utility::string_t();</span>
+    }
+
+<span style = "background-color:#fdd">    concurrency::streams::streambuf&lt;uint8_t&gt; streambuf = instream.streambuf();</span>
+
+<span style = "background-color:#fdd">    _ASSERTE((bool)streambuf);
+    _ASSERTE(streambuf.is_open());
+    _ASSERTE(streambuf.can_read());</span>
+
+<span style = "background-color:#fdd">    utility::string_t content, charset;
+    parse_content_type_and_charset(content_type, content, charset);</span>
+
+    // Content-Type must have textual type.
+<span style = "background-color:#fdd">    if (!is_content_type_textual(content) || streambuf.in_avail() == 0)</span>
+    {
+<span style = "background-color:#fdd">        return utility::string_t();</span>
+    }
+
+    // Latin1
+<span style = "background-color:#fdd">    if (utility::details::str_iequal(charset, charset_types::latin1))</span>
+    {
+<span style = "background-color:#fdd">        std::string body;
+        body.resize(streambuf.in_avail());
+        if (streambuf.scopy((unsigned char*)&amp;body[0], body.size()) == 0) return string_t();
+        return to_string_t(latin1_to_utf16(std::move(body)));
+    }</span>
+
+    // utf-8.
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf8))</span>
+    {
+<span style = "background-color:#fdd">        std::string body;
+        body.resize(streambuf.in_avail());
+        if (streambuf.scopy((unsigned char*)&amp;body[0], body.size()) == 0) return string_t();
+        return to_string_t(std::move(body));
+    }</span>
+
+    // utf-16.
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(streambuf.in_avail() / sizeof(utf16string::value_type));
+        if (streambuf.scopy((unsigned char*)&amp;body[0], body.size() * sizeof(utf16string::value_type)) == 0)
+            return string_t();
+        return convert_utf16_to_string_t(std::move(body));
+    }</span>
+
+    // utf-16le
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16le))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(streambuf.in_avail() / sizeof(utf16string::value_type));
+        if (streambuf.scopy((unsigned char*)&amp;body[0], body.size() * sizeof(utf16string::value_type)) == 0)
+            return string_t();
+        return convert_utf16le_to_string_t(std::move(body), false);
+    }</span>
+
+    // utf-16be
+<span style = "background-color:#fdd">    else if (utility::details::str_iequal(charset, charset_types::utf16be))</span>
+    {
+<span style = "background-color:#fdd">        utf16string body;
+        body.resize(streambuf.in_avail() / sizeof(utf16string::value_type));
+        if (streambuf.scopy((unsigned char*)&amp;body[0], body.size() * sizeof(utf16string::value_type)) == 0)
+            return string_t();
+        return convert_utf16be_to_string_t(std::move(body), false);
+    }</span>
+
+    else
+    {
+<span style = "background-color:#fdd">        return utility::string_t();</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+//
+// Helper function to generate a wstring from given http_headers and message body.
+//
+static utility::string_t http_headers_body_to_string(const http_headers&amp; headers,
+                                                     concurrency::streams::istream instream)
+<span style = "background-color:#fdd">{
+    utility::string_t result;
+    for (const auto&amp; header : headers)</span>
+    {
+<span style = "background-color:#fdd">        result += header.first;
+        result += _XPLATSTR(": ");
+        result += header.second;
+        result += CRLF;
+    }</span>
+
+<span style = "background-color:#fdd">    result += CRLF;</span>
+
+<span style = "background-color:#fdd">    utility::string_t content_type;
+    if (headers.match(http::header_names::content_type, content_type))</span>
+    {
+<span style = "background-color:#fdd">        result += convert_body_to_string_t(content_type, instream);</span>
+    }
+
+<span style = "background-color:#fdd">    return result;
+}</span>
+
+utility::string_t details::http_msg_base::to_string() const
+<span style = "background-color:#fdd">{
+    return http_headers_body_to_string(m_headers, instream());
+}</span>
+
+static void set_content_type_if_not_present(http::http_headers&amp; headers, const utility::string_t&amp; content_type)
+<span style = "background-color:#fdd">{
+    utility::string_t temp;
+    if (!headers.match(http::header_names::content_type, temp))</span>
+    {
+<span style = "background-color:#fdd">        headers.add(http::header_names::content_type, content_type);</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+void details::http_msg_base::set_body(const streams::istream&amp; instream, const utf8string&amp; contentType)
+<span style = "background-color:#fdd">{
+    set_content_type_if_not_present(headers(),</span>
+#ifdef _UTF16_STRINGS
+                                    utility::conversions::utf8_to_utf16(contentType));
+#else
+                                    contentType);
+#endif
+<span style = "background-color:#fdd">    set_instream(instream);
+}</span>
+
+void details::http_msg_base::set_body(const streams::istream&amp; instream, const utf16string&amp; contentType)
+<span style = "background-color:#fdd">{
+    set_content_type_if_not_present(headers(),</span>
+#ifdef _UTF16_STRINGS
+                                    contentType);
+#else
+                                    utility::conversions::utf16_to_utf8(contentType));
+#endif
+<span style = "background-color:#fdd">    set_instream(instream);
+}</span>
+
+void details::http_msg_base::set_body(const streams::istream&amp; instream,
+                                      utility::size64_t contentLength,
+                                      const utf8string&amp; contentType)
+<span style = "background-color:#fdd">{
+    headers().set_content_length(contentLength);
+    set_body(instream, contentType);
+    m_data_available.set(contentLength);
+}</span>
+
+void details::http_msg_base::set_body(const concurrency::streams::istream&amp; instream,
+                                      utility::size64_t contentLength,
+                                      const utf16string&amp; contentType)
+<span style = "background-color:#fdd">{
+    headers().set_content_length(contentLength);
+    set_body(instream, contentType);
+    m_data_available.set(contentLength);
+}</span>
+
+details::_http_request::_http_request(http::method mtd)
+<span style = "background-color:#fdd">    : m_method(std::move(mtd))
+    , m_initiated_response(0)
+    , m_server_context()
+    , m_cancellationToken(pplx::cancellation_token::none())
+{
+    if (m_method.empty())</span>
+    {
+<span style = "background-color:#fdd">        throw std::invalid_argument("Invalid HTTP method specified. Method can't be an empty string.");</span>
+    }
+<span style = "background-color:#fdd">}</span>
+
+details::_http_request::_http_request(std::unique_ptr&lt;http::details::_http_server_context&gt; server_context)
+<span style = "background-color:#fdd">    : m_initiated_response(0)
+    , m_server_context(std::move(server_context))
+    , m_cancellationToken(pplx::cancellation_token::none())
+{
+}</span>
+
+void http_request::set_decompress_factories()
+<span style = "background-color:#fdd">{
+    return _m_impl-&gt;set_decompress_factories(compression::details::builtin::get_decompress_factories());
+}</span>
+
+const http_version http_versions::HTTP_0_9 = {0, 9};
+const http_version http_versions::HTTP_1_0 = {1, 0};
+const http_version http_versions::HTTP_1_1 = {1, 1};
+
+#define _METHODS
+#define DAT(a, b) const method methods::a = b;
+#include "cpprest/details/http_constants.dat"
+#undef _METHODS
+#undef DAT
+
+#define _HEADER_NAMES
+#define DAT(a, b) const utility::string_t header_names::a = _XPLATSTR(b);
+#include "cpprest/details/http_constants.dat"
+#undef _HEADER_NAMES
+#undef DAT
+
+#define _MIME_TYPES
+#define DAT(a, b) const utility::string_t mime_types::a = _XPLATSTR(b);
+#include "cpprest/details/http_constants.dat"
+#undef _MIME_TYPES
+#undef DAT
+
+#define _CHARSET_TYPES
+#define DAT(a, b) const utility::string_t charset_types::a = _XPLATSTR(b);
+#include "cpprest/details/http_constants.dat"
+#undef _CHARSET_TYPES
+#undef DAT
+
+// This is necessary for Linux because of a bug in GCC 4.7
+#ifndef _WIN32
+#define _PHRASES
+#define DAT(a, b, c) const status_code status_codes::a;
+#include "cpprest/details/http_constants.dat"
+#undef _PHRASES
+#undef DAT
+#endif
+} // namespace http
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

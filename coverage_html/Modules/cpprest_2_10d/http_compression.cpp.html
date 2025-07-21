@@ -1,0 +1,1168 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+        <meta charset="utf-8"/>
+	    <title>http_compression.cpp</title>
+	    <link href="../../third-party/google-code-prettify/prettify-CppCoverage.css" type="text/css" rel="stylesheet" />
+	    <script type="text/javascript" src="../../third-party/google-code-prettify/prettify.js"></script>
+	</head>
+    <body onload="prettyPrint()">
+        <h4></h4>
+        <pre class="prettyprint lang-cpp linenums">
+/***
+ * Copyright (C) Microsoft. All rights reserved.
+ * Licensed under the MIT license. See LICENSE.txt file in the project root for full license information.
+ *
+ * =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+ *
+ * HTTP Library: Compression and decompression interfaces
+ *
+ * For the latest on this and related APIs, please see: https://github.com/Microsoft/cpprestsdk
+ *
+ * =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+ ****/
+
+#include "stdafx.h"
+
+// CPPREST_EXCLUDE_COMPRESSION is set if we're on a platform that supports compression but we want to explicitly disable
+// it. CPPREST_EXCLUDE_BROTLI is set if we want to explicitly disable Brotli compression support.
+// CPPREST_EXCLUDE_WEBSOCKETS is a flag that now essentially means "no external dependencies". TODO: Rename
+
+#if !defined(CPPREST_EXCLUDE_WEBSOCKETS) &amp;&amp; !defined(CPPREST_EXCLUDE_COMPRESSION)
+#define CPPREST_HTTP_COMPRESSION
+#endif // !defined(CPPREST_EXCLUDE_WEBSOCKETS) &amp;&amp; !defined(CPPREST_EXCLUDE_COMPRESSION)
+
+#if defined(CPPREST_HTTP_COMPRESSION)
+#include &lt;zlib.h&gt;
+// zconf.h may define compress
+#ifdef compress
+#undef compress
+#endif
+#if !defined(CPPREST_EXCLUDE_BROTLI)
+#define CPPREST_BROTLI_COMPRESSION
+#endif // CPPREST_EXCLUDE_BROTLI
+#if defined(CPPREST_BROTLI_COMPRESSION)
+#include &lt;brotli/decode.h&gt;
+#include &lt;brotli/encode.h&gt;
+#endif // CPPREST_BROTLI_COMPRESSION
+#endif
+
+namespace web
+{
+namespace http
+{
+namespace compression
+{
+namespace builtin
+{
+#if defined(CPPREST_HTTP_COMPRESSION)
+// A shared base class for the gzip and deflate compressors
+class zlib_compressor_base : public compress_provider
+{
+public:
+    static const utility::string_t GZIP;
+    static const utility::string_t DEFLATE;
+
+    zlib_compressor_base(int windowBits,
+                         int compressionLevel = Z_DEFAULT_COMPRESSION,
+                         int method = Z_DEFLATED,
+                         int strategy = Z_DEFAULT_STRATEGY,
+                         int memLevel = MAX_MEM_LEVEL)
+        : m_algorithm(windowBits &gt;= 16 ? GZIP : DEFLATE)
+    {
+        m_state = deflateInit2(&amp;m_stream, compressionLevel, method, windowBits, memLevel, strategy);
+    }
+
+    const utility::string_t&amp; algorithm() const { return m_algorithm; }
+
+    size_t compress(const uint8_t* input,
+                    size_t input_size,
+                    uint8_t* output,
+                    size_t output_size,
+                    operation_hint hint,
+                    size_t&amp; input_bytes_processed,
+                    bool&amp; done)
+    {
+        if (m_state == Z_STREAM_END || (hint != operation_hint::is_last &amp;&amp; !input_size))
+        {
+            input_bytes_processed = 0;
+            done = (m_state == Z_STREAM_END);
+            return 0;
+        }
+
+        if (m_state != Z_OK &amp;&amp; m_state != Z_BUF_ERROR &amp;&amp; m_state != Z_STREAM_ERROR)
+        {
+            throw std::runtime_error("Prior unrecoverable compression stream error " + std::to_string(m_state));
+        }
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wtautological-constant-compare"
+#endif // __clang__
+        if (input_size &gt; (std::numeric_limits&lt;uInt&gt;::max)() || output_size &gt; (std::numeric_limits&lt;uInt&gt;::max)())
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif // __clang__
+        {
+            throw std::runtime_error("Compression input or output size out of range");
+        }
+
+        m_stream.next_in = const_cast&lt;Bytef*&gt;(input);
+        m_stream.avail_in = static_cast&lt;uInt&gt;(input_size);
+        m_stream.next_out = const_cast&lt;Bytef*&gt;(output);
+        m_stream.avail_out = static_cast&lt;uInt&gt;(output_size);
+
+        m_state = deflate(&amp;m_stream, (hint == operation_hint::is_last) ? Z_FINISH : Z_PARTIAL_FLUSH);
+        if (m_state != Z_OK &amp;&amp; m_state != Z_STREAM_ERROR &amp;&amp;
+            !(hint == operation_hint::is_last &amp;&amp; (m_state == Z_STREAM_END || m_state == Z_BUF_ERROR)))
+        {
+            throw std::runtime_error("Unrecoverable compression stream error " + std::to_string(m_state));
+        }
+
+        input_bytes_processed = input_size - m_stream.avail_in;
+        done = (m_state == Z_STREAM_END);
+        return output_size - m_stream.avail_out;
+    }
+
+    pplx::task&lt;operation_result&gt; compress(
+        const uint8_t* input, size_t input_size, uint8_t* output, size_t output_size, operation_hint hint)
+    {
+        operation_result r;
+
+        try
+        {
+            r.output_bytes_produced =
+                compress(input, input_size, output, output_size, hint, r.input_bytes_processed, r.done);
+        }
+        catch (...)
+        {
+            pplx::task_completion_event&lt;operation_result&gt; ev;
+            ev.set_exception(std::current_exception());
+            return pplx::create_task(ev);
+        }
+
+        return pplx::task_from_result&lt;operation_result&gt;(r);
+    }
+
+    void reset()
+    {
+        m_state = deflateReset(&amp;m_stream);
+        if (m_state != Z_OK)
+        {
+            throw std::runtime_error("Failed to reset zlib compressor " + std::to_string(m_state));
+        }
+    }
+
+    ~zlib_compressor_base() { (void)deflateEnd(&amp;m_stream); }
+
+private:
+    int m_state {Z_BUF_ERROR};
+    z_stream m_stream {};
+    const utility::string_t&amp; m_algorithm;
+};
+
+const utility::string_t zlib_compressor_base::GZIP(algorithm::GZIP);
+const utility::string_t zlib_compressor_base::DEFLATE(algorithm::DEFLATE);
+
+// A shared base class for the gzip and deflate decompressors
+class zlib_decompressor_base : public decompress_provider
+{
+public:
+    zlib_decompressor_base(int windowBits)
+        : m_algorithm(windowBits &gt;= 16 ? zlib_compressor_base::GZIP : zlib_compressor_base::DEFLATE)
+    {
+        m_state = inflateInit2(&amp;m_stream, windowBits);
+    }
+
+    const utility::string_t&amp; algorithm() const { return m_algorithm; }
+
+    size_t decompress(const uint8_t* input,
+                      size_t input_size,
+                      uint8_t* output,
+                      size_t output_size,
+                      operation_hint hint,
+                      size_t&amp; input_bytes_processed,
+                      bool&amp; done)
+    {
+        if (m_state == Z_STREAM_END || !input_size)
+        {
+            input_bytes_processed = 0;
+            done = (m_state == Z_STREAM_END);
+            return 0;
+        }
+
+        if (m_state != Z_OK &amp;&amp; m_state != Z_BUF_ERROR &amp;&amp; m_state != Z_STREAM_ERROR)
+        {
+            throw std::runtime_error("Prior unrecoverable decompression stream error " + std::to_string(m_state));
+        }
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wtautological-constant-compare"
+#endif // __clang__
+        if (input_size &gt; (std::numeric_limits&lt;uInt&gt;::max)() || output_size &gt; (std::numeric_limits&lt;uInt&gt;::max)())
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif // __clang__
+        {
+            throw std::runtime_error("Compression input or output size out of range");
+        }
+
+        m_stream.next_in = const_cast&lt;Bytef*&gt;(input);
+        m_stream.avail_in = static_cast&lt;uInt&gt;(input_size);
+        m_stream.next_out = const_cast&lt;Bytef*&gt;(output);
+        m_stream.avail_out = static_cast&lt;uInt&gt;(output_size);
+
+        m_state = inflate(&amp;m_stream, (hint == operation_hint::is_last) ? Z_FINISH : Z_PARTIAL_FLUSH);
+        if (m_state != Z_OK &amp;&amp; m_state != Z_STREAM_ERROR &amp;&amp; m_state != Z_STREAM_END &amp;&amp; m_state != Z_BUF_ERROR)
+        {
+            // Z_BUF_ERROR is a success code for Z_FINISH, and the caller can continue as if operation_hint::is_last was
+            // not given
+            throw std::runtime_error("Unrecoverable decompression stream error " + std::to_string(m_state));
+        }
+
+        input_bytes_processed = input_size - m_stream.avail_in;
+        done = (m_state == Z_STREAM_END);
+        return output_size - m_stream.avail_out;
+    }
+
+    pplx::task&lt;operation_result&gt; decompress(
+        const uint8_t* input, size_t input_size, uint8_t* output, size_t output_size, operation_hint hint)
+    {
+        operation_result r;
+
+        try
+        {
+            r.output_bytes_produced =
+                decompress(input, input_size, output, output_size, hint, r.input_bytes_processed, r.done);
+        }
+        catch (...)
+        {
+            pplx::task_completion_event&lt;operation_result&gt; ev;
+            ev.set_exception(std::current_exception());
+            return pplx::create_task(ev);
+        }
+
+        return pplx::task_from_result&lt;operation_result&gt;(r);
+    }
+
+    void reset()
+    {
+        m_state = inflateReset(&amp;m_stream);
+        if (m_state != Z_OK)
+        {
+            throw std::runtime_error("Failed to reset zlib decompressor " + std::to_string(m_state));
+        }
+    }
+
+    ~zlib_decompressor_base() { (void)inflateEnd(&amp;m_stream); }
+
+private:
+    int m_state {Z_BUF_ERROR};
+    z_stream m_stream {};
+    const utility::string_t&amp; m_algorithm;
+};
+
+class gzip_compressor : public zlib_compressor_base
+{
+public:
+    gzip_compressor() : zlib_compressor_base(31) // 15 is MAX_WBITS in zconf.h; add 16 for gzip
+    {
+    }
+
+    gzip_compressor(int compressionLevel, int method, int strategy, int memLevel)
+        : zlib_compressor_base(31, compressionLevel, method, strategy, memLevel)
+    {
+    }
+};
+
+class gzip_decompressor : public zlib_decompressor_base
+{
+public:
+    gzip_decompressor() : zlib_decompressor_base(31) // 15 is MAX_WBITS in zconf.h; add 16 for gzip
+    {
+    }
+};
+
+class deflate_compressor : public zlib_compressor_base
+{
+public:
+    deflate_compressor() : zlib_compressor_base(15) // 15 is MAX_WBITS in zconf.h
+    {
+    }
+
+    deflate_compressor(int compressionLevel, int method, int strategy, int memLevel)
+        : zlib_compressor_base(15, compressionLevel, method, strategy, memLevel)
+    {
+    }
+};
+
+class deflate_decompressor : public zlib_decompressor_base
+{
+public:
+    deflate_decompressor() : zlib_decompressor_base(0) // deflate auto-detect
+    {
+    }
+};
+
+#if defined(CPPREST_BROTLI_COMPRESSION)
+class brotli_compressor : public compress_provider
+{
+public:
+    static const utility::string_t BROTLI;
+
+    brotli_compressor(uint32_t window = BROTLI_DEFAULT_WINDOW,
+                      uint32_t quality = BROTLI_DEFAULT_QUALITY,
+                      uint32_t mode = BROTLI_DEFAULT_MODE,
+                      uint32_t block = 0,
+                      uint32_t nomodel = 0,
+                      uint32_t hint = 0)
+        : m_window(window)
+        , m_quality(quality)
+        , m_mode(mode)
+        , m_block(block)
+        , m_nomodel(nomodel)
+        , m_hint(hint)
+        , m_algorithm(BROTLI)
+    {
+        (void)reset();
+    }
+
+    const utility::string_t&amp; algorithm() const { return m_algorithm; }
+
+    size_t compress(const uint8_t* input,
+                    size_t input_size,
+                    uint8_t* output,
+                    size_t output_size,
+                    operation_hint hint,
+                    size_t&amp; input_bytes_processed,
+                    bool&amp; done)
+    {
+        if (m_done || (hint != operation_hint::is_last &amp;&amp; !input_size))
+        {
+            input_bytes_processed = 0;
+            done = m_done;
+            return 0;
+        }
+
+        if (m_state != BROTLI_TRUE)
+        {
+            throw std::runtime_error("Prior unrecoverable compression stream error");
+        }
+
+        const uint8_t* next_in = input;
+        size_t avail_in = 0;
+        uint8_t* next_out = output;
+        size_t avail_out = output_size;
+        size_t total_out;
+
+        if (BrotliEncoderHasMoreOutput(m_stream) == BROTLI_TRUE)
+        {
+            // Drain any compressed bytes remaining from a prior call
+            do
+            {
+                m_state = BrotliEncoderCompressStream(
+                    m_stream, BROTLI_OPERATION_FLUSH, &amp;avail_in, &amp;next_in, &amp;avail_out, &amp;next_out, &amp;total_out);
+            } while (m_state == BROTLI_TRUE &amp;&amp; avail_out &amp;&amp; BrotliEncoderHasMoreOutput(m_stream) == BROTLI_TRUE);
+        }
+
+        if (m_state == BROTLI_TRUE &amp;&amp; avail_out &amp;&amp; input_size)
+        {
+            // Compress the caller-supplied buffer
+            avail_in = input_size;
+            do
+            {
+                m_state = BrotliEncoderCompressStream(
+                    m_stream, BROTLI_OPERATION_FLUSH, &amp;avail_in, &amp;next_in, &amp;avail_out, &amp;next_out, &amp;total_out);
+            } while (m_state == BROTLI_TRUE &amp;&amp; avail_out &amp;&amp; BrotliEncoderHasMoreOutput(m_stream) == BROTLI_TRUE);
+        }
+        else
+        {
+            // We're not compressing any new data; ensure calculation sanity
+            input_size = 0;
+        }
+
+        if (m_state != BROTLI_TRUE)
+        {
+            throw std::runtime_error("Unrecoverable compression stream error");
+        }
+
+        if (hint == operation_hint::is_last)
+        {
+            if (avail_out)
+            {
+                // Make one more pass to finalize the compressed stream
+                _ASSERTE(!avail_in);
+                m_state = BrotliEncoderCompressStream(
+                    m_stream, BROTLI_OPERATION_FINISH, &amp;avail_in, &amp;next_in, &amp;avail_out, &amp;next_out, &amp;total_out);
+                if (m_state != BROTLI_TRUE)
+                {
+                    throw std::runtime_error("Unrecoverable error finalizing compression stream");
+                }
+                m_done = (BrotliEncoderIsFinished(m_stream) == BROTLI_TRUE);
+            }
+        }
+
+        input_bytes_processed = input_size - avail_in;
+        done = m_done;
+        return output_size - avail_out;
+    }
+
+    pplx::task&lt;operation_result&gt; compress(
+        const uint8_t* input, size_t input_size, uint8_t* output, size_t output_size, operation_hint hint)
+    {
+        operation_result r;
+
+        try
+        {
+            r.output_bytes_produced =
+                compress(input, input_size, output, output_size, hint, r.input_bytes_processed, r.done);
+        }
+        catch (...)
+        {
+            pplx::task_completion_event&lt;operation_result&gt; ev;
+            ev.set_exception(std::current_exception());
+            return pplx::create_task(ev);
+        }
+
+        return pplx::task_from_result&lt;operation_result&gt;(r);
+    }
+
+    void reset()
+    {
+        if (m_stream)
+        {
+            BrotliEncoderDestroyInstance(m_stream);
+        }
+
+        m_stream = BrotliEncoderCreateInstance(nullptr, nullptr, nullptr);
+        m_state = m_stream ? BROTLI_TRUE : BROTLI_FALSE;
+
+        if (m_state == BROTLI_TRUE &amp;&amp; m_window != BROTLI_DEFAULT_WINDOW)
+        {
+            m_state = BrotliEncoderSetParameter(m_stream, BROTLI_PARAM_LGWIN, m_window);
+        }
+        if (m_state == BROTLI_TRUE &amp;&amp; m_quality != BROTLI_DEFAULT_QUALITY)
+        {
+            m_state = BrotliEncoderSetParameter(m_stream, BROTLI_PARAM_QUALITY, m_quality);
+        }
+        if (m_state == BROTLI_TRUE &amp;&amp; m_mode != BROTLI_DEFAULT_MODE)
+        {
+            m_state = BrotliEncoderSetParameter(m_stream, BROTLI_PARAM_MODE, m_mode);
+        }
+        if (m_state == BROTLI_TRUE &amp;&amp; m_block != 0)
+        {
+            m_state = BrotliEncoderSetParameter(m_stream, BROTLI_PARAM_LGBLOCK, m_block);
+        }
+        if (m_state == BROTLI_TRUE &amp;&amp; m_nomodel != 0)
+        {
+            m_state = BrotliEncoderSetParameter(m_stream, BROTLI_PARAM_DISABLE_LITERAL_CONTEXT_MODELING, m_nomodel);
+        }
+        if (m_state == BROTLI_TRUE &amp;&amp; m_hint != 0)
+        {
+            m_state = BrotliEncoderSetParameter(m_stream, BROTLI_PARAM_SIZE_HINT, m_hint);
+        }
+
+        if (m_state != BROTLI_TRUE)
+        {
+            throw std::runtime_error("Failed to reset Brotli compressor");
+        }
+    }
+
+    ~brotli_compressor()
+    {
+        if (m_stream)
+        {
+            BrotliEncoderDestroyInstance(m_stream);
+        }
+    }
+
+private:
+    BROTLI_BOOL m_state {BROTLI_FALSE};
+    BrotliEncoderState* m_stream {nullptr};
+    bool m_done {false};
+    uint32_t m_window;
+    uint32_t m_quality;
+    uint32_t m_mode;
+    uint32_t m_block;
+    uint32_t m_nomodel;
+    uint32_t m_hint;
+    const utility::string_t&amp; m_algorithm;
+};
+
+const utility::string_t brotli_compressor::BROTLI(algorithm::BROTLI);
+
+class brotli_decompressor : public decompress_provider
+{
+public:
+    brotli_decompressor() : m_algorithm(brotli_compressor::BROTLI)
+    {
+        try
+        {
+            reset();
+        }
+        catch (...)
+        {
+        }
+    }
+
+    const utility::string_t&amp; algorithm() const { return m_algorithm; }
+
+    size_t decompress(const uint8_t* input,
+                      size_t input_size,
+                      uint8_t* output,
+                      size_t output_size,
+                      operation_hint hint,
+                      size_t&amp; input_bytes_processed,
+                      bool&amp; done)
+    {
+        if (m_state == BROTLI_DECODER_RESULT_SUCCESS /* || !input_size*/)
+        {
+            input_bytes_processed = 0;
+            done = (m_state == BROTLI_DECODER_RESULT_SUCCESS);
+            return 0;
+        }
+
+        if (m_state == BROTLI_DECODER_RESULT_ERROR)
+        {
+            throw std::runtime_error("Prior unrecoverable decompression stream error");
+        }
+
+        const uint8_t* next_in = input;
+        size_t avail_in = input_size;
+        uint8_t* next_out = output;
+        size_t avail_out = output_size;
+        size_t total_out;
+
+        // N.B. we ignore 'hint' here.  We could instead call BrotliDecoderDecompress() if it's set, but we'd either
+        // have to first allocate a guaranteed-large-enough buffer and then copy out of it, or we'd have to call
+        // reset() if it failed due to insufficient output buffer space (and we'd need to use
+        // BrotliDecoderGetErrorCode() to tell if that's why it failed)
+        (void)hint;
+        m_state = BrotliDecoderDecompressStream(m_stream, &amp;avail_in, &amp;next_in, &amp;avail_out, &amp;next_out, &amp;total_out);
+        if (m_state == BROTLI_DECODER_RESULT_ERROR)
+        {
+            throw std::runtime_error("Unrecoverable decompression stream error");
+        }
+
+        input_bytes_processed = input_size - avail_in;
+        done = (m_state == BROTLI_DECODER_RESULT_SUCCESS);
+        return output_size - avail_out;
+    }
+
+    pplx::task&lt;operation_result&gt; decompress(
+        const uint8_t* input, size_t input_size, uint8_t* output, size_t output_size, operation_hint hint)
+    {
+        operation_result r;
+
+        try
+        {
+            r.output_bytes_produced =
+                decompress(input, input_size, output, output_size, hint, r.input_bytes_processed, r.done);
+        }
+        catch (...)
+        {
+            pplx::task_completion_event&lt;operation_result&gt; ev;
+            ev.set_exception(std::current_exception());
+            return pplx::create_task(ev);
+        }
+
+        return pplx::task_from_result&lt;operation_result&gt;(r);
+    }
+
+    void reset()
+    {
+        if (m_stream)
+        {
+            BrotliDecoderDestroyInstance(m_stream);
+        }
+
+        m_stream = BrotliDecoderCreateInstance(nullptr, nullptr, nullptr);
+        m_state = m_stream ? BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT : BROTLI_DECODER_RESULT_ERROR;
+
+        if (m_state != BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT)
+        {
+            throw std::runtime_error("Failed to reset Brotli decompressor");
+        }
+    }
+
+    ~brotli_decompressor()
+    {
+        if (m_stream)
+        {
+            BrotliDecoderDestroyInstance(m_stream);
+        }
+    }
+
+private:
+    BrotliDecoderResult m_state {BROTLI_DECODER_RESULT_ERROR};
+    BrotliDecoderState* m_stream {nullptr};
+    const utility::string_t&amp; m_algorithm;
+};
+#endif // CPPREST_BROTLI_COMPRESSION
+#endif // CPPREST_HTTP_COMPRESSION
+
+// Generic internal implementation of the compress_factory API
+class generic_compress_factory : public compress_factory
+{
+public:
+<span style = "background-color:#fdd">    ~generic_compress_factory() CPPREST_NOEXCEPT {}</span>
+    generic_compress_factory(const utility::string_t&amp; algorithm,
+                             std::function&lt;std::unique_ptr&lt;compress_provider&gt;()&gt; make_compressor)
+<span style = "background-color:#fdd">        : m_algorithm(algorithm), _make_compressor(make_compressor)
+    {
+    }</span>
+
+<span style = "background-color:#fdd">    const utility::string_t&amp; algorithm() const { return m_algorithm; }</span>
+
+<span style = "background-color:#fdd">    std::unique_ptr&lt;compress_provider&gt; make_compressor() const { return _make_compressor(); }</span>
+
+private:
+    const utility::string_t m_algorithm;
+    std::function&lt;std::unique_ptr&lt;compress_provider&gt;()&gt; _make_compressor;
+};
+
+// Generic internal implementation of the decompress_factory API
+class generic_decompress_factory : public decompress_factory
+{
+public:
+<span style = "background-color:#fdd">    ~generic_decompress_factory() CPPREST_NOEXCEPT {}</span>
+    generic_decompress_factory(const utility::string_t&amp; algorithm,
+                               uint16_t weight,
+                               std::function&lt;std::unique_ptr&lt;decompress_provider&gt;()&gt; make_decompressor)
+<span style = "background-color:#fdd">        : m_algorithm(algorithm), m_weight(weight), _make_decompressor(make_decompressor)
+    {
+    }</span>
+
+<span style = "background-color:#fdd">    const utility::string_t&amp; algorithm() const { return m_algorithm; }</span>
+
+<span style = "background-color:#fdd">    uint16_t weight() const { return m_weight; }</span>
+
+<span style = "background-color:#fdd">    std::unique_ptr&lt;decompress_provider&gt; make_decompressor() const { return _make_decompressor(); }</span>
+
+private:
+    const utility::string_t m_algorithm;
+    uint16_t m_weight;
+    std::function&lt;std::unique_ptr&lt;decompress_provider&gt;()&gt; _make_decompressor;
+};
+
+// "Private" algorithm-to-factory tables for namespace static helpers
+<span style = "background-color:#dfd">static const std::vector&lt;std::shared_ptr&lt;compress_factory&gt;&gt; g_compress_factories</span>
+#if defined(CPPREST_HTTP_COMPRESSION)
+    = {std::make_shared&lt;generic_compress_factory&gt;(
+           algorithm::GZIP,
+           []() -&gt; std::unique_ptr&lt;compress_provider&gt; { return utility::details::make_unique&lt;gzip_compressor&gt;(); }),
+       std::make_shared&lt;generic_compress_factory&gt;(
+           algorithm::DEFLATE,
+           []() -&gt; std::unique_ptr&lt;compress_provider&gt; { return utility::details::make_unique&lt;deflate_compressor&gt;(); }),
+#if defined(CPPREST_BROTLI_COMPRESSION)
+       std::make_shared&lt;generic_compress_factory&gt;(
+           algorithm::BROTLI,
+           []() -&gt; std::unique_ptr&lt;compress_provider&gt; { return utility::details::make_unique&lt;brotli_compressor&gt;(); })
+#endif // CPPREST_BROTLI_COMPRESSION
+};
+#else  // CPPREST_HTTP_COMPRESSION
+    ;
+#endif // CPPREST_HTTP_COMPRESSION
+
+<span style = "background-color:#dfd">static const std::vector&lt;std::shared_ptr&lt;decompress_factory&gt;&gt; g_decompress_factories</span>
+#if defined(CPPREST_HTTP_COMPRESSION)
+    = {std::make_shared&lt;generic_decompress_factory&gt;(
+           algorithm::GZIP,
+           500,
+           []() -&gt; std::unique_ptr&lt;decompress_provider&gt; { return utility::details::make_unique&lt;gzip_decompressor&gt;(); }),
+       std::make_shared&lt;generic_decompress_factory&gt;(algorithm::DEFLATE,
+                                                    500,
+                                                    []() -&gt; std::unique_ptr&lt;decompress_provider&gt; {
+                                                        return utility::details::make_unique&lt;deflate_decompressor&gt;();
+                                                    }),
+#if defined(CPPREST_BROTLI_COMPRESSION)
+       std::make_shared&lt;generic_decompress_factory&gt;(algorithm::BROTLI,
+                                                    500,
+                                                    []() -&gt; std::unique_ptr&lt;decompress_provider&gt; {
+                                                        return utility::details::make_unique&lt;brotli_decompressor&gt;();
+                                                    })
+#endif // CPPREST_BROTLI_COMPRESSION
+};
+#else  // CPPREST_HTTP_COMPRESSION
+    ;
+#endif // CPPREST_HTTP_COMPRESSION
+
+<span style = "background-color:#fdd">bool supported() { return !g_compress_factories.empty(); }</span>
+
+bool algorithm::supported(const utility::string_t&amp; algorithm)
+<span style = "background-color:#fdd">{
+    for (auto&amp; factory : g_compress_factories)</span>
+    {
+<span style = "background-color:#fdd">        if (utility::details::str_iequal(algorithm, factory-&gt;algorithm()))</span>
+        {
+<span style = "background-color:#fdd">            return true;</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    return false;
+}</span>
+
+static std::unique_ptr&lt;compress_provider&gt; _make_compressor(
+    const std::vector&lt;std::shared_ptr&lt;compress_factory&gt;&gt;&amp; factories, const utility::string_t&amp; algorithm)
+<span style = "background-color:#fdd">{
+    for (auto&amp; factory : factories)</span>
+    {
+<span style = "background-color:#fdd">        if (factory &amp;&amp; utility::details::str_iequal(algorithm, factory-&gt;algorithm()))</span>
+        {
+<span style = "background-color:#fdd">            return factory-&gt;make_compressor();</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    return std::unique_ptr&lt;compress_provider&gt;();
+}</span>
+
+std::unique_ptr&lt;compress_provider&gt; make_compressor(const utility::string_t&amp; algorithm)
+<span style = "background-color:#fdd">{
+    return _make_compressor(g_compress_factories, algorithm);
+}</span>
+
+static std::unique_ptr&lt;decompress_provider&gt; _make_decompressor(
+    const std::vector&lt;std::shared_ptr&lt;decompress_factory&gt;&gt;&amp; factories, const utility::string_t&amp; algorithm)
+<span style = "background-color:#fdd">{
+    for (auto&amp; factory : factories)</span>
+    {
+<span style = "background-color:#fdd">        if (factory &amp;&amp; utility::details::str_iequal(algorithm, factory-&gt;algorithm()))</span>
+        {
+<span style = "background-color:#fdd">            return factory-&gt;make_decompressor();</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    return std::unique_ptr&lt;decompress_provider&gt;();
+}</span>
+
+std::unique_ptr&lt;decompress_provider&gt; make_decompressor(const utility::string_t&amp; algorithm)
+<span style = "background-color:#fdd">{
+    return _make_decompressor(g_decompress_factories, algorithm);
+}</span>
+
+std::shared_ptr&lt;compress_factory&gt; get_compress_factory(const utility::string_t&amp; algorithm)
+<span style = "background-color:#fdd">{
+    for (auto&amp; factory : g_compress_factories)</span>
+    {
+<span style = "background-color:#fdd">        if (utility::details::str_iequal(algorithm, factory-&gt;algorithm()))</span>
+        {
+<span style = "background-color:#fdd">            return factory;</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    return std::shared_ptr&lt;compress_factory&gt;();
+}</span>
+
+std::shared_ptr&lt;decompress_factory&gt; get_decompress_factory(const utility::string_t&amp; algorithm)
+<span style = "background-color:#fdd">{
+    for (auto&amp; factory : g_decompress_factories)</span>
+    {
+<span style = "background-color:#fdd">        if (utility::details::str_iequal(algorithm, factory-&gt;algorithm()))</span>
+        {
+<span style = "background-color:#fdd">            return factory;</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    return std::shared_ptr&lt;decompress_factory&gt;();
+}</span>
+
+std::unique_ptr&lt;compress_provider&gt; make_gzip_compressor(int compressionLevel, int method, int strategy, int memLevel)
+<span style = "background-color:#fdd">{</span>
+#if defined(CPPREST_HTTP_COMPRESSION)
+    return utility::details::make_unique&lt;gzip_compressor&gt;(compressionLevel, method, strategy, memLevel);
+#else  // CPPREST_HTTP_COMPRESSION
+    (void)compressionLevel;
+    (void)method;
+    (void)strategy;
+    (void)memLevel;
+<span style = "background-color:#fdd">    return std::unique_ptr&lt;compress_provider&gt;();</span>
+#endif // CPPREST_HTTP_COMPRESSION
+<span style = "background-color:#fdd">}</span>
+
+std::unique_ptr&lt;compress_provider&gt; make_deflate_compressor(int compressionLevel, int method, int strategy, int memLevel)
+<span style = "background-color:#fdd">{</span>
+#if defined(CPPREST_HTTP_COMPRESSION)
+    return utility::details::make_unique&lt;deflate_compressor&gt;(compressionLevel, method, strategy, memLevel);
+#else  // CPPREST_HTTP_COMPRESSION
+    (void)compressionLevel;
+    (void)method;
+    (void)strategy;
+    (void)memLevel;
+<span style = "background-color:#fdd">    return std::unique_ptr&lt;compress_provider&gt;();</span>
+#endif // CPPREST_HTTP_COMPRESSION
+<span style = "background-color:#fdd">}</span>
+
+std::unique_ptr&lt;compress_provider&gt; make_brotli_compressor(
+    uint32_t window, uint32_t quality, uint32_t mode, uint32_t block, uint32_t nomodel, uint32_t hint)
+<span style = "background-color:#fdd">{</span>
+#if defined(CPPREST_HTTP_COMPRESSION) &amp;&amp; defined(CPPREST_BROTLI_COMPRESSION)
+    return utility::details::make_unique&lt;brotli_compressor&gt;(window, quality, mode, block, nomodel, hint);
+#else  // CPPREST_BROTLI_COMPRESSION
+    (void)window;
+    (void)quality;
+    (void)mode;
+    (void)block;
+    (void)nomodel;
+    (void)hint;
+<span style = "background-color:#fdd">    return std::unique_ptr&lt;compress_provider&gt;();</span>
+#endif // CPPREST_BROTLI_COMPRESSION
+<span style = "background-color:#fdd">}</span>
+} // namespace builtin
+
+std::shared_ptr&lt;compress_factory&gt; make_compress_factory(
+    const utility::string_t&amp; algorithm, std::function&lt;std::unique_ptr&lt;compress_provider&gt;()&gt; make_compressor)
+<span style = "background-color:#fdd">{
+    return std::make_shared&lt;builtin::generic_compress_factory&gt;(algorithm, make_compressor);
+}</span>
+
+std::shared_ptr&lt;decompress_factory&gt; make_decompress_factory(
+    const utility::string_t&amp; algorithm,
+    uint16_t weight,
+    std::function&lt;std::unique_ptr&lt;decompress_provider&gt;()&gt; make_decompressor)
+<span style = "background-color:#fdd">{
+    return std::make_shared&lt;builtin::generic_decompress_factory&gt;(algorithm, weight, make_decompressor);
+}</span>
+
+namespace details
+{
+namespace builtin
+{
+const std::vector&lt;std::shared_ptr&lt;decompress_factory&gt;&gt; get_decompress_factories()
+<span style = "background-color:#fdd">{
+    return web::http::compression::builtin::g_decompress_factories;
+}</span>
+} // namespace builtin
+
+<span style = "background-color:#fdd">static bool is_http_whitespace(const utility::char_t ch) { return ch == _XPLATSTR(' ') || ch == _XPLATSTR('\t'); }</span>
+
+static void remove_surrounding_http_whitespace(const utility::string_t&amp; encoding, size_t&amp; start, size_t&amp; length)
+<span style = "background-color:#fdd">{
+    while (length &gt; 0 &amp;&amp; is_http_whitespace(encoding.at(start)))</span>
+    {
+<span style = "background-color:#fdd">        start++;
+        length--;
+    }
+    while (length &gt; 0 &amp;&amp; is_http_whitespace(encoding.at(start + length - 1)))</span>
+    {
+<span style = "background-color:#fdd">        length--;
+    }
+}</span>
+
+std::unique_ptr&lt;compress_provider&gt; get_compressor_from_header(
+    const utility::string_t&amp; encoding,
+    header_types type,
+    const std::vector&lt;std::shared_ptr&lt;compress_factory&gt;&gt;&amp; factories)
+<span style = "background-color:#fdd">{
+    const std::vector&lt;std::shared_ptr&lt;compress_factory&gt;&gt;&amp; f =</span>
+        factories.empty() ? web::http::compression::builtin::g_compress_factories : factories;
+<span style = "background-color:#fdd">    std::unique_ptr&lt;compress_provider&gt; compressor;</span>
+    struct _tuple
+    {
+        size_t start;
+        size_t length;
+        size_t rank;
+    } t;
+<span style = "background-color:#fdd">    std::vector&lt;_tuple&gt; tokens;</span>
+    size_t highest;
+    size_t mark;
+    size_t end;
+    size_t n;
+    bool first;
+
+<span style = "background-color:#fdd">    _ASSERTE(type == header_types::te || type == header_types::accept_encoding);</span>
+
+    // See https://tools.ietf.org/html/rfc7230#section-4.3 (TE) and
+    // https://tools.ietf.org/html/rfc7231#section-5.3.4 (Accept-Encoding) for details
+
+<span style = "background-color:#fdd">    n = 0;
+    highest = 0;
+    first = true;
+    while (n != utility::string_t::npos)</span>
+    {
+        // Tokenize by commas first
+<span style = "background-color:#fdd">        mark = encoding.find(_XPLATSTR(','), n);
+        t.start = n;
+        t.rank = static_cast&lt;size_t&gt;(-1);
+        if (mark == utility::string_t::npos)</span>
+        {
+<span style = "background-color:#fdd">            t.length = encoding.size() - n;
+            n = utility::string_t::npos;
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            t.length = mark - n;
+            n = mark + 1;</span>
+        }
+
+        // Then remove leading and trailing whitespace
+<span style = "background-color:#fdd">        remove_surrounding_http_whitespace(encoding, t.start, t.length);</span>
+
+        // Next split at the semicolon, if any, and deal with rank and additional whitespace
+<span style = "background-color:#fdd">        mark = encoding.find(_XPLATSTR(';'), t.start);
+        if (mark &lt; t.start + t.length)</span>
+        {
+<span style = "background-color:#fdd">            end = t.start + t.length - 1;
+            t.length = mark - t.start;
+            while (t.length &gt; 0 &amp;&amp; is_http_whitespace(encoding.at(t.start + t.length - 1)))</span>
+            {
+                // Skip trailing whitespace in encoding type
+<span style = "background-color:#fdd">                t.length--;
+            }
+            if (mark &lt; end)</span>
+            {
+                // Check for an optional ranking, max. length "q=0.999"
+<span style = "background-color:#fdd">                mark = encoding.find(_XPLATSTR("q="), mark + 1);
+                if (mark != utility::string_t::npos &amp;&amp; mark + 1 &lt; end &amp;&amp; end - mark &lt;= 6)</span>
+                {
+                    // Determine ranking; leading whitespace has been implicitly skipped by find().
+                    // The ranking always starts with '1' or '0' per standard, and has at most 3 decimal places
+<span style = "background-color:#fdd">                    mark += 1;
+                    t.rank = 1000 * (encoding.at(mark + 1) - _XPLATSTR('0'));
+                    if (mark + 2 &lt; end &amp;&amp; encoding.at(mark + 2) == _XPLATSTR('.'))</span>
+                    {
+                        // This is a real number rank; convert decimal part to hundreds and apply it
+<span style = "background-color:#fdd">                        size_t factor = 100;
+                        mark += 2;
+                        for (size_t i = mark + 1; i &lt;= end; i++)</span>
+                        {
+<span style = "background-color:#fdd">                            t.rank += (encoding.at(i) - _XPLATSTR('0')) * factor;
+                            factor /= 10;
+                        }</span>
+                    }
+<span style = "background-color:#fdd">                    if (t.rank &gt; 1000)</span>
+                    {
+<span style = "background-color:#fdd">                        throw http_exception(status_codes::BadRequest, "Invalid q-value in header");</span>
+                    }
+                }
+            }
+        }
+
+<span style = "background-color:#fdd">        if (!t.length)</span>
+        {
+<span style = "background-color:#fdd">            if (!first || n != utility::string_t::npos)</span>
+            {
+                // An entirely empty header is OK per RFC, but an extraneous comma is not
+<span style = "background-color:#fdd">                throw http_exception(status_codes::BadRequest, "Empty field in header");</span>
+            }
+<span style = "background-color:#fdd">            return std::unique_ptr&lt;compress_provider&gt;();</span>
+        }
+
+<span style = "background-color:#fdd">        if (!compressor)</span>
+        {
+<span style = "background-color:#fdd">            if (t.rank == static_cast&lt;size_t&gt;(1000) || t.rank == static_cast&lt;size_t&gt;(-1))</span>
+            {
+                // Immediately try to instantiate a compressor for any unranked or top-ranked algorithm
+<span style = "background-color:#fdd">                compressor = web::http::compression::builtin::_make_compressor(f, encoding.substr(t.start, t.length));
+            }
+            else if (t.rank)</span>
+            {
+                // Store off remaining ranked algorithms, sorting as we go
+<span style = "background-color:#fdd">                if (t.rank &gt;= highest)</span>
+                {
+<span style = "background-color:#fdd">                    tokens.emplace_back(t);
+                    highest = t.rank;
+                }</span>
+                else
+                {
+<span style = "background-color:#fdd">                    for (auto x = tokens.begin(); x != tokens.end(); x++)</span>
+                    {
+<span style = "background-color:#fdd">                        if (t.rank &lt;= x-&gt;rank)</span>
+                        {
+<span style = "background-color:#fdd">                            tokens.emplace(x, t);
+                            break;
+                        }
+                    }</span>
+                }
+            }
+            // else a rank of 0 means "not permitted"
+        }
+        // else we've chosen a compressor; we're just validating the rest of the header
+
+<span style = "background-color:#fdd">        first = false;
+    }</span>
+    // Note: for Accept-Encoding, we don't currently explicitly handle "identity;q=0" and "*;q=0"
+
+<span style = "background-color:#fdd">    if (compressor)</span>
+    {
+<span style = "background-color:#fdd">        return compressor;</span>
+    }
+
+    // If we're here, we didn't match the caller's compressor above;
+    // try any that we saved off in order of highest to lowest rank
+<span style = "background-color:#fdd">    for (auto t = tokens.rbegin(); t != tokens.rend(); t++)</span>
+    {
+<span style = "background-color:#fdd">        auto coding = encoding.substr(t-&gt;start, t-&gt;length);</span>
+
+        // N.B for TE, "trailers" will simply fail to instantiate a
+        // compressor; ditto for "*" and "identity" for Accept-Encoding
+<span style = "background-color:#fdd">        auto compressor = web::http::compression::builtin::_make_compressor(f, coding);
+        if (compressor)</span>
+        {
+<span style = "background-color:#fdd">            return compressor;</span>
+        }
+<span style = "background-color:#fdd">        if (type == header_types::accept_encoding &amp;&amp; utility::details::str_iequal(coding, _XPLATSTR("identity")))</span>
+        {
+            // The client specified a preference for "no encoding" vs. anything else we might still have
+<span style = "background-color:#fdd">            return std::unique_ptr&lt;compress_provider&gt;();</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    return std::unique_ptr&lt;compress_provider&gt;();
+}</span>
+
+std::unique_ptr&lt;decompress_provider&gt; get_decompressor_from_header(
+    const utility::string_t&amp; encoding,
+    header_types type,
+    const std::vector&lt;std::shared_ptr&lt;decompress_factory&gt;&gt;&amp; factories)
+<span style = "background-color:#fdd">{
+    const std::vector&lt;std::shared_ptr&lt;decompress_factory&gt;&gt;&amp; f =</span>
+        factories.empty() ? web::http::compression::builtin::g_decompress_factories : factories;
+<span style = "background-color:#fdd">    std::unique_ptr&lt;decompress_provider&gt; decompressor;
+    utility::string_t token;</span>
+    size_t start;
+    size_t length;
+    size_t comma;
+    size_t n;
+
+<span style = "background-color:#fdd">    _ASSERTE(type == header_types::transfer_encoding || type == header_types::content_encoding);</span>
+
+<span style = "background-color:#fdd">    n = 0;
+    while (n != utility::string_t::npos)</span>
+    {
+        // Tokenize by commas first
+<span style = "background-color:#fdd">        comma = encoding.find(_XPLATSTR(','), n);
+        start = n;
+        if (comma == utility::string_t::npos)</span>
+        {
+<span style = "background-color:#fdd">            length = encoding.size() - n;
+            n = utility::string_t::npos;
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            length = comma - n;
+            n = comma + 1;</span>
+        }
+
+        // Then remove leading and trailing whitespace
+<span style = "background-color:#fdd">        remove_surrounding_http_whitespace(encoding, start, length);</span>
+
+<span style = "background-color:#fdd">        if (!length)</span>
+        {
+<span style = "background-color:#fdd">            throw http_exception(status_codes::BadRequest, "Empty field in header");</span>
+        }
+
+        // Immediately try to instantiate a decompressor
+<span style = "background-color:#fdd">        token = encoding.substr(start, length);
+        auto d = web::http::compression::builtin::_make_decompressor(f, token);
+        if (d)</span>
+        {
+<span style = "background-color:#fdd">            if (decompressor)</span>
+            {
+<span style = "background-color:#fdd">                status_code code = status_codes::NotImplemented;
+                if (type == header_types::content_encoding)</span>
+                {
+<span style = "background-color:#fdd">                    code = status_codes::UnsupportedMediaType;</span>
+                }
+<span style = "background-color:#fdd">                throw http_exception(code, "Multiple compression algorithms not supported for a single request");</span>
+            }
+
+            // We found our decompressor; store it off while we process the rest of the header
+<span style = "background-color:#fdd">            decompressor = std::move(d);
+        }</span>
+        else
+        {
+<span style = "background-color:#fdd">            if (n != utility::string_t::npos)</span>
+            {
+<span style = "background-color:#fdd">                if (type == header_types::transfer_encoding &amp;&amp;</span>
+                    utility::details::str_iequal(_XPLATSTR("chunked"), token))
+                {
+<span style = "background-color:#fdd">                    throw http_exception(status_codes::BadRequest,</span>
+                                         "Chunked must come last in the Transfer-Encoding header");
+                }
+            }
+<span style = "background-color:#fdd">            if (!decompressor &amp;&amp; !f.empty() &amp;&amp; (n != utility::string_t::npos || type == header_types::content_encoding))</span>
+            {
+                // The first encoding type did not match; throw an informative
+                // exception with an encoding-type-appropriate HTTP error code
+<span style = "background-color:#fdd">                status_code code = status_codes::NotImplemented;
+                if (type == header_types::content_encoding)</span>
+                {
+<span style = "background-color:#fdd">                    code = status_codes::UnsupportedMediaType;</span>
+                }
+<span style = "background-color:#fdd">                throw http_exception(code, "Unsupported encoding type");</span>
+            }
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    if (type == header_types::transfer_encoding &amp;&amp; !utility::details::str_iequal(_XPLATSTR("chunked"), token))</span>
+    {
+<span style = "background-color:#fdd">        throw http_exception(status_codes::BadRequest, "Transfer-Encoding header missing chunked");</span>
+    }
+
+    // Either the response is compressed and we have a decompressor that can handle it, or
+    // built-in compression is not enabled and we don't have an alternate set of decompressors
+<span style = "background-color:#fdd">    return decompressor;
+}</span>
+
+utility::string_t build_supported_header(header_types type,
+                                         const std::vector&lt;std::shared_ptr&lt;decompress_factory&gt;&gt;&amp; factories)
+<span style = "background-color:#fdd">{
+    const std::vector&lt;std::shared_ptr&lt;decompress_factory&gt;&gt;&amp; f =</span>
+        factories.empty() ? web::http::compression::builtin::g_decompress_factories : factories;
+<span style = "background-color:#fdd">    utility::string_t result;</span>
+    bool start;
+
+<span style = "background-color:#fdd">    _ASSERTE(type == header_types::te || type == header_types::accept_encoding);</span>
+
+    // Add all specified algorithms and their weights to the header
+<span style = "background-color:#fdd">    start = true;
+    for (auto&amp; factory : f)</span>
+    {
+<span style = "background-color:#fdd">        if (factory)</span>
+        {
+<span style = "background-color:#fdd">            auto weight = factory-&gt;weight();</span>
+
+<span style = "background-color:#fdd">            if (!start)</span>
+            {
+<span style = "background-color:#fdd">                result += _XPLATSTR(", ");</span>
+            }
+<span style = "background-color:#fdd">            result += factory-&gt;algorithm();
+            if (weight &lt;= 1000)</span>
+            {
+<span style = "background-color:#fdd">                result += _XPLATSTR(";q=");
+                result += utility::conversions::details::to_string_t(weight / 1000);
+                result += _XPLATSTR('.');
+                result += utility::conversions::details::to_string_t(weight % 1000);</span>
+            }
+<span style = "background-color:#fdd">            start = false;</span>
+        }
+<span style = "background-color:#fdd">    }</span>
+
+<span style = "background-color:#fdd">    if (start &amp;&amp; type == header_types::accept_encoding)</span>
+    {
+        // Request that no encoding be applied
+<span style = "background-color:#fdd">        result += _XPLATSTR("identity;q=1, *;q=0");</span>
+    }
+
+<span style = "background-color:#fdd">    return result;
+}</span>
+} // namespace details
+} // namespace compression
+} // namespace http
+} // namespace web</pre>
+        <hr />
+        <table width="100%">
+            <thead>
+                <tr>
+                    <th align="center">
+                        <small>Generated by</small>
+                        <a href="https://github.com/OpenCppCoverage/OpenCppCoverage/releases">
+                            <strong>OpenCppCoverage (Version: 0.9.9.0)</strong>
+                        </a>
+                    </th>
+                </tr>
+            </thead>
+        </table>
+    </body>
+</html>

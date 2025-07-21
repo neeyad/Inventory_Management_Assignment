@@ -1,0 +1,10 @@
+^C:\USERS\NEERAJY\DOCUMENTS\AI NATIVE ASSIGNEMNT 1\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" "-SC:/Users/Neerajy/Documents/AI Native Assignemnt 1" "-BC:/Users/Neerajy/Documents/AI Native Assignemnt 1" --check-stamp-file "C:/Users/Neerajy/Documents/AI Native Assignemnt 1/CMakeFiles/generate.stamp"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
