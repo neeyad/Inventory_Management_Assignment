@@ -1,4 +1,4 @@
-[2025-07-21 17:03:53] [info] Start Program:
+[2025-07-21 17:19:03] [info] Start Program:
 Path:".\\Debug\\UnitTests.exe"
 Arguments:
 Working directory: not set.
@@ -14,33 +14,40 @@ Input coverage:
 Unified diff: 
 Excluded line regular expressions: 
 Substitute pdb source paths: 
-[2025-07-21 17:03:53] [info] Module: C:\Users\Neerajy\Documents\AI Native Assignemnt 1\Debug\UnitTests.exe is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\ntdll.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\kernel32.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\KernelBase.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Users\Neerajy\Documents\AI Native Assignemnt 1\Debug\gtest.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\msvcp140d.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Users\Neerajy\Documents\AI Native Assignemnt 1\Debug\gtest_main.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Users\Neerajy\Documents\AI Native Assignemnt 1\Debug\cpprest_2_10d.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\vcruntime140d.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\bcrypt.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\ucrtbased.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\vcruntime140_1d.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\vcruntime140_1d.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\crypt32.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\ucrtbase.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\ws2_32.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\winhttp.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\httpapi.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\rpcrt4.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\sechost.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\concrt140d.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\dpapi.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\combase.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\advapi32.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\msvcrt.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:53] [info] Module: C:\Windows\System32\kernel.appcore.dll is selected because it matches selected pattern: *
-[2025-07-21 17:03:54] [info] ----------------------------------------------------
-[2025-07-21 17:03:54] [info] Coverage generated in Folder C:\Users\Neerajy\Documents\AI Native Assignemnt 1\coverage_html
-[2025-07-21 17:03:54] [info] ----------------------------------------------------
-[2025-07-21 17:03:54] [info] The code coverage report is not what you expect? See the FAQ https://github.com/OpenCppCoverage/OpenCppCoverage/wiki/FAQ.
+[2025-07-21 17:19:03] [info] Module: C:\Users\Neerajy\Documents\AI Native Assignemnt 1\Debug\UnitTests.exe is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\ntdll.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\kernel32.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\KernelBase.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Users\Neerajy\Documents\AI Native Assignemnt 1\Debug\gtest_main.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\msvcp140d.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Users\Neerajy\Documents\AI Native Assignemnt 1\Debug\gtest.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Users\Neerajy\Documents\AI Native Assignemnt 1\Debug\cpprest_2_10d.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\vcruntime140d.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\bcrypt.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\vcruntime140_1d.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\crypt32.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\ucrtbase.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\ucrtbased.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\vcruntime140_1d.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\ws2_32.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\ucrtbased.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\rpcrt4.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\winhttp.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\httpapi.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\sechost.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\concrt140d.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:03] [info] Module: C:\Windows\System32\dpapi.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:04] [info] Module: C:\Windows\System32\combase.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:04] [info] Module: C:\Windows\System32\advapi32.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:04] [info] Module: C:\Windows\System32\msvcrt.dll is selected because it matches selected pattern: *
+[2025-07-21 17:19:04] [error] 
+
+----------------------------------------------------
+*** Your application has thrown an unhandled exception. Code: 3221225477: EXCEPTION_ACCESS_VIOLATION
+----------------------------------------------------
+See https://github.com/OpenCppCoverage/OpenCppCoverage/wiki/FAQ#your-application-has-thrown-an-unhandled-exception-code-3221225477-exception_access_violation for additional information.
+[2025-07-21 17:19:04] [info] ----------------------------------------------------
+[2025-07-21 17:19:04] [info] Coverage generated in Folder C:\Users\Neerajy\Documents\AI Native Assignemnt 1\coverage_html
+[2025-07-21 17:19:04] [info] ----------------------------------------------------
+[2025-07-21 17:19:04] [info] The code coverage report is not what you expect? See the FAQ https://github.com/OpenCppCoverage/OpenCppCoverage/wiki/FAQ.
+[2025-07-21 17:19:04] [error] Your program stop with error code: -1073741819

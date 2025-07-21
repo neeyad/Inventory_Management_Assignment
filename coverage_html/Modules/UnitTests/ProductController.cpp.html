@@ -27,25 +27,25 @@ ProductController::ProductController(const std::string&amp; baseUrl)
 <span style = "background-color:#dfd">void ProductController::open() { listener.open().wait(); }
 void ProductController::close() { listener.close().wait(); }</span>
 
-<span style = "background-color:#fdd">void ProductController::handleGet(http_request request) {
+<span style = "background-color:#dfd">void ProductController::handleGet(http_request request) {
     auto products = handler.list();
     json::value arr = json::value::array(products.size());
-    for (size_t i = 0; i &lt; products.size(); ++i) {
-        arr[i][U("id")] = json::value::string(utility::conversions::to_string_t(products[i].id));
+    for (size_t i = 0; i &lt; products.size(); ++i) {</span>
+<span style = "background-color:#fdd">        arr[i][U("id")] = json::value::string(utility::conversions::to_string_t(products[i].id));
         arr[i][U("name")] = json::value::string(utility::conversions::to_string_t(products[i].name));
         arr[i][U("description")] = json::value::string(utility::conversions::to_string_t(products[i].description));
         arr[i][U("brand")] = json::value::string(utility::conversions::to_string_t(products[i].brand));
         arr[i][U("categoryId")] = json::value::string(utility::conversions::to_string_t(products[i].categoryId));
         arr[i][U("active")] = json::value::boolean(products[i].active);
-    }
-    json::value response;
+    }</span>
+<span style = "background-color:#dfd">    json::value response;
     response[U("success")] = json::value::boolean(true);
     response[U("data")] = arr;
     response[U("error")] = json::value::null();
     request.reply(status_codes::OK, response);
 }</span>
 
-<span style = "background-color:#fdd">void ProductController::handlePost(http_request request) {
+<span style = "background-color:#dfd">void ProductController::handlePost(http_request request) {
     request.extract_json().then([this, request](json::value body) {
         Product p;
         p.id = utility::conversions::to_utf8string(body[U("id")].as_string());
@@ -55,8 +55,8 @@ void ProductController::close() { listener.close().wait(); }</span>
         p.categoryId = utility::conversions::to_utf8string(body[U("categoryId")].as_string());
         p.active = body[U("active")].as_bool();
         json::value response;
-        if (handler.create(p)) {
-            response[U("success")] = json::value::boolean(true);
+        if (handler.create(p)) {</span>
+<span style = "background-color:#fdd">            response[U("success")] = json::value::boolean(true);
             response[U("data")] = json::value::string(U("Product created"));
             response[U("error")] = json::value::null();
             request.reply(status_codes::Created, response);
@@ -66,12 +66,12 @@ void ProductController::close() { listener.close().wait(); }</span>
             response[U("error")] = json::value::string(U("Validation failed"));
             request.reply(status_codes::BadRequest, response);</span>
         }
-<span style = "background-color:#fdd">    });
+<span style = "background-color:#dfd">    });
 }</span>
 
-<span style = "background-color:#fdd">void ProductController::handlePut(http_request request) {
-    request.extract_json().then([this, request](json::value body) {
-        Product p;
+<span style = "background-color:#dfd">void ProductController::handlePut(http_request request) {
+    request.extract_json().then([this, request](json::value body) {</span>
+<span style = "background-color:#fdd">        Product p;
         p.id = utility::conversions::to_utf8string(body[U("id")].as_string());
         p.name = utility::conversions::to_utf8string(body[U("name")].as_string());
         p.description = utility::conversions::to_utf8string(body[U("description")].as_string());
@@ -90,7 +90,7 @@ void ProductController::close() { listener.close().wait(); }</span>
             response[U("error")] = json::value::string(U("Update failed"));
             request.reply(status_codes::BadRequest, response);</span>
         }
-<span style = "background-color:#fdd">    });
+<span style = "background-color:#dfd">    });
 }</span>
 
 <span style = "background-color:#fdd">void ProductController::handleDelete(http_request request) {

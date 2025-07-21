@@ -12,21 +12,21 @@
 #include "ProductService.h"
 
 ProductService::ProductService(CategoryHandler&amp; categoryHandler, ProductHandler&amp; productHandler)
-<span style = "background-color:#dfd">    : categoryHandler(categoryHandler), productHandler(productHandler) {}</span>
+<span style = "background-color:#fdd">    : categoryHandler(categoryHandler), productHandler(productHandler) {}</span>
 
-<span style = "background-color:#dfd">bool ProductService::createProduct(const Product&amp; product, const std::string&amp; user) {</span>
+<span style = "background-color:#fdd">bool ProductService::createProduct(const Product&amp; product, const std::string&amp; user) {</span>
     // Refresh categories in case new ones were added
-<span style = "background-color:#dfd">    categoryHandler.load();</span>
+<span style = "background-color:#fdd">    categoryHandler.load();</span>
     // Validate category exists
-<span style = "background-color:#dfd">    auto cat = categoryHandler.read(product.categoryId);
+<span style = "background-color:#fdd">    auto cat = categoryHandler.read(product.categoryId);
     if (!cat.has_value()) return false;</span>
     // Create product
-<span style = "background-color:#dfd">    bool result = productHandler.create(product);</span>
+<span style = "background-color:#fdd">    bool result = productHandler.create(product);</span>
     // Audit log
-<span style = "background-color:#dfd">    if (result) {
+<span style = "background-color:#fdd">    if (result) {
         AuditLogger::getInstance().log(user, "Product", "create");</span>
     }
-<span style = "background-color:#dfd">    return result;
+<span style = "background-color:#fdd">    return result;
 }</span></pre>
         <hr />
         <table width="100%">

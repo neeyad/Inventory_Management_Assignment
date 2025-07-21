@@ -19,7 +19,7 @@ using json = nlohmann::json;
     std::ifstream file("data/categories.json");
     if (!file.is_open()) {</span>
         // Create empty file if missing
-<span style = "background-color:#dfd">        std::ofstream createFile("data/categories.json");
+<span style = "background-color:#fdd">        std::ofstream createFile("data/categories.json");
         createFile &lt;&lt; "[]";
         categories.clear();
         return true;</span>
@@ -82,9 +82,9 @@ using json = nlohmann::json;
 <span style = "background-color:#dfd">std::optional&lt;Category&gt; CategoryHandler::read(const std::string&amp; id) const {
     for (const auto&amp; c : categories) {
         if (c.id == id) return c;</span>
-<span style = "background-color:#fdd">    }</span>
-<span style = "background-color:#dfd">    return std::nullopt;
-}</span>
+<span style = "background-color:#fdd">    }
+    return std::nullopt;</span>
+<span style = "background-color:#dfd">}</span>
 
 <span style = "background-color:#dfd">bool CategoryHandler::update(const Category&amp; category) {
     for (auto&amp; c : categories) {
